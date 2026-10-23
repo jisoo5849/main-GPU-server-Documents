@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>메인 GPU 서버 설계서</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: 한 줄 문서 칼럼 + 왼쪽 목차(넓은 화면), 표와 도식은 칼럼 안에서 가로 스크롤 */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --fg: #1b2230;
+  --muted: #5a6475;
+  --line: #dde1e8;
+  --accent: #1f5fae;
+  --accent-soft: #e6eef9;
+  --ok: #1e7a4c;
+  --ok-soft: #e3f3ea;
+  --warn: #9a5a00;
+  --warn-soft: #fbf0dc;
+  --bad: #b23a3a;
+  --bad-soft: #f8e4e4;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161d; --surface: #1a2029; --fg: #e4e8ef; --muted: #9aa4b4; --line: #2c3442;
+    --accent: #7fb0f0; --accent-soft: #1d2b40;
+    --ok: #6fcf98; --ok-soft: #173025; --warn: #e6b45c; --warn-soft: #33281a; --bad: #ef8a8a; --bad-soft: #3a1f22;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161d; --surface: #1a2029; --fg: #e4e8ef; --muted: #9aa4b4; --line: #2c3442;
+  --accent: #7fb0f0; --accent-soft: #1d2b40;
+  --ok: #6fcf98; --ok-soft: #173025; --warn: #e6b45c; --warn-soft: #33281a; --bad: #ef8a8a; --bad-soft: #3a1f22;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--font-body); font-size: 15.5px; line-height: 1.7;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 80px;
+}
+.wrap { max-width: 1080px; margin: 0 auto; display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 48px; }
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: 13.5px; }
+nav.toc p { font-size: 11.5px; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+nav.toc a { color: var(--muted); text-decoration: none; display: block; padding: 2px 0 2px 10px; border-left: 2px solid var(--line); }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); border-left-color: var(--accent); outline: none; }
+main { min-width: 0; }
+header.doc { border-bottom: 1px solid var(--line); padding-bottom: 24px; margin-bottom: 8px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; color: var(--accent); letter-spacing: .06em; margin: 0 0 6px; }
+h1 { font-size: 30px; line-height: 1.3; margin: 0 0 12px; text-wrap: balance; font-weight: 700; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); margin: 0; padding: 0; list-style: none; }
+.meta b { color: var(--fg); font-weight: 500; }
+.lead { font-size: 16.5px; max-width: 68ch; margin: 18px 0 0; }
+section { padding-top: 36px; }
+h2 { font-size: 21px; margin: 0 0 14px; text-wrap: balance; font-weight: 700; display: flex; gap: 10px; align-items: baseline; }
+h2 .n { font-family: var(--font-mono); font-size: 13px; color: var(--accent); font-weight: 500; }
+h3 { font-size: 16.5px; margin: 22px 0 8px; font-weight: 600; }
+p, li { max-width: 72ch; }
+p { margin: 0 0 12px; }
+ul, ol { margin: 0 0 12px; padding-left: 22px; }
+li { margin-bottom: 4px; }
+code, .mono { font-family: var(--font-mono); font-size: .88em; }
+code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; }
+.tbl { overflow-x: auto; margin: 6px 0 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 560px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; font-size: 12.5px; color: var(--muted); background: var(--bg); letter-spacing: .02em; }
+tr:last-child td { border-bottom: 0; }
+td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pill { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 9px; border-radius: 999px; white-space: nowrap; }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); }
+.pill.info { background: var(--accent-soft); color: var(--accent); }
+.callout { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 14px 16px; margin: 8px 0 16px; }
+.callout.key { border-color: var(--accent); background: var(--accent-soft); }
+.callout p:last-child, .callout ul:last-child { margin-bottom: 0; }
+.diagram { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin: 6px 0 16px; }
+.diagram svg { display: block; min-width: 720px; width: 100%; height: auto; }
+.diagram text { font-family: var(--font-body); }
+.steps { list-style: none; padding: 0; margin: 6px 0 16px; display: grid; gap: 8px; counter-reset: s; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; align-items: start; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; max-width: none; margin: 0; }
+.steps li::before { content: counter(s); font-family: var(--font-mono); font-weight: 500; color: var(--accent); background: var(--accent-soft); border-radius: 50%; width: 28px; height: 28px; display: grid; place-items: center; font-size: 13px; }
+.steps b { display: block; }
+.steps span { color: var(--muted); font-size: 14px; }
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 6px 0 16px; }
+.two .callout { margin: 0; }
+.two h3 { margin-top: 0; }
+pre { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto; margin: 6px 0 16px; }
+.small { font-size: 13px; color: var(--muted); }
+footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+@media (max-width: 860px) {
+  .wrap { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  nav.toc { display: none; }
+  .two { grid-template-columns: minmax(0, 1fr); }
+  h1 { font-size: 25px; }
+}
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="목차">
+  <p>목차</p>
+  <ol>
+    <li><a href="#goal">목표와 원칙</a></li>
+    <li><a href="#reqs">요구사항</a></li>
+    <li><a href="#arch">전체 구조</a></li>
+    <li><a href="#flow">작업 처리 순서</a></li>
+    <li><a href="#parts">구성 요소</a></li>
+    <li><a href="#env">환경 분리와 버전 고정</a></li>
+    <li><a href="#gpu">GPU 한 건 규칙</a></li>
+    <li><a href="#mem">메모리 해제 확인</a></li>
+    <li><a href="#llm">LLM · 임베딩</a></li>
+    <li><a href="#out">결과물 · 이력 · 공유 폴더</a></li>
+    <li><a href="#db">기록 DB</a></li>
+    <li><a href="#ux">작업자 화면</a></li>
+    <li><a href="#review">설계 검토 결과</a></li>
+    <li><a href="#plan">구축 단계</a></li>
+    <li><a href="#open">결정 필요 사항</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="doc">
+  <p class="eyebrow">DESIGN DOC · v1.1</p>
+  <h1>메인 GPU 서버 설계서</h1>
+  <ul class="meta">
+    <li>작성일 <b>2026-10-23</b></li>
+    <li>상태 <b>설계 확정, 구현 전</b></li>
+    <li>대상 서버 <b>main (Ubuntu, GPU 1장 72GB)</b></li>
+    <li>사용자 <b>2~3명, 사무실 LAN</b></li>
+  </ul>
+  <p class="lead">사무실 작업자들이 브라우저로 ComfyUI를 자유롭게 쓰되, 모든 연산은 메인의 GPU 한 장에서 접수 순서대로 하나씩 처리하는 서버입니다. 사용자마다 독립된 작업공간을 두고, 실행 버튼을 누른 순간의 환경을 그대로 고정해서 실행합니다.</p>
+</header>
+
+<section id="goal">
+  <h2><span class="n">1</span>목표와 원칙</h2>
+  <div class="callout key">
+    <p><b>핵심 원칙: 작업자 PC는 화면만 쓰고, 연산은 전부 메인에서 합니다.</b></p>
+    <ul>
+      <li>편집은 각자 동시에, GPU 실행은 메인 전체에서 한 번에 한 건만 합니다.</li>
+      <li>A가 노드를 바꿔도 B의 환경은 바뀌지 않고, A가 이미 접수한 작업도 바뀌지 않습니다.</li>
+      <li>모든 실행 요청은 DB를 거칩니다. DB를 거치지 않고 GPU에 닿는 경로를 두지 않습니다.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="reqs">
+  <h2><span class="n">2</span>요구사항</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>항목</th><th>요구사항</th><th>설계 반영</th></tr></thead>
+    <tbody>
+      <tr><td>작업자 PC</td><td>화면만 사용, 설치 없음</td><td>브라우저로 <code>http://main</code> 접속</td></tr>
+      <tr><td>사용자 계정</td><td>2~3개의 개인 계정</td><td>허브 로그인, 비밀번호는 argon2id 해시로 저장</td></tr>
+      <tr><td>ComfyUI 환경</td><td>사용자별 독립, 필요하면 프로젝트별 추가</td><td>환경마다 ComfyUI · 커스텀 노드 · Python을 따로 두고 Docker로 실행</td></tr>
+      <tr><td>커스텀 노드</td><td>각자 설치하고 버전 관리</td><td>각자의 편집 공간에서 ComfyUI-Manager로 설치</td></tr>
+      <tr><td>환경 고정</td><td>대기 중인 작업은 접수 때의 환경으로 실행</td><td>실행 버튼을 누를 때 스냅샷을 찍어 그 버전으로 실행</td></tr>
+      <tr><td>모델 파일</td><td>공용 저장소에서 공유</td><td><code>/srv/models</code> 하나를 모든 컨테이너에 읽기 전용으로 연결</td></tr>
+      <tr><td>GPU 사용</td><td><b>메인 전체에서 한 번에 한 작업만</b></td><td>GPU 실행 공간은 항상 최대 1개, 편집 공간에는 GPU 장치 자체가 없음</td></tr>
+      <tr><td>작업 기록</td><td>사용자 · 모델 · 워크플로우 · 결과</td><td>PostgreSQL에 접속 로그, 작업, 사용 모델, 시간, 결과 파일 기록</td></tr>
+      <tr><td>결과 확인</td><td>ComfyUI 화면, 웹 이력, 네트워크 폴더</td><td>실행 직후 자기 화면에 표시, 공유 이력 페이지, Samba <code>\\main\results</code></td></tr>
+      <tr><td>열람 범위</td><td>모두가 함께 공유, 누구나 수정·작업 가능</td><td>이력 페이지와 Samba에서 전원 열람, Samba 폴더는 전원 읽기·쓰기 (삭제 파일은 휴지통에 30일 보관)</td></tr>
+      <tr><td>설치 방식</td><td>Windows에서 개발, Ubuntu에 Docker로 설치</td><td><code>docker compose</code>와 설치 스크립트로 배포</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="arch">
+  <h2><span class="n">3</span>전체 구조</h2>
+  <p>편집하는 곳과 실행하는 곳을 나눕니다. 편집 공간은 사용자 수만큼 늘 켜져 있지만 GPU가 없습니다. GPU 실행 공간은 허브가 순서가 된 작업 하나를 위해서만 띄웁니다.</p>
+  <div class="diagram" role="img" aria-label="전체 구조도: 브라우저에서 허브로, 허브에서 편집 공간, PostgreSQL, GPU 실행 공간, Ollama로 연결">
+    <svg viewBox="0 0 880 470" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+        </marker>
+      </defs>
+      <!-- browsers -->
+      <rect x="20" y="20" width="840" height="56" rx="8" fill="var(--surface)" stroke="var(--line)"/>
+      <text x="40" y="44" font-size="13" font-weight="600" fill="var(--fg)">작업자 PC (Windows)</text>
+      <text x="40" y="64" font-size="12" fill="var(--muted)">A · B · C 브라우저 → http://main  ·  네트워크 드라이브 \\main\results</text>
+      <line x1="440" y1="76" x2="440" y2="104" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#ar)"/>
+      <!-- main frame -->
+      <rect x="20" y="108" width="840" height="350" rx="10" fill="none" stroke="var(--accent)" stroke-dasharray="5 4"/>
+      <text x="36" y="130" font-size="12" font-weight="600" fill="var(--accent)">main (Ubuntu · Docker · GPU 72GB × 1)</text>
+      <!-- hub -->
+      <rect x="250" y="142" width="380" height="64" rx="8" fill="var(--accent-soft)" stroke="var(--accent)"/>
+      <text x="440" y="168" font-size="14" font-weight="700" fill="var(--fg)" text-anchor="middle">허브 (게이트웨이 + 스케줄러)</text>
+      <text x="440" y="190" font-size="12" fill="var(--muted)" text-anchor="middle">로그인 · 모델 선택 화면 · 화면 중계 · 실행 접수 · 순서 관리</text>
+      <!-- editors -->
+      <rect x="40" y="246" width="230" height="112" rx="8" fill="var(--surface)" stroke="var(--line)"/>
+      <text x="56" y="270" font-size="13" font-weight="600" fill="var(--fg)">편집 공간 (사용자·프로젝트별)</text>
+      <text x="56" y="292" font-size="12" fill="var(--muted)">A · B · C 각자의 ComfyUI,</text>
+      <text x="56" y="310" font-size="12" fill="var(--muted)">커스텀 노드, Python</text>
+      <text x="56" y="336" font-size="12" font-weight="600" fill="var(--bad)">GPU 없음 (--cpu)</text>
+      <!-- db -->
+      <rect x="320" y="246" width="240" height="112" rx="8" fill="var(--surface)" stroke="var(--line)"/>
+      <text x="336" y="270" font-size="13" font-weight="600" fill="var(--fg)">PostgreSQL</text>
+      <text x="336" y="292" font-size="12" fill="var(--muted)">접수 순서 대기열 (seq)</text>
+      <text x="336" y="310" font-size="12" fill="var(--muted)">계정 · 접속 로그 · 사용 기록</text>
+      <text x="336" y="328" font-size="12" fill="var(--muted)">환경 버전 · 결과 파일</text>
+      <!-- worker -->
+      <rect x="610" y="246" width="230" height="112" rx="8" fill="var(--ok-soft)" stroke="var(--ok)"/>
+      <text x="626" y="270" font-size="13" font-weight="600" fill="var(--fg)">GPU 실행 공간 (최대 1개)</text>
+      <text x="626" y="292" font-size="12" fill="var(--muted)">접수 때 고정한 환경 버전으로</text>
+      <text x="626" y="310" font-size="12" fill="var(--muted)">한 번에 한 작업 실행</text>
+      <text x="626" y="336" font-size="12" font-weight="600" fill="var(--ok)">GPU 사용</text>
+      <!-- arrows hub -> boxes -->
+      <line x1="330" y1="206" x2="170" y2="242" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#ar)"/>
+      <line x1="440" y1="206" x2="440" y2="242" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#ar)"/>
+      <line x1="550" y1="206" x2="720" y2="242" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#ar)"/>
+      <!-- storage row -->
+      <rect x="40" y="378" width="250" height="62" rx="8" fill="var(--surface)" stroke="var(--line)"/>
+      <text x="56" y="402" font-size="13" font-weight="600" fill="var(--fg)">공용 모델 저장소</text>
+      <text x="56" y="422" font-size="12" fill="var(--muted)">/srv/models · NVMe · 읽기 전용</text>
+      <rect x="315" y="378" width="250" height="62" rx="8" fill="var(--surface)" stroke="var(--line)"/>
+      <text x="331" y="402" font-size="13" font-weight="600" fill="var(--fg)">결과 저장소</text>
+      <text x="331" y="422" font-size="12" fill="var(--muted)">/srv/results · 전원 열람 · Samba</text>
+      <rect x="590" y="378" width="250" height="62" rx="8" fill="var(--surface)" stroke="var(--line)"/>
+      <text x="606" y="402" font-size="13" font-weight="600" fill="var(--fg)">Ollama (LLM · 임베딩)</text>
+      <text x="606" y="422" font-size="12" fill="var(--muted)">같은 대기열을 거쳐 GPU 사용</text>
+    </svg>
+  </div>
+</section>
+
+<section id="flow">
+  <h2><span class="n">4</span>작업 처리 순서</h2>
+  <p>요청 순서대로 처리합니다. 앞 작업의 메모리 해제가 확인되기 전에는 다음 작업을 시작하지 않습니다.</p>
+  <ol class="steps">
+    <li><div><b>A · B · C가 동시에 워크플로우를 편집합니다.</b><span>편집 공간에는 GPU가 없으므로 편집은 서로 영향을 주지 않습니다.</span></div></li>
+    <li><div><b>실행 요청을 접수 순서대로 DB에 저장합니다.</b><span>허브가 실행 버튼 요청을 가로채 검증하고, 환경 스냅샷을 찍고, 순번(seq)을 붙여 PostgreSQL에 넣습니다. 화면에는 바로 "대기 중"으로 표시됩니다.</span></div></li>
+    <li><div><b>스케줄러가 맨 앞 작업의 사용자 · 환경 · 모델을 확인합니다.</b><span>환경 버전 스냅샷이 남아 있는지, 필요한 모델 파일이 접수 때와 같은지 봅니다. 문제가 있으면 실행하지 않고 이유를 기록합니다.</span></div></li>
+    <li><div><b>해당 환경 버전으로 메인 GPU에서 실행합니다.</b><span>직전 작업과 환경 버전이 같으면 켜 둔 실행 공간을 다시 쓰고, 다르면 새로 띄웁니다. 진행률과 미리보기는 작업자 화면으로 그대로 전달됩니다.</span></div></li>
+    <li><div><b>결과와 사용 기록을 저장하고, 실행 종료와 메모리 해제를 확인합니다.</b><span>GPU 메모리가 기준치 이하로 돌아왔는지 메인에서 직접 측정합니다. 내려가지 않으면 단계적으로 강하게 정리합니다.</span></div></li>
+    <li><div><b>다음 작업을 실행합니다.</b></div></li>
+  </ol>
+</section>
+
+<section id="parts">
+  <h2><span class="n">5</span>구성 요소</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>구성 요소</th><th>프로그램</th><th>역할</th></tr></thead>
+    <tbody>
+      <tr><td>허브</td><td>Python FastAPI (직접 개발)</td><td>로그인, 모델 선택 화면, 환경별 화면 중계, 실행 접수와 스냅샷, 스케줄러, 진행 상황 전달, 메모리 해제 확인, 이력 페이지</td></tr>
+      <tr><td>권한 도우미</td><td>root 소유 스크립트 1개</td><td>스냅샷 생성·삭제, Samba 비밀번호 등 관리자 권한이 필요한 작업만 고정된 인자로 수행</td></tr>
+      <tr><td>DB</td><td>PostgreSQL 18</td><td>계정, 접속 로그, 작업 대기열, 환경 버전, 사용 모델, 결과, GPU 점유 상태</td></tr>
+      <tr><td>컨테이너</td><td>Docker Engine + NVIDIA Container Toolkit (CDI)</td><td>편집 공간과 실행 공간 실행. GPU는 허브가 명시적으로 요청한 실행 공간에만 연결</td></tr>
+      <tr><td>ComfyUI 이미지</td><td>자체 Dockerfile (CUDA 13 기반)</td><td>OS와 CUDA 공통 층. ComfyUI · 노드 · Python 패키지는 각 환경 폴더에 둠</td></tr>
+      <tr><td>LLM · 임베딩</td><td>Ollama</td><td>허브의 중계 포트(11434) 뒤에 두고 같은 대기열로 처리</td></tr>
+      <tr><td>채팅 화면 (선택)</td><td>Open WebUI</td><td>LLM 모델 선택과 채팅. 요청은 허브를 거침</td></tr>
+      <tr><td>공유 폴더</td><td>Samba</td><td>결과 폴더(전원 읽기·쓰기, 휴지통 포함), 모델 업로드 폴더</td></tr>
+      <tr><td>스냅샷 저장소</td><td>btrfs 전용 파티션</td><td>환경 버전을 순간 복사로 고정. 실제로 바뀐 부분만 공간을 차지</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout">
+    <p><b>Redis · Celery를 쓰지 않는 이유</b></p>
+    <ul>
+      <li>GPU가 1장이고 실행은 한 번에 한 건이므로, 여러 일꾼(worker)에 작업을 나눠 주는 Celery의 장점이 쓰이지 않습니다.</li>
+      <li>대기열과 작업 기록을 PostgreSQL 한 곳에 두면 "대기열에는 있는데 기록에는 없는" 불일치가 생기지 않습니다. 순서는 DB 순번(seq)과 잠금으로 보장하고, 새 작업 알림은 PostgreSQL의 LISTEN/NOTIFY로 받습니다.</li>
+      <li>Celery는 작업을 미리 가져가거나 재시도하면서 순서가 바뀔 수 있어, 엄격한 접수 순서 처리를 위해 별도 설정과 점검이 더 필요합니다.</li>
+      <li>추가를 검토할 시점: GPU나 서버가 여러 대로 늘거나, 허브를 여러 개 띄우거나, LLM 요청이 초당 수백 건 수준으로 늘 때입니다.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="env">
+  <h2><span class="n">6</span>환경 분리와 버전 고정</h2>
+  <div class="two">
+    <div class="callout">
+      <h3>환경 하나에 들어 있는 것</h3>
+      <ul>
+        <li>ComfyUI 본체 (git checkout)</li>
+        <li><code>custom_nodes/</code> 전체</li>
+        <li>Python 가상환경 (torch, 노드 의존성 등 모든 패키지)</li>
+        <li>OS · CUDA 이미지 버전 (digest)</li>
+      </ul>
+    </div>
+    <div class="callout">
+      <h3>환경 밖에 두는 것</h3>
+      <ul>
+        <li>모델 파일 (공용 저장소, 접수 때 경로·크기·해시를 기록)</li>
+        <li>업로드한 입력 이미지 (접수 때 작업 전용 사본으로 고정)</li>
+        <li>사용자 설정, 저장한 워크플로우, 캐시</li>
+      </ul>
+    </div>
+  </div>
+  <h3>실행 버튼을 누를 때</h3>
+  <ol>
+    <li>노드 설치나 업데이트가 진행 중이면 끝날 때까지 기다린 뒤 진행합니다. 설치하다 만 상태가 고정되는 것을 막기 위해서입니다.</li>
+    <li>직전 버전 이후 환경이 바뀌었는지 확인합니다. 바뀌지 않았으면 직전 버전을 그대로 씁니다.</li>
+    <li>바뀌었으면 읽기 전용 스냅샷을 새로 찍습니다. 몇 초 안에 끝나고, 바뀐 부분만 공간을 차지합니다.</li>
+    <li>작업에 그 버전 번호를 기록합니다. 이후 노드를 업데이트해도 이 작업은 이 버전으로 실행됩니다.</li>
+  </ol>
+  <h3>버전 관리</h3>
+  <ul>
+    <li>버전마다 ComfyUI 커밋, 노드 목록과 커밋, <code>pip freeze</code>를 기록합니다.</li>
+    <li>모델 선택 화면의 "내 환경"에서 버전 목록, 이전 버전으로 되돌리기, 프로젝트용 환경 복제를 제공합니다.</li>
+    <li>대기 중인 작업이 참조하지 않고 보관 표시도 없는 오래된 버전은 주기적으로 정리합니다.</li>
+  </ul>
+</section>
+
+<section id="gpu">
+  <h2><span class="n">7</span>GPU 한 건 규칙 보장 장치</h2>
+  <p>규칙이 한 곳에만 의존하지 않도록 여러 겹으로 막습니다.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>장치</th><th>막는 것</th></tr></thead>
+    <tbody>
+      <tr><td>편집 공간에 GPU 장치를 연결하지 않음 (<code>--cpu</code>, GPU 미할당, 시작 시 점검)</td><td>사용자가 설치한 노드가 큐 밖에서 GPU를 쓰는 것</td></tr>
+      <tr><td>GPU는 허브가 띄운 실행 공간에만 연결, 실행 공간은 항상 최대 1개</td><td>두 작업이 동시에 GPU를 쓰는 것</td></tr>
+      <tr><td>DB 단일 순번(seq)과 단일 스케줄러 잠금</td><td>순서 뒤바뀜, 스케줄러 중복 실행</td></tr>
+      <tr><td>DB 규칙: "실행 중" 상태 작업은 1건만 존재 가능 (고유 인덱스)</td><td>프로그램 오류로 두 건이 동시에 실행 상태가 되는 것</td></tr>
+      <tr><td>컨테이너 네트워크 분리 (편집 공간끼리, 편집 공간과 실행 공간 사이 접속 차단)</td><td>노드가 실행 공간에 몰래 작업을 보내 대기열과 기록을 건너뛰는 것</td></tr>
+      <tr><td>실행 공간은 허브가 발급한 작업 표가 있는 요청만 받음</td><td>네트워크 차단이 뚫렸을 때의 두 번째 방어</td></tr>
+      <tr><td>GPU 감시: 허용되지 않은 프로세스가 GPU 메모리를 쓰면 기록하고 차단</td><td>예상하지 못한 경로</td></tr>
+      <tr><td>사용자에게 서버 터미널 · Docker 권한을 주지 않음</td><td>사람이 직접 GPU 프로그램을 실행하는 것</td></tr>
+    </tbody>
+  </table></div>
+  <h3>장애 상황</h3>
+  <ul>
+    <li><b>실행 공간이 죽거나 멈춤:</b> 컨테이너 종료와 GPU 활동으로 판단해 작업을 실패로 기록하고, 메모리를 확인한 뒤 다음 작업으로 넘어갑니다.</li>
+    <li><b>허브 재시작:</b> 실행 중이던 작업은 DB와 실행 공간 상태를 보고 다시 이어받습니다. 대기 중 작업은 원래 순번을 유지합니다.</li>
+    <li><b>편집 공간이 Manager로 재시작:</b> 편집 화면만 잠시 끊깁니다. 대기 중인 작업은 이미 고정된 버전으로 실행되므로 영향이 없습니다.</li>
+    <li><b>긴 영상 작업:</b> 최대 실행 시간과 멈춤 감지 시간을 설정값으로 둡니다.</li>
+  </ul>
+</section>
+
+<section id="mem">
+  <h2><span class="n">8</span>메모리 해제 확인</h2>
+  <p>ComfyUI의 자체 보고를 믿지 않고, 메인에서 GPU 메모리를 직접 측정합니다(NVML).</p>
+  <div class="tbl"><table>
+    <thead><tr><th>단계</th><th>조치</th><th>통과 조건 (기본값)</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>모델 내리기 (<code>/free</code> unload_models), Ollama 모델 내리기</td><td>실행 공간 사용량 ≤ 기본 점유 + 512MB, 전체 ≤ 유휴 기준 + 기본 점유 + 768MB, Ollama 로드 모델 0개 (최대 30초 대기)</td></tr>
+      <tr><td class="num">2</td><td>캐시까지 비우기 (<code>/free</code> free_memory)</td><td>위와 같음 (30초)</td></tr>
+      <tr><td class="num">3</td><td>실행 공간 종료</td><td>GPU 프로세스 0개, 전체 ≤ 유휴 기준 + 256MB (60초)</td></tr>
+      <tr><td class="num">4</td><td>대기열 정지 (BLOCKED), 관리자 알림</td><td>관리자가 확인 후 재개. 대기 중 작업은 그대로 보존</td></tr>
+    </tbody>
+  </table></div>
+  <p class="small">작업마다 최대 VRAM, 작업 후 VRAM, 정리 방법, 정리 시간을 기록합니다. 기준값은 설정으로 바꿀 수 있습니다.</p>
+</section>
+
+<section id="llm">
+  <h2><span class="n">9</span>LLM · 임베딩</h2>
+  <ul>
+    <li>허브가 Ollama와 같은 주소 형식(11434 포트)의 중계를 열고, 실제 Ollama는 메인 내부에만 둡니다.</li>
+    <li>모델 목록 조회는 GPU를 쓰지 않으므로 바로 응답합니다. 생성 · 채팅 · 임베딩 요청은 ComfyUI 작업과 같은 대기열에 들어갑니다.</li>
+    <li><b>워크플로우 안에서 Ollama를 부르는 경우:</b> 지금 GPU를 쓰고 있는 실행 공간에서 온 호출은 대기열에 다시 넣지 않고 바로 처리합니다. 자기 차례를 자기가 기다리는 교착을 막기 위해서입니다. 이 호출은 부모 작업에 묶어 기록합니다.</li>
+    <li>작업이 끝날 때는 새 내부 호출을 먼저 막고, 진행 중인 내부 호출이 끝난 뒤에 메모리를 확인합니다.</li>
+    <li>사용자별 API 키를 발급합니다. 스크립트에서 호출해도 누가 썼는지 기록됩니다.</li>
+    <li>Ollama 설정: <code>OLLAMA_KEEP_ALIVE=0</code>, <code>OLLAMA_MAX_LOADED_MODELS=1</code>, <code>OLLAMA_NUM_PARALLEL=1</code></li>
+  </ul>
+</section>
+
+<section id="out">
+  <h2><span class="n">10</span>결과물 · 이력 · 공유 폴더</h2>
+  <pre>/srv/results/&lt;사용자&gt;/&lt;프로젝트&gt;/&lt;YYYY-MM-DD&gt;/&lt;파일명&gt;_00001_.png
+                                            &lt;job_id&gt;.json   (워크플로우, 사용 모델, 환경 버전, 시간)</pre>
+  <ul>
+    <li><b>실행 직후:</b> 자기 ComfyUI 화면의 노드에 결과가 바로 표시됩니다.</li>
+    <li><b>웹 작업 이력 (<code>http://main/history</code>):</b> 모든 사용자의 작업을 썸네일과 함께 보여 줍니다. 사용자 · 프로젝트 · 모델 · 날짜로 거르고, "내 ComfyUI에서 이 워크플로우 열기"와 "같은 환경 버전으로 다시 실행"을 제공합니다.</li>
+    <li><b>네트워크 폴더:</b> Windows에서 <code>\\main\results</code>를 드라이브로 연결합니다. 누구나 모든 결과물을 열고, 수정하고, 새 파일을 넣고, 폴더를 정리할 수 있습니다.</li>
+    <li><b>실수 대비 휴지통:</b> 네트워크 폴더에서 지운 파일은 바로 사라지지 않고 <code>\\main\results\.recycle\&lt;사용자&gt;\</code>에 30일간 보관됩니다. 같은 이름으로 덮어쓴 파일도 이전 판이 휴지통에 남습니다.</li>
+    <li><b>권한 통일:</b> 생성 결과와 사용자가 넣은 파일 모두 같은 그룹(<code>comfyusers</code>)의 읽기·쓰기 권한으로 맞춰, 누가 만든 파일이든 다른 사람이 고칠 수 있게 합니다.</li>
+    <li><b>이력과 파일이 달라질 때:</b> 웹 작업 이력은 생성 당시 기록(워크플로우, 모델, 원래 파일명)을 DB에 그대로 보존합니다. 파일이 지워지거나 옮겨지면 이력에 "파일 없음"으로 표시하고, 수정된 파일은 현재 파일을 보여 줍니다.</li>
+    <li>모델 추가는 <code>\\main\model-inbox</code>에 올리면 허브가 검사한 뒤 공용 저장소로 옮깁니다. 교체되거나 지운 모델은 14일간 보관합니다.</li>
+  </ul>
+</section>
+
+<section id="db">
+  <h2><span class="n">11</span>기록 DB (PostgreSQL)</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>테이블</th><th>내용</th></tr></thead>
+    <tbody>
+      <tr><td class="num">users</td><td>계정, 권한(user/admin), 비밀번호 해시</td></tr>
+      <tr><td class="num">sessions</td><td>로그인 세션, IP, 브라우저, 종료 사유</td></tr>
+      <tr><td class="num">access_log</td><td>로그인 성공·실패, 로그아웃, 모델 선택, 환경 열기, API 키 사용</td></tr>
+      <tr><td class="num">api_keys</td><td>사용자별 API 키 (해시 저장)</td></tr>
+      <tr><td class="num">envs</td><td>사용자·프로젝트 환경, 포트, 상태</td></tr>
+      <tr><td class="num">env_versions</td><td>환경 버전: 스냅샷 경로, ComfyUI 커밋, 노드 목록, pip freeze, 이미지 digest</td></tr>
+      <tr><td class="num">jobs</td><td>순번(seq), 종류(comfy/llm/embed), 사용자, 환경 버전, 워크플로우, 상태, 대기·실행·정리 시간, 최대 VRAM, 오류</td></tr>
+      <tr><td class="num">job_models</td><td>작업이 쓴 모델 파일 (경로, 크기, 해시)</td></tr>
+      <tr><td class="num">job_outputs</td><td>결과 파일 경로, 썸네일</td></tr>
+      <tr><td class="num">llm_calls</td><td>LLM·임베딩 호출: 모델, 토큰 수, 시간, 부모 작업</td></tr>
+      <tr><td class="num">gpu_lease · incidents</td><td>현재 GPU 점유 작업, GPU 감시·메모리 해제 실패 기록</td></tr>
+    </tbody>
+  </table></div>
+  <p class="small">Grafana나 Metabase를 읽기 전용 계정으로 연결해 사용자별·모델별 사용량을 볼 수 있습니다. DB는 매일 밤 백업합니다.</p>
+</section>
+
+<section id="ux">
+  <h2><span class="n">12</span>작업자 화면에서 보이는 것</h2>
+  <div class="two">
+    <div class="callout">
+      <h3>그대로인 것</h3>
+      <ul>
+        <li>ComfyUI 편집 화면, 노드 설치(Manager), 워크플로우 저장</li>
+        <li>실행 중 노드 표시, 진행률, 미리보기, 결과 표시</li>
+        <li>대기 중 작업 취소, 실행 중 작업 중단</li>
+      </ul>
+    </div>
+    <div class="callout">
+      <h3>추가되는 것</h3>
+      <ul>
+        <li>상단 표시: "GPU 사용 중: bob · 영상 · 3분 12초 | 내 순서: 4건 중 2번째 · 약 6분"</li>
+        <li>모델 선택 화면, 공유 작업 이력, 내 환경 버전 관리</li>
+      </ul>
+    </div>
+  </div>
+  <h3>달라지는 점</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>내용</th><th>영향</th></tr></thead>
+    <tbody>
+      <tr><td>직전 작업과 환경 버전이 다르면 실행 공간을 새로 띄움</td><td><span class="pill warn">10~40초 추가</span></td></tr>
+      <tr><td>작업마다 GPU 메모리를 비우므로 모델을 매번 다시 읽음</td><td><span class="pill warn">NVMe 필수</span> SDXL 2~4초, 영상 14B급 10~25초</td></tr>
+      <tr><td>"대기열 맨 앞에 넣기" 같은 우선순위 기능은 무시됨</td><td><span class="pill info">전원 공평한 순서</span></td></tr>
+      <tr><td>편집 화면에서 GPU로 즉시 계산하는 노드 기능 (클릭으로 마스크 따기 등)</td><td><span class="pill bad">사용 불가</span> 실행 버튼으로 돌리는 작업은 정상</td></tr>
+      <tr><td>CUDA가 있어야 불러와지는 일부 노드 팩</td><td><span class="pill warn">편집 화면 표시 보완 필요</span></td></tr>
+      <tr><td>실행 중 모델을 내려받는 노드</td><td><span class="pill info">허용 사이트만 접속, 기록</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="review">
+  <h2><span class="n">13</span>설계 검토 결과</h2>
+  <p>설계안 3개를 독립적으로 만든 뒤 실용성 심사, 기술 정확성 심사, 레드팀 점검을 거쳤습니다. 근거가 된 사실은 ComfyUI v0.42.5 소스 코드와 각 도구의 최신 문서로 확인했습니다.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>설계안</th><th>방식</th><th>실용성</th><th>기술</th><th>판정</th></tr></thead>
+    <tbody>
+      <tr><td>편집 · 실행 겸용</td><td>편집 공간이 GPU를 가진 채 순서가 오면 직접 실행</td><td class="num">5.8</td><td class="num">6.6</td><td><span class="pill bad">탈락</span></td></tr>
+      <tr><td>편집 · 실행 분리</td><td>GPU 없는 편집 공간 + 고정 버전 실행 공간 (ZFS)</td><td class="num">5.4</td><td class="num">8.0</td><td><span class="pill ok">보안 장치 채택</span></td></tr>
+      <tr><td>단순 운영안</td><td>같은 분리 구조를 허브 하나로 단순화 (btrfs)</td><td class="num">6.4</td><td class="num">6.4</td><td><span class="pill ok">기본 구조 채택</span></td></tr>
+    </tbody>
+  </table></div>
+  <p><b>겸용안 탈락 이유:</b> 편집 공간이 항상 GPU를 갖고 있어, 다른 사용자의 노드가 작업 도중 GPU 메모리를 잡아도 막을 수 없고 사후에 감지만 가능합니다.</p>
+  <h3>레드팀 지적을 반영한 보완</h3>
+  <ul>
+    <li>컨테이너 간 네트워크를 차단했습니다. 이 차단이 없으면 노드가 실행 공간에 직접 작업을 보내 대기열과 기록을 건너뛸 수 있었습니다.</li>
+    <li>노드 설치 중에는 스냅샷을 찍지 않고, 설치가 끝난 뒤 찍습니다.</li>
+    <li>환경 변경을 감지할 때 파일 삭제까지 잡도록 바꿨습니다. btrfs의 find-new 대신 세대 번호를 비교합니다.</li>
+    <li>입력 이미지도 접수 때 작업 전용 사본으로 고정합니다.</li>
+    <li>DB 고유 인덱스로 "실행 중 1건"을 이중으로 보장합니다.</li>
+    <li>워크플로우 내부 Ollama 호출이 끝나기 전에 메모리를 확인하지 않도록 순서를 정했습니다.</li>
+    <li>허브가 재시작돼도 실행 중 작업을 다시 이어받습니다.</li>
+    <li>결과 파일 권한을 그룹 읽기·쓰기로 통일해 공유 작업이 깨지지 않게 하고, 누구나 수정할 수 있는 대신 휴지통으로 실수를 되돌릴 수 있게 했습니다.</li>
+  </ul>
+</section>
+
+<section id="plan">
+  <h2><span class="n">14</span>구축 단계</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>단계</th><th>내용</th><th>기간 (추정)</th></tr></thead>
+    <tbody>
+      <tr><td class="num">0</td><td>메인 기본 설치: 드라이버 R580+, Docker, NVIDIA Container Toolkit, btrfs 파티션, NVMe 모델 저장소, PostgreSQL, Samba, 방화벽</td><td class="num">1~2일</td></tr>
+      <tr><td class="num">1</td><td>ComfyUI 이미지와 기본 환경 템플릿 제작, 편집/실행 공간 수동 검증, 시작 시간·모델 로딩·메모리 측정</td><td class="num">2~3일</td></tr>
+      <tr><td class="num">2</td><td>허브 1차: 로그인, 접속 로그, 모델 선택 화면 뼈대, 환경 생성·복제, 환경별 화면 중계</td><td class="num">1주</td></tr>
+      <tr><td class="num">3</td><td>허브 2차: 실행 접수와 스냅샷 고정, DB 대기열, 스케줄러, 진행 상황 전달, 메모리 해제 확인, 장애 복구</td><td class="num">1.5~2주</td></tr>
+      <tr><td class="num">4</td><td>LLM · 임베딩 중계, API 키, (선택) Open WebUI 연동</td><td class="num">3~5일</td></tr>
+      <tr><td class="num">5</td><td>결과 기록·썸네일, 공유 이력 페이지, 모델 추가 절차, 버전 정리, 관리자 화면, DB 백업</td><td class="num">1주</td></tr>
+      <tr><td class="num">6</td><td>검수: 3명 동시 실행 + LLM 요청 폭주 시 GPU 1건 유지·순서 확인, 환경 고정 확인, 장애 복구 확인</td><td class="num">3~5일</td></tr>
+    </tbody>
+  </table></div>
+  <p class="small">개발은 Windows에서 하고, 배포는 Ubuntu 메인에서 <code>docker compose</code>와 설치 스크립트로 합니다. 관리자 권한(<code>sudo</code>)이 필요한 명령은 메인에서 직접 실행하도록 따로 정리합니다.</p>
+</section>
+
+<section id="open">
+  <h2><span class="n">15</span>결정 필요 사항</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>질문</th><th>기본 제안</th></tr></thead>
+    <tbody>
+      <tr><td>메인의 RAM, CPU, 디스크 구성은? btrfs 전용 파티션과 NVMe 모델 저장소를 둘 수 있는가?</td><td>확인 필요</td></tr>
+      <tr><td>LLM 질문·답변도 이미지처럼 모두가 볼 수 있게 할까?</td><td>본인과 관리자만</td></tr>
+      <tr><td>사용자가 ComfyUI 본체까지 직접 업데이트하게 할까?</td><td>본체는 관리자가 템플릿으로 관리</td></tr>
+      <tr><td>공용 모델 추가는 누구나 바로 가능? 관리자 승인 후?</td><td>업로드는 누구나, 반영은 자동 검사 후</td></tr>
+      <tr><td>Manager의 pip · git URL 설치를 허용할까?</td><td>허용 (환경이 분리되어 있으므로)</td></tr>
+      <tr><td>긴 영상 작업의 최대 실행 시간은?</td><td>확인 필요</td></tr>
+      <tr><td>실행 공간의 인터넷 접속 (자동 다운로드, 유료 API 노드)</td><td>허용 사이트만, 접속 기록</td></tr>
+      <tr><td>프로젝트 환경을 여러 사람이 같이 쓸까?</td><td>확인 필요</td></tr>
+      <tr><td>사무실 내 HTTPS가 필요한가?</td><td>HTTP로 시작</td></tr>
+      <tr><td>Open WebUI를 채팅 화면으로 넣을까?</td><td>넣음</td></tr>
+    </tbody>
+  </table></div>
+  <h3>기준 버전 (2026-10-23 확인)</h3>
+  <p class="mono small">Ubuntu 24.04 · NVIDIA driver R580+ (open) · Docker 29.x · NVIDIA Container Toolkit 1.20.1 · CUDA 13.0 / torch cu130 · ComfyUI v0.42.5 · PostgreSQL 18</p>
+</section>
+
+<footer>
+  메인 GPU 서버 설계서 v1.1 · 2026-10-23 · v1.1: 결과 폴더를 누구나 수정·작업 가능하게 변경 (휴지통 추가). 시간 수치는 추정치로 메인 실측 후 갱신합니다. 소스: github.com/jisoo5849/main-GPU-server-Documents
+</footer>
+</main>
+</div>
+
+</html>

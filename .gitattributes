@@ -1,0 +1,12 @@
+# 메인(Ubuntu)에서 실행되는 파일은 모두 LF로 고정한다. CRLF가 섞이면 쉘 스크립트가 실행되지 않는다.
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.sql text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.conf text eol=lf
+*.html text eol=lf
+Dockerfile text eol=lf
+*.png binary
+*.jpg binary

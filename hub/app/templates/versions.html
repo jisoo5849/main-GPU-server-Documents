@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}{{ env.name }} 버전 · main GPU{% endblock %}
+{% block body %}
+<h1>{{ env.name }} 환경 버전</h1>
+<p class="muted">실행 버튼을 누를 때 환경이 바뀌었으면 새 버전이 자동으로 만들어집니다. 되돌리면 지금 상태도 먼저 새 버전으로 남깁니다.</p>
+<div class="tbl"><table>
+  <tr><th>버전</th><th>만든 시각</th><th>ComfyUI</th><th>커스텀 노드</th><th></th></tr>
+  {% for v in versions %}
+  <tr>
+    <td>v{{ v.vno }}{% if v.deleted_at %} <span class="pill warn">정리됨</span>{% endif %}</td>
+    <td class="small">{{ v.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+    <td class="small"><code>{{ (v.comfy_commit or '')[:10] }}</code></td>
+    <td class="small">{% for n in (v.nodes or []) %}{{ n.name }}{% if n.commit %} <span class="muted">{{ n.commit[:7] }}</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+    <td>{% if not v.deleted_at %}
+      <form method="post" action="/envs/{{ env.id }}/rollback" class="inline">
+        <input type="hidden" name="version_id" value="{{ v.id }}"><button class="ghost">이 버전으로 되돌리기</button>
+      </form>
+      <form method="post" action="/envs" class="inline">
+        <input type="hidden" name="source_version_id" value="{{ v.id }}">
+        <input name="name" placeholder="복제할 새 이름" required pattern="[a-z0-9][a-z0-9-]{0,31}"><button class="ghost">새 작업공간으로 복제</button>
+      </form>
+    {% endif %}</td>
+  </tr>
+  {% else %}<tr><td colspan="5" class="muted">아직 버전이 없습니다. 처음 실행할 때 만들어집니다.</td></tr>{% endfor %}
+</table></div>
+{% endblock %}

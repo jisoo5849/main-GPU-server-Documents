@@ -1,0 +1,91 @@
+# 메인 GPU 서버 상시 서비스.
+# 편집 공간과 GPU 실행 공간 컨테이너는 여기 없다. 허브가 필요할 때 직접 만들고 지운다.
+#   docker compose up -d --build
+name: mgs
+
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mgs
+      POSTGRES_USER: mgs
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ${MGS_PG}:/var/lib/postgresql
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mgs -d mgs"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  ollama:
+    image: ollama/ollama:${OLLAMA_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_MODELS: /models
+      # GPU 한 건 규칙: 호출이 끝나면 바로 VRAM을 비우고, 모델은 하나만, 요청은 하나씩
+      OLLAMA_KEEP_ALIVE: "0"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+    volumes:
+      - ${MGS_MODELS}/ollama:/models
+    # 실제 Ollama는 메인 내부에서만 접근. 외부 요청은 허브의 11434 중계를 거친다.
+    ports:
+      - "127.0.0.1:11435:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_INDEX:-0}"]
+              capabilities: [gpu]
+
+  hub:
+    build: ./hub
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # 허브는 관리자 전용 구성 요소다. 컨테이너 생성(docker.sock), btrfs 스냅샷, GPU 감시(NVML)를 하므로
+    # 메인 전체 권한을 가진다. 사용자에게는 메인 터미널·docker 권한을 주지 않는다.
+    network_mode: host
+    pid: host
+    privileged: true
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://mgs:${POSTGRES_PASSWORD}@127.0.0.1:5432/mgs
+      # NVML(메모리 측정)만 쓰고 CUDA 연산은 하지 않는다
+      NVIDIA_DRIVER_CAPABILITIES: utility
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 컨테이너를 만들 때 넘기는 경로가 메인 경로와 같아야 하므로 같은 경로로 연결한다
+      - ${MGS_ENVS}:${MGS_ENVS}
+      - ${MGS_MODELS}:${MGS_MODELS}
+      - ${MGS_RESULTS}:${MGS_RESULTS}
+      - ${MGS_RUNTIME}:${MGS_RUNTIME}:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_INDEX:-0}"]
+              capabilities: [gpu]
+
+  # 선택: LLM 채팅 화면. 실행하려면  docker compose --profile webui up -d
+  open-webui:
+    profiles: ["webui"]
+    image: ghcr.io/open-webui/open-webui:main
+    restart: unless-stopped
+    environment:
+      # 허브 중계를 거쳐야 GPU 대기열과 기록이 적용된다
+      OLLAMA_BASE_URL: http://host.docker.internal:${HUB_LLM_PORT:-11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${MGS_WEBUI_DATA:-/srv/open-webui}:/app/backend/data
+    ports:
+      - "8090:8080"

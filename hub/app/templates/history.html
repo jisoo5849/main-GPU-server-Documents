@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}작업 이력 · main GPU{% endblock %}
+{% block body %}
+<h1>작업 이력 (모든 사용자)</h1>
+<form class="inline" method="get" action="/history" style="margin-bottom:12px;">
+  <select name="user" id="f_user"><option value="">모든 사용자</option>
+    {% for u in users %}<option {% if q.user == u.username %}selected{% endif %}>{{ u.username }}</option>{% endfor %}</select>
+  <select name="kind" id="f_kind"><option value="">모든 종류</option>
+    {% for k in ['comfy','llm','embed'] %}<option {% if q.kind == k %}selected{% endif %}>{{ k }}</option>{% endfor %}</select>
+  <select name="outcome" id="f_outcome"><option value="">모든 결과</option>
+    {% for k in ['success','error','cancelled','timeout','rejected','lost'] %}<option {% if q.outcome == k %}selected{% endif %}>{{ k }}</option>{% endfor %}</select>
+  <input name="env" id="f_env" placeholder="작업공간" value="{{ q.env or '' }}">
+  <input name="model" id="f_model" placeholder="모델 이름" value="{{ q.model or '' }}">
+  <button>찾기</button>
+</form>
+<p class="muted small">결과 파일은 네트워크 폴더 <code>\\{{ host }}\results</code> 에서 누구나 열고 고칠 수 있습니다. 지워지거나 옮겨진 파일은 "파일 없음"으로 표시됩니다.</p>
+
+<div class="grid">
+{% for j in items %}
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+      <b>{{ j.username }} · {{ j.env_name or j.kind }}</b>
+      <span class="pill {% if j.outcome == 'success' %}ok{% elif j.outcome in ['cancelled','rejected'] %}warn{% else %}bad{% endif %}">{{ j.outcome }}</span>
+    </div>
+    <div class="muted small">#{{ j.seq }} · {{ j.submitted_at.strftime('%m-%d %H:%M') }}{% if j.vno %} · 환경 v{{ j.vno }}{% endif %}</div>
+    {% for o in j.outs[:4] %}
+      {% if not o.exists %}<div class="pill warn" style="margin:6px 0;">파일 없음: {{ o.rel }}</div>
+      {% elif o.ext in ['.png','.jpg','.jpeg','.webp','.gif'] %}<a href="/files/{{ o.rel }}" target="_blank"><img src="/files/{{ o.rel }}" alt="{{ o.rel }}" loading="lazy" style="width:100%;border-radius:6px;margin-top:6px;"></a>
+      {% elif o.ext in ['.mp4','.webm','.mov'] %}<video src="/files/{{ o.rel }}" controls preload="metadata" style="width:100%;margin-top:6px;"></video>
+      {% else %}<div class="small"><a href="/files/{{ o.rel }}">{{ o.rel }}</a></div>{% endif %}
+    {% endfor %}
+    {% if j.outs|length > 4 %}<div class="muted small">외 {{ j.outs|length - 4 }}개</div>{% endif %}
+    {% if j.models %}<div class="small" style="margin-top:6px;">모델: {{ j.models|join(', ') }}</div>{% endif %}
+    {% if j.model %}<div class="small">모델: {{ j.model }}</div>{% endif %}
+    <div class="muted small">대기 {{ ((j.wait_ms or 0)/1000)|round(1) }}초 · 준비 {{ ((j.cold_start_ms or 0)/1000)|round(1) }}초 · 실행 {{ ((j.run_ms or 0)/1000)|round(1) }}초 · 최대 VRAM {{ j.vram_peak_mb or '-' }}MB</div>
+    {% if j.error %}<div class="small" style="color:var(--bad);">{{ j.error.message or j.error.exception_message or '' }}</div>{% endif %}
+  </div>
+{% else %}<p class="muted">조건에 맞는 작업이 없습니다.</p>{% endfor %}
+</div>
+<p><a href="?{% for k, v in q.items() if k != 'page' %}{{ k }}={{ v|urlencode }}&{% endfor %}page={{ page + 1 }}">다음 페이지</a></p>
+{% endblock %}

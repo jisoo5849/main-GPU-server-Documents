@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}main GPU{% endblock %}</title>
+<style>
+:root { --bg:#f5f6f8; --surface:#fff; --fg:#1b2230; --muted:#5a6475; --line:#dde1e8; --accent:#1f5fae;
+        --accent-soft:#e6eef9; --ok:#1e7a4c; --ok-soft:#e3f3ea; --warn:#9a5a00; --warn-soft:#fbf0dc;
+        --bad:#b23a3a; --bad-soft:#f8e4e4; }
+@media (prefers-color-scheme: dark) { :root { --bg:#12161d; --surface:#1a2029; --fg:#e4e8ef; --muted:#9aa4b4;
+  --line:#2c3442; --accent:#7fb0f0; --accent-soft:#1d2b40; --ok:#6fcf98; --ok-soft:#173025; --warn:#e6b45c;
+  --warn-soft:#33281a; --bad:#ef8a8a; --bad-soft:#3a1f22; color-scheme: dark; } }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font: 14.5px/1.6 "Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif; }
+header.top { background:var(--surface); border-bottom:1px solid var(--line); }
+header.top .in { max-width:1180px; margin:0 auto; padding:10px 16px; display:flex; gap:18px; align-items:center; flex-wrap:wrap; }
+header.top b { font-size:15px; }
+header.top nav { display:flex; gap:14px; flex-wrap:wrap; }
+header.top a { color:var(--muted); text-decoration:none; }
+header.top a:hover { color:var(--accent); }
+header.top .me { margin-left:auto; display:flex; gap:10px; align-items:center; color:var(--muted); }
+main { max-width:1180px; margin:0 auto; padding:20px 16px 60px; }
+h1 { font-size:20px; margin:0 0 14px; }
+h2 { font-size:16px; margin:24px 0 10px; }
+.card { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
+.grid { display:grid; gap:12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+table { width:100%; border-collapse:collapse; background:var(--surface); font-size:13.5px; }
+th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--muted); font-weight:600; font-size:12.5px; }
+.tbl { overflow-x:auto; border:1px solid var(--line); border-radius:8px; }
+.pill { display:inline-block; font-size:12px; font-weight:600; padding:1px 8px; border-radius:999px; }
+.ok { background:var(--ok-soft); color:var(--ok); } .warn { background:var(--warn-soft); color:var(--warn); }
+.bad { background:var(--bad-soft); color:var(--bad); } .info { background:var(--accent-soft); color:var(--accent); }
+.muted { color:var(--muted); } .small { font-size:12.5px; }
+button, .btn { font:inherit; border:1px solid var(--accent); background:var(--accent); color:#fff; border-radius:6px;
+  padding:5px 12px; cursor:pointer; text-decoration:none; display:inline-block; }
+button.ghost, .btn.ghost { background:transparent; color:var(--accent); }
+input, select { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; background:var(--surface); color:var(--fg); }
+form.inline { display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap; margin:0; }
+.flash { background:var(--accent-soft); color:var(--fg); border:1px solid var(--accent); border-radius:8px; padding:10px 14px; margin-bottom:16px; }
+.banner { background:var(--bad-soft); color:var(--bad); border-radius:8px; padding:10px 14px; margin-bottom:16px; font-weight:600; }
+code { background:var(--accent-soft); padding:1px 5px; border-radius:4px; font-size:.9em; word-break:break-all; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+</style>
+</head>
+<body>
+<header class="top"><div class="in">
+  <b>main GPU</b>
+  {% if user %}
+  <nav>
+    <a href="/">모델 선택</a>
+    <a href="/history">작업 이력</a>
+    <a href="/models">모델 추가</a>
+    {% if user.role == 'admin' %}<a href="/admin">관리자</a>{% endif %}
+  </nav>
+  <div class="me">{{ user.display_name or user.username }}
+    <form method="post" action="/logout" class="inline"><button class="ghost">로그아웃</button></form>
+  </div>
+  {% endif %}
+</div></header>
+<main>
+{% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+{% block body %}{% endblock %}
+</main>
+</body>
+</html>

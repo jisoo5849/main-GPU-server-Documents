@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}모델 추가 · main GPU{% endblock %}
+{% block body %}
+<h1>모델 추가</h1>
+<p>Windows 탐색기에서 <code>\\{{ host }}\model-inbox</code> 에 모델 파일을 넣은 뒤, 아래에서 종류를 골라 공용 저장소로 옮깁니다.
+같은 이름의 모델이 있으면 기존 파일은 14일간 보관함(.trash)으로 옮겨집니다.</p>
+<div class="tbl"><table>
+  <tr><th>파일</th><th>크기</th><th>옮길 곳</th></tr>
+  {% for f in pending %}
+  <tr><td>{{ f.name }}</td><td>{{ f.size_gb }}GB</td>
+    <td><form method="post" action="/models" class="inline">
+      <input type="hidden" name="name" value="{{ f.name }}">
+      <select name="folder">{% for d in folders %}<option>{{ d }}</option>{% endfor %}</select>
+      <button>옮기기</button></form></td></tr>
+  {% else %}<tr><td colspan="3" class="muted">업로드 폴더가 비어 있습니다.</td></tr>{% endfor %}
+</table></div>
+<h2>공용 저장소의 생성 모델</h2>
+<div class="grid">
+  <div class="card"><b>이미지</b><ul class="small">{% for m in catalog.image %}<li>{{ m.name }} <span class="muted">{{ m.folder }}</span></li>{% endfor %}</ul></div>
+  <div class="card"><b>영상</b><ul class="small">{% for m in catalog.video %}<li>{{ m.name }} <span class="muted">{{ m.folder }}</span></li>{% endfor %}</ul></div>
+</div>
+{% endblock %}

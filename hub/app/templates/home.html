@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}모델 선택 · main GPU{% endblock %}
+{% block body %}
+{% if blocked %}<div class="banner">GPU 메모리가 해제되지 않아 대기열이 멈췄습니다. 관리자가 확인 중입니다. 접수는 계속 받습니다.</div>{% endif %}
+{% if paused %}<div class="banner">관리자가 대기열을 일시 정지했습니다. 접수는 계속 받습니다.</div>{% endif %}
+{% if new_key %}<div class="flash">새 API 키입니다. 지금만 보이니 복사해 두세요: <code>{{ new_key }}</code></div>{% endif %}
+
+<h1>모델 선택</h1>
+<div class="card" style="margin-bottom:12px;">
+  <form class="inline" method="post" action="/select" id="pick">
+    <label>작업공간
+      <select name="env_id" id="env_id">
+        {% for e in envs %}<option value="{{ e.id }}">{{ e.name }} (포트 {{ e.port }})</option>{% endfor %}
+      </select>
+    </label>
+    <span class="muted small">이미지·영상 모델을 고르면 이 작업공간의 ComfyUI가 열립니다.</span>
+  </form>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2 style="margin-top:0">이미지 생성</h2>
+    {% for m in catalog.image %}
+      <form method="post" action="/select" class="inline" style="margin:2px 0;">
+        <input type="hidden" name="kind" value="image"><input type="hidden" name="model" value="{{ m.name }}">
+        <input type="hidden" name="env_id" value="{{ envs[0].id if envs else '' }}" class="envsync">
+        <button class="ghost">{{ m.name }}</button> <span class="muted small">{{ m.size_gb }}GB</span>
+      </form>
+    {% else %}<p class="muted">공용 저장소에 이미지 모델이 없습니다.</p>{% endfor %}
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">영상 생성</h2>
+    {% for m in catalog.video %}
+      <form method="post" action="/select" class="inline" style="margin:2px 0;">
+        <input type="hidden" name="kind" value="video"><input type="hidden" name="model" value="{{ m.name }}">
+        <input type="hidden" name="env_id" value="{{ envs[0].id if envs else '' }}" class="envsync">
+        <button class="ghost">{{ m.name }}</button> <span class="muted small">{{ m.size_gb }}GB</span>
+      </form>
+    {% else %}<p class="muted">공용 저장소에 영상 모델이 없습니다.</p>{% endfor %}
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">LLM</h2>
+    {% for m in llm %}
+      <form method="post" action="/select" class="inline" style="margin:2px 0;">
+        <input type="hidden" name="kind" value="llm"><input type="hidden" name="model" value="{{ m.name }}">
+        <button class="ghost">{{ m.name }}</button> <span class="muted small">{{ m.params }}</span>
+      </form>
+    {% else %}<p class="muted">Ollama 모델이 없습니다.</p>{% endfor %}
+    <p class="muted small">API: <code>{{ llm_url }}</code> (Ollama·OpenAI 형식, API 키 필요)</p>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">임베딩</h2>
+    {% for m in embed %}
+      <form method="post" action="/select" class="inline" style="margin:2px 0;">
+        <input type="hidden" name="kind" value="embed"><input type="hidden" name="model" value="{{ m.name }}">
+        <button class="ghost">{{ m.name }}</button>
+      </form>
+    {% else %}<p class="muted">임베딩 모델이 없습니다.</p>{% endfor %}
+    <p class="muted small">API: <code>{{ llm_url }}/api/embed</code></p>
+  </div>
+</div>
+
+<h2>GPU 대기열 (메인 전체)</h2>
+<div class="tbl"><table>
+  <tr><th>순번</th><th>사용자</th><th>종류</th><th>작업공간 · 모델</th><th>상태</th><th>접수</th></tr>
+  {% for j in queue %}
+  <tr>
+    <td>{{ j.seq }}</td><td>{{ j.username }}</td><td>{{ j.kind }}</td>
+    <td>{{ j.env_name or '' }} {{ j.model or '' }}</td>
+    <td>{% if j.state == 'queued' %}<span class="pill info">대기</span>{% else %}<span class="pill ok">GPU 실행 중</span>{% endif %}</td>
+    <td class="small muted">{{ j.submitted_at.strftime('%H:%M:%S') }}</td>
+  </tr>
+  {% else %}<tr><td colspan="6" class="muted">대기 중인 작업이 없습니다.</td></tr>{% endfor %}
+</table></div>
+
+<h2>내 작업공간</h2>
+<div class="tbl"><table>
+  <tr><th>이름</th><th>ComfyUI 주소</th><th></th></tr>
+  {% for e in envs %}
+  <tr>
+    <td>{{ e.name }}</td>
+    <td><a href="http://{{ host }}:{{ e.port }}/" target="_blank" rel="noopener">http://{{ host }}:{{ e.port }}/</a></td>
+    <td>
+      <a class="btn ghost" href="/envs/{{ e.id }}/versions">버전</a>
+      <form method="post" action="/envs/{{ e.id }}/restart" class="inline"><button class="ghost">편집 공간 다시 시작</button></form>
+    </td>
+  </tr>
+  {% endfor %}
+</table></div>
+<form method="post" action="/envs" class="inline" style="margin-top:10px;">
+  <label>새 프로젝트 작업공간 <input name="name" id="new_env" placeholder="영문 소문자 예: ad-campaign" required pattern="[a-z0-9][a-z0-9-]{0,31}"></label>
+  <button>만들기</button>
+</form>
+
+<h2>API 키</h2>
+<form method="post" action="/keys" class="inline">
+  <input name="label" id="key_label" placeholder="용도 (예: 영상 파이프라인)">
+  <button class="ghost">새 키 만들기</button>
+</form>
+
+<script>
+  const sel = document.getElementById('env_id');
+  function sync(){ document.querySelectorAll('.envsync').forEach(i => i.value = sel ? sel.value : ''); }
+  if (sel) { sel.addEventListener('change', sync); sync(); }
+</script>
+{% endblock %}

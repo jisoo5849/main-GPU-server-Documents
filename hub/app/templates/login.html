@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}로그인 · main GPU{% endblock %}
+{% block body %}
+<div class="card" style="max-width:360px;margin:60px auto;">
+  <h1>메인 GPU 서버 로그인</h1>
+  {% if error %}<p class="pill bad">{{ error }}</p>{% endif %}
+  <form method="post" action="/login" style="display:grid;gap:10px;">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label>아이디<br><input name="username" id="username" autocomplete="username" required style="width:100%"></label>
+    <label>비밀번호<br><input name="password" id="password" type="password" autocomplete="current-password" required style="width:100%"></label>
+    <button>로그인</button>
+  </form>
+  <p class="muted small">계정은 관리자가 만듭니다. Samba 네트워크 폴더와 같은 비밀번호입니다.</p>
+</div>
+{% endblock %}
