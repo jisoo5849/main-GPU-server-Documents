@@ -34,7 +34,7 @@ fi
 say "NVIDIA Container Toolkit"
 if ! command -v nvidia-ctk >/dev/null; then
   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-    | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
   curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
     | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
     > /etc/apt/sources.list.d/nvidia-container-toolkit.list
@@ -44,6 +44,8 @@ fi
 # 기본 런타임은 runc 그대로 둔다(--set-as-default 금지). GPU는 허브가 명시적으로 요청한 컨테이너에만 연결된다.
 nvidia-ctk runtime configure --runtime=docker
 systemctl enable --now nvidia-cdi-refresh.service 2>/dev/null || true
+# CDI 명세가 없으면 직접 만든다 (툴킷 버전에 따라 자동 생성 서비스가 없을 수 있음)
+[[ -s /var/run/cdi/nvidia.yaml || -s /etc/cdi/nvidia.yaml ]] || nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml || true
 systemctl restart docker
 
 say "GPU 지속 모드 (메모리 측정 안정화)"

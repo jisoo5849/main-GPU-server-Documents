@@ -178,11 +178,36 @@ async def queue_view(env_id: int) -> dict:
 _OUTCOME_STATUS = {"success": "completed", "cancelled": "cancelled"}
 
 
+def _execution_error(row) -> dict:
+    """화면이 검사하는 execution_error 형식으로 맞춘다 (필드가 빠지면 대기열 패널 전체가 비어 보인다)."""
+    err = row["error"] or {}
+    if "exception_message" in err:
+        return err
+    message = err.get("message")
+    if not message and isinstance(err.get("error"), dict):
+        message = err["error"].get("message")
+    return {
+        "prompt_id": str(row["id"]), "node_id": "", "node_type": "", "executed": [],
+        "exception_message": str(message or err)[:2000], "exception_type": "mgs", "traceback": [],
+        "timestamp": _ms(row["exec_ended_at"] or row["finished_at"] or row["submitted_at"]),
+    }
+
+
+def _workflow_id(row):
+    extra = row["extra_data"] if "extra_data" in row.keys() else None
+    return (((extra or {}).get("extra_pnginfo") or {}).get("workflow") or {}).get("id")
+
+
 def _job_summary(row) -> dict:
     if row["comfy_job"]:
         j = dict(row["comfy_job"])
         j.pop("outputs", None)
         j.pop("workflow", None)
+        # 실행 공간은 작업마다 새로 뜨므로 그 안의 순번·시각은 의미가 없다. 허브 기준으로 바꾼다.
+        j["priority"] = row["seq"]
+        j["create_time"] = _ms(row["submitted_at"])
+        if j.get("status") == "failed" and row["error"]:
+            j["execution_error"] = _execution_error(row)
         return j
     state = row["state"]
     if state == "queued":
@@ -199,19 +224,39 @@ def _job_summary(row) -> dict:
         "outputs_count": 0,
         "previewable_outputs_count": 0,
     }
+    wid = _workflow_id(row)
+    if wid:
+        out["workflow_id"] = wid
     if row["exec_started_at"]:
         out["execution_start_time"] = _ms(row["exec_started_at"])
     if row["exec_ended_at"]:
         out["execution_end_time"] = _ms(row["exec_ended_at"])
-    if row["error"] and status == "failed":
-        out["execution_error"] = row["error"]
+    if status == "failed":
+        out["execution_error"] = _execution_error(row)
     return out
+
+
+class BadQuery(ValueError):
+    pass
+
+
+def _int_param(query, name, default=None):
+    v = query.get(name)
+    if v in (None, ""):
+        return default
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        raise BadQuery(f"{name} must be an integer") from None
+
+
+_JOB_COLS = ("id, seq, state, outcome, submitted_at, exec_started_at, exec_ended_at, finished_at, error, comfy_job, "
+             "extra_data")
 
 
 async def jobs_list(env_id: int, query) -> dict:
     rows = await db.fetch(
-        "SELECT id, seq, state, outcome, submitted_at, exec_started_at, exec_ended_at, error, comfy_job "
-        "FROM jobs WHERE env_id=$1 AND kind='comfy' ORDER BY seq DESC LIMIT 500", env_id,
+        f"SELECT {_JOB_COLS} FROM jobs WHERE env_id=$1 AND kind='comfy' ORDER BY seq DESC LIMIT 500", env_id,
     )
     jobs = [_job_summary(r) for r in rows]
     status = query.get("status")
@@ -220,23 +265,25 @@ async def jobs_list(env_id: int, query) -> dict:
         jobs = [j for j in jobs if j.get("status") in wanted]
     if query.get("sort_order", "desc").lower() == "asc":
         jobs.reverse()
-    offset = max(int(query.get("offset", 0) or 0), 0)
-    limit = query.get("limit")
+    offset = max(_int_param(query, "offset", 0), 0)
+    limit = _int_param(query, "limit")
     total = len(jobs)
-    page = jobs[offset: offset + int(limit)] if limit else jobs[offset:]
-    return {"jobs": page, "pagination": {"offset": offset, "limit": int(limit) if limit else None,
+    page = jobs[offset: offset + limit] if limit else jobs[offset:]
+    return {"jobs": page, "pagination": {"offset": offset, "limit": limit if limit else total,
                                          "total": total, "has_more": offset + len(page) < total}}
 
 
 async def job_detail(env_id: int, job_id: str) -> dict | None:
     row = await db.fetchrow(
-        "SELECT id, seq, state, outcome, submitted_at, exec_started_at, exec_ended_at, error, comfy_job, workflow "
-        "FROM jobs WHERE env_id=$1 AND id=$2", env_id, _uuid(job_id),
+        f"SELECT {_JOB_COLS}, workflow FROM jobs WHERE env_id=$1 AND id=$2", env_id, _uuid(job_id),
     )
     if row is None:
         return None
     if row["comfy_job"]:
-        return row["comfy_job"]
+        d = dict(row["comfy_job"])
+        d["priority"] = row["seq"]
+        d["create_time"] = _ms(row["submitted_at"])
+        return d
     d = _job_summary(row)
     if row["workflow"]:
         d["workflow"] = {"extra_data": {"extra_pnginfo": {"workflow": row["workflow"]}}}
@@ -278,6 +325,11 @@ async def cancel_queued(env_id: int | None, job_ids: list[str] | None, user_id: 
                 "UPDATE jobs SET state='finished', outcome='cancelled', finished_at=now() "
                 "WHERE id = ANY($1::uuid[]) AND state='queued'", ids)
     n = int(res.split()[-1])
+    if job_ids:
+        # 차례를 기다리던 LLM 요청이 있으면 깨워서 돌려보낸다
+        from .scheduler import scheduler
+        for jid in job_ids:
+            scheduler.release_waiter(str(jid), "작업이 취소되었습니다.")
     if n:
         await notify_queue_changed()
     return n

@@ -15,7 +15,7 @@ testparm -s >/dev/null
 say "휴지통 30일 자동 정리"
 cat > /etc/cron.daily/mgs-recycle <<EOF
 #!/bin/sh
-find "${MGS_RESULTS}/.recycle" -type f -atime +30 -delete 2>/dev/null
+find "${MGS_RESULTS}/.recycle" -type f -mtime +30 -delete 2>/dev/null
 find "${MGS_RESULTS}/.recycle" -mindepth 1 -type d -empty -delete 2>/dev/null
 exit 0
 EOF

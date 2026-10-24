@@ -194,8 +194,9 @@ async def process_cmdlines(name: str) -> list[str]:
     c = await get(name)
     if c is None or c.status != "running":
         return []
-    top = await asyncio.to_thread(c.top, ps_args="-eo args")
-    return [" ".join(p) for p in top.get("Processes", [])]
+    # Docker 의 top 은 PID 열이 있어야 한다. 마지막 열(args)에 나머지 필드가 합쳐져 온다.
+    top = await asyncio.to_thread(c.top, ps_args="-o pid,args")
+    return [p[-1] for p in top.get("Processes", []) if p]
 
 
 async def container_id(name: str) -> str | None:

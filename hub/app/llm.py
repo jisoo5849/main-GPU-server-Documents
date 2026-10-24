@@ -31,9 +31,17 @@ QUEUED = {
 }
 DIRECT = {"/api/tags", "/api/version", "/api/show", "/api/ps", "/v1/models"}
 ADMIN_ONLY = {"/api/pull", "/api/push", "/api/create", "/api/delete", "/api/copy"}
-HOP = {"host", "content-length", "connection", "transfer-encoding", "keep-alive", "authorization", "cookie"}
+HOP = {"host", "content-length", "connection", "transfer-encoding", "keep-alive", "authorization", "cookie",
+       "accept-encoding"}
 
 _client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=10))
+_bg: set = set()
+
+
+def _keep(task):
+    """끝날 때까지 참조를 잡아 두어 가비지 컬렉션으로 사라지지 않게 한다."""
+    _bg.add(task)
+    task.add_done_callback(_bg.discard)
 
 
 def _in(subnet: str, ip: str) -> bool:
@@ -119,6 +127,12 @@ async def _forward(request: Request, path: str, body: bytes, on_done):
         await on_done(502, b"", int((time.monotonic() - t0) * 1000))
         return JSONResponse({"error": f"Ollama 연결 실패: {e}"}, status_code=502)
 
+    async def finish(tail):
+        try:
+            await resp.aclose()
+        finally:
+            await on_done(resp.status_code, tail, int((time.monotonic() - t0) * 1000))
+
     async def stream():
         tail = b""
         try:
@@ -126,8 +140,8 @@ async def _forward(request: Request, path: str, body: bytes, on_done):
                 tail = (tail + chunk)[-8192:]
                 yield chunk
         finally:
-            await resp.aclose()
-            await on_done(resp.status_code, tail, int((time.monotonic() - t0) * 1000))
+            # 요청한 쪽이 중간에 끊으면 이 생성기는 취소된다. 마무리(기록, 대기열 해제)는 취소되지 않는 별도 작업으로 돌린다.
+            _keep(asyncio.get_running_loop().create_task(finish(tail)))
 
     headers = {k: v for k, v in resp.headers.items() if k.lower() not in HOP | {"content-encoding"}}
     return StreamingResponse(stream(), status_code=resp.status_code, headers=headers)
@@ -158,8 +172,12 @@ async def handle(request: Request):
         scheduler.nested_inflight += 1
         model = _model_of(body)
         parent = lease["id"]
+        once = []
 
         async def nested_done(status, tail, ms):
+            if once:
+                return
+            once.append(True)
             scheduler.nested_inflight -= 1
             await _log_call(None, parent, lease["user_id"], path, model, True, status, tail, ms)
 
@@ -204,8 +222,14 @@ async def handle(request: Request):
                 await jobs.cancel_queued(None, [job_id])
                 scheduler.llm_waiters.pop(job_id, None)
                 return Response(status_code=499)
+    # 차례가 오기 전에 관리자가 취소했거나 사전 확인에서 거부된 경우
+    if waiter.cancelled:
+        scheduler.llm_waiters.pop(job_id, None)
+        return JSONResponse({"error": waiter.result.get("message", "요청이 취소되었습니다.")}, status_code=409)
 
     async def queued_done(status, tail, ms):
+        if waiter.done.is_set():
+            return
         waiter.result = {"status": status}
         await _log_call(uuid.UUID(job_id), None, user["id"], path, model, False, status, tail, ms)
         waiter.done.set()

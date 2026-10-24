@@ -11,7 +11,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-from . import db, envs, jobs, models_index, security
+from . import db, envs, hostops, jobs, models_index, security
 from .config import settings
 from .scheduler import scheduler
 
@@ -143,7 +143,11 @@ async def select(request: Request):
     env_id = form.get("env_id")
     await db.log_access(user["id"], _ip(request), "portal_select", {"kind": kind, "model": model, "env_id": env_id})
     if kind in ("image", "video"):
-        env = await db.fetchrow("SELECT * FROM envs WHERE id=$1 AND owner_id=$2", int(env_id or 0), user["id"])
+        try:
+            env_id = int(env_id)
+        except (TypeError, ValueError):
+            return back("/", "작업공간을 먼저 선택하세요.")
+        env = await db.fetchrow("SELECT * FROM envs WHERE id=$1 AND owner_id=$2", env_id, user["id"])
         if env is None:
             return back("/", "작업공간을 먼저 선택하세요.")
         await db.log_access(user["id"], _ip(request), "env_open", {"env": env["slug"]})
@@ -183,7 +187,7 @@ async def env_create(request: Request):
     src = form.get("source_version_id")
     try:
         env = await envs.create_env(user["id"], name, int(src) if src else None)
-    except (ValueError, RuntimeError) as e:
+    except (ValueError, RuntimeError, hostops.HostOpError) as e:
         return back("/", str(e))
     await db.log_access(user["id"], _ip(request), "env_create", {"env": env["slug"]})
     return back("/", f"작업공간 '{name}' 을 만들었습니다 (포트 {env['port']}).")
@@ -222,11 +226,12 @@ async def env_rollback(request: Request):
         return back("/", "작업공간이 없습니다.")
     form = await request.form()
     try:
-        await envs.rollback(env, int(form.get("version_id")))
-    except ValueError as e:
-        return back(f"/envs/{env['id']}/versions", str(e))
+        version_id = int(form.get("version_id"))
+        await envs.rollback(env, version_id)
+    except (TypeError, ValueError) as e:
+        return back(f"/envs/{env['id']}/versions", str(e) or "버전을 선택하세요.")
     await db.log_access(request.state.user["id"], _ip(request), "env_rollback",
-                        {"env": env["slug"], "version_id": int(form.get("version_id"))})
+                        {"env": env["slug"], "version_id": version_id})
     return back(f"/envs/{env['id']}/versions", "선택한 버전으로 되돌렸습니다.")
 
 

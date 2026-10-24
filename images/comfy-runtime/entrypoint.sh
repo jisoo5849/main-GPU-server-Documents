@@ -52,7 +52,15 @@ COMMON=(
 
 # ComfyUI는 127.0.0.1 에서만 듣는다(ComfyUI-Manager가 '로컬'로 인식해 노드 설치를 허용하는 조건).
 # 허브는 8189 포트로 들어와 socat 을 거쳐 연결된다.
-socat TCP-LISTEN:8189,fork,reuseaddr TCP:127.0.0.1:8188 &
+start_socat() {
+  socat "$@" &
+  local pid=$!
+  sleep 0.3
+  kill -0 "$pid" 2>/dev/null || { echo "socat 시작 실패: $*" >&2; exit 1; }
+}
+start_socat TCP-LISTEN:8189,fork,reuseaddr TCP:127.0.0.1:8188
+# 계정 이름 없이 uid 로만 실행되므로, git 이 노드 폴더를 '소유자가 다른 저장소' 로 거부하지 않게 한다
+git config --global --add safe.directory '*' 2>/dev/null || true
 
 case "$MODE" in
   editor)
@@ -63,7 +71,7 @@ case "$MODE" in
     ;;
   worker)
     # 워크플로우 안의 Ollama 노드가 기본 주소(127.0.0.1:11434)로 호출해도 허브 LLM 중계로 가게 한다
-    socat TCP-LISTEN:11434,bind=127.0.0.1,fork,reuseaddr TCP:host.docker.internal:11434 &
+    start_socat TCP-LISTEN:11434,bind=127.0.0.1,fork,reuseaddr TCP:host.docker.internal:11434
     mkdir -p /tmp/wuser
     exec "$PY" /env/ComfyUI/main.py "${COMMON[@]}" \
       --user-directory /tmp/wuser \

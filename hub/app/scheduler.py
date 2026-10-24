@@ -51,6 +51,7 @@ class Scheduler:
         self.peak = 0
         self._lock_conn = None
         self._incident_pids: dict[int, float] = {}
+        self._bg: set = set()   # 끝날 때까지 참조를 잡아 두는 보조 작업들
         self.http = httpx.AsyncClient(timeout=httpx.Timeout(60, connect=5))
 
     # ── 시작·복구 ─────────────────────────────────────────────
@@ -63,9 +64,23 @@ class Scheduler:
         await self._lock_conn.add_listener("mgs_jobs", lambda *a: self.wake.set())
         await self.recover()
         await self._measure_b0()
-        asyncio.create_task(self._loop(), name="scheduler")
-        asyncio.create_task(self._watchdog(), name="gpu-watchdog")
-        asyncio.create_task(self._housekeeping(), name="housekeeping")
+        self.spawn(self._loop(), name="scheduler")
+        self.spawn(self._watchdog(), name="gpu-watchdog")
+        self.spawn(self._housekeeping(), name="housekeeping")
+
+    def spawn(self, coro, name=None):
+        t = asyncio.create_task(coro, name=name)
+        self._bg.add(t)
+        t.add_done_callback(self._bg.discard)
+        return t
+
+    def release_waiter(self, job_id: str, message: str):
+        """차례가 오기 전에 끝난 LLM 작업: 기다리는 요청을 깨워서 409 로 돌려보낸다."""
+        w = self.llm_waiters.pop(str(job_id), None)
+        if w is not None:
+            w.cancelled = True
+            w.result = {"status": 409, "message": message}
+            w.go.set()
 
     async def _measure_b0(self):
         """유휴 기준값: 실행 공간이 없고 Ollama 에 올라간 모델도 없을 때의 GPU 사용량."""
@@ -97,7 +112,7 @@ class Scheduler:
                         "version_id": job["env_version_id"], "env_id": job["env_id"], "ctx_mb": 1536,
                     }
                     log.info("작업 %s 을 이어받습니다", job["id"])
-                    asyncio.create_task(self._resume(job))
+                    self.spawn(self._resume(job))
                     reattached = True
             if not reattached:
                 await db.execute("UPDATE jobs SET state='finished', outcome='lost', finished_at=now(), "
@@ -144,10 +159,12 @@ class Scheduler:
             if not ok:
                 await self._finish(job, "rejected", error={"message": reason})
                 await self._tell_browser_error(job, reason)
+                self.release_waiter(job_id, reason)
                 return
             await db.execute(
                 "UPDATE jobs SET state='starting', started_at=now(), "
                 "wait_ms = (extract(epoch from now() - submitted_at) * 1000)::int WHERE id=$1", job["id"])
+        job["state"] = "starting"
         self.lease = job
         self.lease_open = job["kind"] == "comfy"
         self.peak = gpu.used_mb()
@@ -258,6 +275,8 @@ class Scheduler:
                 await self._tell_browser_error(job, str(e))
                 return "error", {"message": str(e)}
             await db.execute("UPDATE jobs SET cold_start_ms=$2 WHERE id=$1", job["id"], cold_ms)
+            if job.get("cancel_requested"):
+                return "cancelled", None
         w = self.worker
         base = f"http://{w['ip']}:8189"
 
@@ -277,10 +296,11 @@ class Scheduler:
                 r = await self.http.post(f"{base}/prompt", json=body)
                 if r.status_code != 200:
                     err = _safe_json(r)
-                    await self._tell_browser_error(job, (err.get("error") or {}).get("message", r.text[:300]),
-                                                   node_errors=err.get("node_errors"))
-                    return "error", err
+                    msg = (err.get("error") or {}).get("message") if isinstance(err.get("error"), dict) else None
+                    await self._tell_browser_error(job, msg or r.text[:300], node_errors=err.get("node_errors"))
+                    return "error", {"message": msg or r.text[:300], "node_errors": err.get("node_errors")}
                 await db.execute("UPDATE jobs SET state='running', exec_started_at=now() WHERE id=$1", job["id"])
+                job["state"] = "running"
             outcome, error = await self._relay_until_done(ws, job, env, base)
         finally:
             await ws.close()
@@ -415,7 +435,7 @@ class Scheduler:
     def _cleanup_pinned_inputs(self, job):
         if job["kind"] != "comfy" or not job.get("env_id"):
             return
-        asyncio.create_task(self._rm_pinned(job))
+        self.spawn(self._rm_pinned(job))
 
     async def _rm_pinned(self, job):
         env = await envs.get_env(job["env_id"])
@@ -430,10 +450,15 @@ class Scheduler:
 
     async def interrupt(self, env_id: int, prompt_id: str | None):
         lease = self.lease
-        if lease and lease["kind"] == "comfy" and lease["env_id"] == env_id and self.worker:
-            if prompt_id and prompt_id != str(lease["id"]):
-                return
-            await self.http.post(f"http://{self.worker['ip']}:8189/interrupt", json={"prompt_id": str(lease["id"])})
+        if not lease or lease["kind"] != "comfy" or lease["env_id"] != env_id:
+            return
+        if prompt_id and prompt_id != str(lease["id"]):
+            return
+        if lease["state"] == "starting" or not self.worker:
+            # 실행 공간을 띄우는 중: 실행 전에 취소 표시를 남겨 두면 _run_comfy 가 시작하지 않는다
+            lease["cancel_requested"] = True
+            return
+        await self._post_quiet(f"http://{self.worker['ip']}:8189/interrupt", {"prompt_id": str(lease["id"])})
 
     # ── LLM·임베딩 작업 ───────────────────────────────────────
 
@@ -445,6 +470,7 @@ class Scheduler:
         if waiter is None or waiter.cancelled:
             return "cancelled", {"message": "요청한 프로그램과의 연결이 끊겼습니다."}
         await db.execute("UPDATE jobs SET state='running', exec_started_at=now() WHERE id=$1", job["id"])
+        job["state"] = "running"
         waiter.go.set()
         try:
             await asyncio.wait_for(waiter.done.wait(), timeout=settings.job_max_seconds)
@@ -586,6 +612,13 @@ class Scheduler:
     async def _tell_browser_error(self, job, message, node_errors=None):
         if job["kind"] != "comfy":
             return
+        if node_errors:
+            # 실행 공간의 검증 오류를 노드별로 요약해 메시지에 덧붙인다
+            parts = []
+            for nid, ne in node_errors.items():
+                errs = "; ".join(e.get("message", "") for e in ne.get("errors", []))
+                parts.append(f"[{ne.get('class_type', nid)}] {errs}")
+            message = f"{message}\n" + "\n".join(parts)
         await sockets.send_json(job["env_id"], job["client_id"], "execution_error", {
             "prompt_id": str(job["id"]), "node_id": "", "node_type": "", "executed": [],
             "exception_message": message, "exception_type": "mgs", "traceback": [],

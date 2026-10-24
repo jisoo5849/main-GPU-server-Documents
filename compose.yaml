@@ -57,7 +57,6 @@ services:
     privileged: true
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://mgs:${POSTGRES_PASSWORD}@127.0.0.1:5432/mgs
       # NVML(메모리 측정)만 쓰고 CUDA 연산은 하지 않는다
       NVIDIA_DRIVER_CAPABILITIES: utility
     volumes:
@@ -87,5 +86,6 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ${MGS_WEBUI_DATA:-/srv/open-webui}:/app/backend/data
+    # Docker 가 여는 포트는 ufw 를 거치지 않으므로, 사무실 쪽 IP 에만 붙인다 (.env 의 HUB_BIND_IP)
     ports:
-      - "8090:8080"
+      - "${HUB_BIND_IP:-0.0.0.0}:8090:8080"

@@ -19,10 +19,10 @@ import urllib.parse
 import httpx
 import websockets
 from starlette.applications import Starlette
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
-from starlette.websockets import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocket
 
 from . import db, dockerctl, envs, jobs, security
 from .config import settings
@@ -90,6 +90,10 @@ async def handle_http(request: Request):
             return JSONResponse(await jobs.submit_comfy(env, user, body, ip))
         except jobs.SubmitError as e:
             return JSONResponse(e.body, status_code=e.status)
+        except Exception as e:  # noqa: BLE001 - 화면이 읽을 수 있는 JSON 오류로 돌려준다
+            log.exception("submit failed")
+            return JSONResponse(jobs.comfy_error("mgs_submit_failed", "실행 접수에 실패했습니다.", str(e)[:500]),
+                                status_code=500)
     if path == "/queue":
         if method == "GET":
             return JSONResponse(await jobs.queue_view(env["id"]))
@@ -106,7 +110,10 @@ async def handle_http(request: Request):
     if method == "POST" and path == "/free":
         return Response(status_code=200)
     if path == "/jobs" and method == "GET":
-        return JSONResponse(await jobs.jobs_list(env["id"], request.query_params))
+        try:
+            return JSONResponse(await jobs.jobs_list(env["id"], request.query_params))
+        except jobs.BadQuery as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
     if path.startswith("/jobs/"):
         parts = path.split("/")
         if method == "POST" and path == "/jobs/cancel":
@@ -126,8 +133,11 @@ async def handle_http(request: Request):
     if path == "/history" or path.startswith("/history/"):
         if method == "GET":
             pid = path.split("/", 2)[2] if path.startswith("/history/") else None
-            mi = request.query_params.get("max_items")
-            return JSONResponse(await jobs.history_view(env["id"], pid, int(mi) if mi else None))
+            try:
+                mi = jobs._int_param(request.query_params, "max_items")
+            except jobs.BadQuery as e:
+                return JSONResponse({"error": str(e)}, status_code=400)
+            return JSONResponse(await jobs.history_view(env["id"], pid, mi))
         return Response(status_code=200)
     if method == "GET" and path == "/view":
         return await _view(request, env)
@@ -155,12 +165,18 @@ async def _forward(request: Request, env: dict, raw_path: str):
     qs = request.scope.get("query_string", b"").decode("latin-1")
     url = f"http://{ip}:8189{raw_path}" + (f"?{qs}" if qs else "")
     headers = [(k, v) for k, v in request.headers.items() if k.lower() not in HOP and k.lower() != "cookie"]
-    req = _client.build_request(request.method, url, headers=headers, content=request.stream())
+    # 본문이 있는 요청에만 스트림을 붙인다 (GET 에 chunked 본문을 보내지 않도록)
+    has_body = request.method not in ("GET", "HEAD", "OPTIONS") or \
+        "content-length" in request.headers or "transfer-encoding" in request.headers
+    req = _client.build_request(request.method, url, headers=headers,
+                                content=request.stream() if has_body else None)
     try:
         resp = await _client.send(req, stream=True)
-    except httpx.HTTPError as e:
+    except (httpx.HTTPError, ClientDisconnect) as e:
         return Response(f"편집 공간 연결 실패: {e}", status_code=502, media_type="text/plain; charset=utf-8")
-    out_headers = [(k, v) for k, v in resp.headers.multi_items() if k.lower() not in HOP]
+    # content-length 는 그대로 넘겨 파일 다운로드 진행률이 보이게 한다 (본문이 없는 응답은 제외)
+    drop = HOP - {"content-length"} if (request.method != "HEAD" and resp.status_code not in (204, 304)) else HOP
+    out_headers = [(k, v) for k, v in resp.headers.multi_items() if k.lower() not in drop]
 
     async def body():
         try:
@@ -276,11 +292,11 @@ async def handle_ws(websocket: WebSocket):
              asyncio.create_task(refresh_remaining())]
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    except WebSocketDisconnect:
-        pass
     finally:
         for t in tasks:
             t.cancel()
+        # 끊긴 쪽의 예외(ConnectionClosed, WebSocketDisconnect)를 거둬들여 경고 로그가 쌓이지 않게 한다
+        await asyncio.gather(*tasks, return_exceptions=True)
         sockets.unregister(env["id"], client_id, websocket)
         await upstream.close()
         try:

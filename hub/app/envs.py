@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import re
+import shutil
 import time
 
 from . import db, dockerctl, hostops
@@ -19,6 +20,8 @@ allow_pip_install = true
 """
 
 _env_locks: dict[int, asyncio.Lock] = {}
+_create_lock = asyncio.Lock()   # 두 요청이 같은 포트를 고르지 않게
+_bg: set = set()
 _port_cache: dict[int, dict] = {}
 _port_cache_at = 0.0
 
@@ -92,18 +95,25 @@ async def create_env(owner_id: int, name: str, source_version_id: int | None = N
         src = settings.template_path()
         if not os.path.isdir(src):
             raise ValueError(f"템플릿이 없습니다: {src} (install/05-build-runtime.sh 실행 필요)")
-    await hostops.snapshot(src, live)
-    await hostops.chown_tree(live, user["linux_uid"], settings.group_gid)
-    await asyncio.to_thread(_prepare_state, slug, user["linux_uid"])
-    hostops.ensure_dir(os.path.join(settings.results_dir, user["username"]), user["linux_uid"], settings.group_gid)
-    hostops.ensure_dir(os.path.join(settings.results_dir, user["username"], name), user["linux_uid"],
-                       settings.group_gid)
-
-    port = await _free_port()
-    row = await db.fetchrow(
-        "INSERT INTO envs(owner_id, name, slug, port, template) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-        owner_id, name, slug, port, settings.template,
-    )
+    async with _create_lock:
+        try:
+            await hostops.snapshot(src, live)
+            await hostops.chown_tree(live, user["linux_uid"], settings.group_gid)
+            await asyncio.to_thread(_prepare_state, slug, user["linux_uid"])
+            hostops.ensure_dir(os.path.join(settings.results_dir, user["username"]), user["linux_uid"],
+                               settings.group_gid)
+            hostops.ensure_dir(os.path.join(settings.results_dir, user["username"], name), user["linux_uid"],
+                               settings.group_gid)
+            port = await _free_port()
+            row = await db.fetchrow(
+                "INSERT INTO envs(owner_id, name, slug, port, template) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+                owner_id, name, slug, port, settings.template,
+            )
+        except Exception:
+            # 반쯤 만들어진 작업공간을 치워서 같은 이름으로 다시 만들 수 있게 한다
+            await hostops.delete_subvolume(live)
+            await asyncio.to_thread(shutil.rmtree, settings.state_path(slug), True)
+            raise
     invalidate_cache()
     await dockerctl.start_editor(slug, user["username"], name, user["linux_uid"])
     return dict(row)
@@ -155,7 +165,9 @@ async def pin_version(env: dict) -> int:
             "INSERT INTO env_versions(env_id, vno, snapshot_path, btrfs_gen) VALUES ($1, $2, $3, $4) RETURNING id",
             env["id"], vno, snap, gen_after,
         )
-    asyncio.create_task(_record_version_details(vid, env, snap))
+    t = asyncio.create_task(_record_version_details(vid, env, snap))
+    _bg.add(t)
+    t.add_done_callback(_bg.discard)
     return vid
 
 

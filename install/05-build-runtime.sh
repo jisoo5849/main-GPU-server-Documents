@@ -11,11 +11,13 @@ docker build -t "$COMFY_RUNTIME_IMAGE" "$REPO_DIR/images/comfy-runtime"
 TPL="$MGS_ENVS/templates/$COMFY_TEMPLATE"
 if [[ -e "$TPL" ]]; then
   warn "템플릿 $TPL 이 이미 있습니다. 다시 만들려면 먼저 지우세요: sudo btrfs subvolume delete $TPL"
-  exit 0
+  exit 1
 fi
 
 say "템플릿 생성: $TPL"
 btrfs subvolume create "$TPL"
+# 중간에 실패하면 반쯤 만든 템플릿을 지워서, 다음 실행이 '이미 있음' 으로 멈추지 않게 한다
+trap 'rc=$?; if [[ $rc -ne 0 ]]; then warn "실패: 템플릿을 지웁니다"; btrfs property set -ts "$TPL" ro false 2>/dev/null; btrfs subvolume delete "$TPL" 2>/dev/null; fi' EXIT
 # 빌드는 GPU 없이 진행한다(torch 휠은 CUDA 런타임을 포함하므로 GPU가 없어도 설치된다)
 docker run --rm \
   -e COMFY_TAG="$COMFY_TAG" \

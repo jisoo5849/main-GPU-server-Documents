@@ -9,6 +9,8 @@ NAME="${1:?사용자 이름(영문 소문자)을 입력하세요}"
 DISPLAY_NAME="${2:-$NAME}"
 ROLE_FLAG="${3:-}"
 [[ "$NAME" =~ ^[a-z][a-z0-9_-]{1,30}$ ]] || die "사용자 이름은 영문 소문자로 시작하고 영문 소문자·숫자·-·_ 만 쓸 수 있습니다."
+cd "$REPO_DIR"
+docker compose ps --status running hub 2>/dev/null | grep -q hub || die "허브가 실행 중이 아닙니다. 먼저: sudo docker compose up -d --build"
 
 say "리눅스 계정 $NAME (로그인 쉘 없음)"
 if ! id "$NAME" >/dev/null 2>&1; then
@@ -24,7 +26,6 @@ printf '%s\n%s\n' "$PW1" "$PW1" | smbpasswd -s -a "$NAME"
 smbpasswd -e "$NAME" >/dev/null
 
 say "허브 계정과 기본 작업공간"
-cd "$REPO_DIR"
 printf '%s\n' "$PW1" | docker compose exec -T hub python -m app.cli create-user "$NAME" \
   --display "$DISPLAY_NAME" --uid "$uid" --password-stdin $ROLE_FLAG
 docker compose exec -T hub python -m app.cli create-env "$NAME" main

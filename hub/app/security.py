@@ -3,7 +3,7 @@ import hashlib
 import secrets
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError, VerificationError
+from argon2.exceptions import InvalidHashError, VerifyMismatchError, VerificationError
 
 from . import db
 from .config import settings
@@ -19,7 +19,7 @@ def hash_password(pw: str) -> str:
 def verify_password(pw_hash: str, pw: str) -> bool:
     try:
         return _ph.verify(pw_hash, pw)
-    except (VerifyMismatchError, VerificationError):
+    except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
 
 

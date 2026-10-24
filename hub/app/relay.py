@@ -20,6 +20,7 @@ class BrowserSockets:
             s.discard(ws)
             if not s:
                 self._socks.pop((env_id, client_id), None)
+                self._flags.pop((env_id, client_id), None)
 
     def set_flags(self, env_id: int, client_id: str, flags: dict):
         self._flags[(env_id, client_id)] = flags

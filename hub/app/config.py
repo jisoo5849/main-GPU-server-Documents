@@ -1,5 +1,6 @@
 """허브 설정. 값은 모두 .env 에서 온다 (compose.yaml 의 env_file)."""
 import os
+import urllib.parse
 
 
 def _env(name: str, default: str = "") -> str:
@@ -15,7 +16,10 @@ def _bool(name: str, default: bool) -> bool:
 
 
 class Settings:
-    database_url = _env("DATABASE_URL", "postgresql://mgs:mgs@127.0.0.1:5432/mgs")
+    # 비밀번호에 @ / # % 같은 글자가 있어도 되도록 여기서 조립한다
+    database_url = _env("DATABASE_URL") or (
+        f"postgresql://mgs:{urllib.parse.quote(_env('POSTGRES_PASSWORD', 'mgs'), safe='')}@"
+        f"{_env('POSTGRES_HOST', '127.0.0.1')}:5432/mgs")
 
     envs_dir = _env("MGS_ENVS", "/srv/envs")
     models_dir = _env("MGS_MODELS", "/srv/models")

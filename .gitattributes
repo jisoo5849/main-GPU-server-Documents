@@ -8,5 +8,8 @@
 *.conf text eol=lf
 *.html text eol=lf
 Dockerfile text eol=lf
+# Windows 배치 파일은 CRLF 여야 한다
+*.cmd text eol=crlf
+*.bat text eol=crlf
 *.png binary
 *.jpg binary

@@ -39,6 +39,8 @@ if ROLE == "editor":
         prompt = data.get("prompt") or {}
         prompt_id = data.get("prompt_id") or "00000000-0000-0000-0000-000000000000"
         partial = data.get("partial_execution_targets")
+        if partial:
+            partial = [str(x) for x in partial]   # 노드 id 는 문자열로 비교된다
         replacer = getattr(prompt_server, "node_replace_manager", None)
         if replacer is not None:
             replacer.apply_replacements(prompt)
@@ -55,6 +57,7 @@ if ROLE == "editor":
 
     def _blocked_put(item):
         log.warning("mgs: editor does not execute prompts; dropped %s", item[1] if len(item) > 1 else item)
+        prompt_server.queue_updated()   # 화면의 대기열 숫자가 늘어난 채로 남지 않게
 
     prompt_server.prompt_queue.put = _blocked_put
     log.info("mgs_bridge: editor mode (validation only, local queue disabled)")
