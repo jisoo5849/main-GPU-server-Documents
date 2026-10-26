@@ -82,17 +82,42 @@ class Scheduler:
             w.result = {"status": 409, "message": message}
             w.go.set()
 
+    async def _survey(self) -> dict:
+        """지금 GPU 를 쓰는 프로세스를 우리 것(실행 공간, Ollama)과 그 밖의 것으로 나눈다.
+
+        그 밖의 것(메인의 화면 프로그램 Xorg·gnome-shell, 관리자가 직접 돌린 스크립트 등)은 우리가 끌 수 없으므로
+        메모리 확인에서 그 사용량을 빼고 본다. 연산(compute) 프로세스는 감시 기록에 남긴다.
+        """
+        ollama_id = await self._ollama_container_id()
+        worker_id = self.worker["id"] if self.worker else None
+        s = {"worker_mb": 0, "ollama_mb": 0, "foreign_mb": 0, "foreign": [], "other_container": []}
+        for pid, mem, kind in gpu.processes():
+            cid = gpu.pid_container(pid)
+            if worker_id and cid == worker_id:
+                s["worker_mb"] += mem
+            elif cid and cid == ollama_id:
+                s["ollama_mb"] += mem
+            else:
+                s["foreign_mb"] += mem
+                s["foreign"].append({"pid": pid, "mem_mb": mem, "kind": kind, "name": gpu.process_name(pid),
+                                     "container": cid})
+                if cid:
+                    s["other_container"].append(pid)
+        s["used_mb"] = gpu.used_mb()
+        # 우리 몫: 전체 사용량에서 남의 프로세스 몫을 뺀 값 (드라이버 기본 점유 포함)
+        s["ours_mb"] = max(0, s["used_mb"] - s["foreign_mb"])
+        return s
+
     async def _measure_b0(self):
-        """유휴 기준값: 실행 공간이 없고 Ollama 에 올라간 모델도 없을 때의 GPU 사용량."""
+        """유휴 기준값: 실행 공간이 없고 Ollama 에 올라간 모델도 없을 때 '우리 몫' 의 GPU 사용량 (최솟값 유지)."""
         if not gpu.available() or self.worker or self.lease:
-            return
-        oid = await self._ollama_container_id()
-        if any(gpu.pid_container(pid) != oid for pid, _ in gpu.processes()):
             return
         if await self._ollama_loaded():
             return
-        used = gpu.used_mb()
-        self.b0 = used if self.b0 is None else min(self.b0, used)
+        s = await self._survey()
+        if s["worker_mb"] or s["ollama_mb"]:
+            return
+        self.b0 = s["ours_mb"] if self.b0 is None else min(self.b0, s["ours_mb"])
 
     async def recover(self):
         """허브가 다시 시작됐을 때: 실행 중이던 작업을 이어받거나 정리한다."""
@@ -132,8 +157,14 @@ class Scheduler:
                 if self.lease is not None:
                     await asyncio.sleep(1)
                     continue
-                if await db.get_setting("paused", False) or await db.get_setting("blocked"):
+                if await db.get_setting("paused", False):
                     await self._wait(3)
+                    continue
+                if await db.get_setting("blocked"):
+                    # 메모리가 늦게라도 돌아오면 관리자 없이 스스로 다시 시작한다
+                    if await self._try_unblock():
+                        continue
+                    await self._wait(15)
                     continue
                 row = await db.fetchrow("SELECT * FROM jobs WHERE state='queued' ORDER BY seq LIMIT 1")
                 if row is None:
@@ -144,6 +175,18 @@ class Scheduler:
             except Exception:  # noqa: BLE001
                 log.exception("scheduler loop error")
                 await asyncio.sleep(3)
+
+    async def _try_unblock(self) -> bool:
+        if self.worker:
+            await self.stop_worker()
+        await self.unload_ollama()
+        if not await self._check(False):
+            return False
+        await db.execute("DELETE FROM settings WHERE key='blocked'")
+        s = await self._survey()
+        await db.incident("auto_unblocked", {"used_mb": s["used_mb"], "ours_mb": s["ours_mb"], "baseline_mb": self.b0})
+        log.info("GPU 메모리가 기준으로 돌아와 대기열을 다시 시작합니다")
+        return True
 
     async def _wait(self, seconds: float):
         self.wake.clear()
@@ -189,12 +232,13 @@ class Scheduler:
             jobs.SECRETS.pop(job_id, None)
             self.lease = None
             if not clean_ok:
-                await db.set_setting("blocked", {"since": datetime.datetime.now().isoformat(),
-                                                 "job": job_id, "used_mb": gpu.used_mb(),
-                                                 "processes": gpu.processes()})
-                await db.incident("vram_not_released", {"job": job_id, "used_mb": gpu.used_mb(),
-                                                        "processes": gpu.processes()})
-                log.error("GPU 메모리가 해제되지 않아 대기열을 멈췄습니다 (관리자 화면에서 확인 후 재개)")
+                s = await self._survey()
+                detail = {"since": datetime.datetime.now().isoformat(), "job": job_id, "used_mb": s["used_mb"],
+                          "ours_mb": s["ours_mb"], "baseline_mb": self.b0, "foreign": s["foreign"]}
+                await db.set_setting("blocked", detail)
+                await db.incident("vram_not_released", detail)
+                log.error("GPU 메모리가 해제되지 않아 대기열을 멈췄습니다. 15초마다 다시 확인합니다 (ours=%sMB, 기준=%sMB)",
+                          s["ours_mb"], self.b0)
             self._cleanup_pinned_inputs(job)
             await jobs.notify_queue_changed()
 
@@ -485,7 +529,7 @@ class Scheduler:
     # ── 메모리 해제 확인 ──────────────────────────────────────
 
     def _container_mem(self, container_id: str) -> int:
-        return sum(mem for pid, mem in gpu.processes() if gpu.pid_container(pid) == container_id)
+        return sum(mem for pid, mem, _kind in gpu.processes() if gpu.pid_container(pid) == container_id)
 
     async def _ollama_loaded(self) -> list[str]:
         try:
@@ -511,24 +555,20 @@ class Scheduler:
             return True
         if await self._ollama_loaded():
             return False
-        ollama_id = await self._ollama_container_id()
-        worker_id = self.worker["id"] if (warm and self.worker) else None
-        worker_mem = 0
-        for pid, mem in gpu.processes():
-            cid = gpu.pid_container(pid)
-            if worker_id and cid == worker_id:
-                worker_mem += mem
-            elif cid and cid == ollama_id:
-                continue
-            else:
-                return False
-        b0 = self.b0 or 0
-        total = gpu.used_mb()
+        s = await self._survey()
+        if s["ollama_mb"]:
+            return False
+        if not warm and s["worker_mb"]:
+            return False
+        if self.b0 is None:
+            # 기준값을 아직 못 잡았으면 지금 값을 기준으로 삼는다 (더 낮은 값이 보이면 그때 내려간다)
+            self.b0 = s["ours_mb"] - s["worker_mb"]
+        ours = s["ours_mb"]
         if warm and self.worker:
             ctx = self.worker["ctx_mb"]
-            return (worker_mem <= ctx + settings.vram_worker_margin_mb
-                    and total <= b0 + ctx + settings.vram_total_margin_mb)
-        return total <= b0 + settings.vram_idle_margin_mb
+            return (s["worker_mb"] <= ctx + settings.vram_worker_margin_mb
+                    and ours <= self.b0 + ctx + settings.vram_total_margin_mb)
+        return ours <= self.b0 + settings.vram_idle_margin_mb
 
     async def _poll_clean(self, warm: bool, seconds: float) -> bool:
         deadline = time.monotonic() + seconds
@@ -588,14 +628,18 @@ class Scheduler:
                     if oid:
                         allowed.add(oid)
                     now = time.monotonic()
-                    for pid, mem in gpu.processes():
+                    for pid, mem, kind in gpu.processes():
                         cid = gpu.pid_container(pid)
                         if cid in allowed:
                             continue
+                        if kind == "graphics" and cid is None:
+                            continue   # 메인의 화면 프로그램(Xorg, gnome-shell 등)은 정상
                         if now - self._incident_pids.get(pid, 0) > 600:
                             self._incident_pids[pid] = now
-                            await db.incident("foreign_gpu_process", {"pid": pid, "mem_mb": mem, "container": cid})
-                            log.error("허용되지 않은 GPU 프로세스: pid=%s mem=%sMB container=%s", pid, mem, cid)
+                            name = gpu.process_name(pid)
+                            await db.incident("foreign_gpu_process",
+                                              {"pid": pid, "name": name, "mem_mb": mem, "kind": kind, "container": cid})
+                            log.error("허용되지 않은 GPU 연산 프로세스: pid=%s %s mem=%sMB container=%s", pid, name, mem, cid)
             except Exception:  # noqa: BLE001
                 log.exception("watchdog error")
             await asyncio.sleep(2)

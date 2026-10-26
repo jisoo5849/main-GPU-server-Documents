@@ -43,24 +43,36 @@ def total_mb() -> int:
     return int(pynvml.nvmlDeviceGetMemoryInfo(_handle).total // (1024 * 1024))
 
 
-def processes() -> list[tuple[int, int]]:
-    """GPU를 쓰는 프로세스 [(메인 PID, 사용 MB)]. 허브는 pid: host 로 실행되므로 메인 PID가 나온다."""
+def processes() -> list[tuple[int, int, str]]:
+    """GPU를 쓰는 프로세스 [(메인 PID, 사용 MB, 종류)]. 허브는 pid: host 로 실행되므로 메인 PID가 나온다.
+
+    종류: 'compute' = CUDA 연산 (ComfyUI, Ollama, 파이썬 스크립트)  /  'graphics' = 화면 표시 (Xorg, gnome-shell 등)
+    """
     if _handle is None:
         return []
     procs = []
-    for getter in (pynvml.nvmlDeviceGetComputeRunningProcesses, pynvml.nvmlDeviceGetGraphicsRunningProcesses):
+    for kind, getter in (("compute", pynvml.nvmlDeviceGetComputeRunningProcesses),
+                         ("graphics", pynvml.nvmlDeviceGetGraphicsRunningProcesses)):
         try:
             for p in getter(_handle):
                 mem = p.usedGpuMemory
-                procs.append((p.pid, int(mem // (1024 * 1024)) if mem else 0))
+                procs.append((p.pid, int(mem // (1024 * 1024)) if mem else 0, kind))
         except pynvml.NVMLError:
             pass
     seen, out = set(), []
-    for pid, mem in procs:
+    for pid, mem, kind in procs:   # compute 가 먼저 오므로 둘 다인 프로세스는 compute 로 남는다
         if pid not in seen:
             seen.add(pid)
-            out.append((pid, mem))
+            out.append((pid, mem, kind))
     return out
+
+
+def process_name(pid: int) -> str:
+    try:
+        with open(f"/proc/{pid}/comm", encoding="utf-8", errors="replace") as f:
+            return f.read().strip()
+    except OSError:
+        return "?"
 
 
 def pid_container(pid: int) -> str | None:

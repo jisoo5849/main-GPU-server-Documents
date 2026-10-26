@@ -3,8 +3,11 @@
 {% block body %}
 <h1>관리자</h1>
 {% if blocked %}
-<div class="banner">대기열 정지: GPU 메모리가 해제되지 않았습니다 ({{ blocked.since }}, 작업 {{ blocked.job }}, 사용량 {{ blocked.used_mb }}MB).
-  메인에서 <code>nvidia-smi</code> 로 확인한 뒤 재개하세요.</div>
+<div class="banner">대기열 정지: GPU 메모리가 해제되지 않았습니다 ({{ blocked.since }}, 작업 {{ blocked.job }}).
+  우리 몫 {{ blocked.ours_mb }}MB / 기준 {{ blocked.baseline_mb }}MB (전체 {{ blocked.used_mb }}MB).
+  허브가 15초마다 다시 확인해 메모리가 돌아오면 스스로 재개합니다. 계속 멈춰 있으면 메인에서 <code>nvidia-smi</code> 로 확인한 뒤 아래 버튼을 누르세요.
+  {% if blocked.foreign %}<br><span class="small">컨테이너 밖 GPU 프로세스:
+  {% for p in blocked.foreign %}{{ p.name }}(pid {{ p.pid }}, {{ p.mem_mb }}MB, {{ p.kind }}){% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}</div>
 {% endif %}
 <div class="card" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
   <span>대기열: {% if paused %}<span class="pill warn">일시 정지</span>{% else %}<span class="pill ok">동작 중</span>{% endif %}</span>
