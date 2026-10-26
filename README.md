@@ -16,7 +16,8 @@ A · B · C 브라우저 ──▶ 허브 (로그인 · 화면 중계 · 실행 
 공용 모델 /srv/models (읽기 전용)   결과 /srv/results (\\main\results, 누구나 읽기·쓰기)
 ```
 
-1. 작업자는 `http://main:<작업공간 포트>/` 에서 자기 ComfyUI 로 편집하고 노드를 설치합니다 (편집 공간에는 GPU 가 없음).
+1. 작업자는 `http://main/` 에 로그인하면 바로 자기 ComfyUI(`http://main:<작업공간 포트>/`)로 들어가 편집하고 노드를 설치합니다 (편집 공간에는 GPU 가 없음).
+   ComfyUI 상단 **메인 GPU** 버튼으로 모델 선택·시작 워크플로우·GPU 대기열 패널을 엽니다.
 2. 실행 버튼을 누르면 허브가 편집 공간에서 검증하고, **환경을 스냅샷으로 고정**하고, 접수 순번을 붙여 DB 에 넣습니다.
 3. 스케줄러가 맨 앞 작업의 사용자·환경 버전·모델을 확인하고, 그 버전으로 GPU 실행 공간을 띄워 실행합니다.
 4. 진행률·미리보기·결과는 작업자의 ComfyUI 화면에 그대로 나옵니다.
@@ -50,6 +51,8 @@ sudo docker compose up -d --build
 sudo bash install/add-user.sh admin "관리자" --admin
 sudo bash install/add-user.sh alice "앨리스"
 ```
+
+업데이트: `cd /opt/mgs-src && sudo bash install/update.sh`
 
 자세한 설명과 확인 방법은 [docs/install-guide.md](docs/install-guide.md) 에 있습니다.
 

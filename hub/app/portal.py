@@ -4,14 +4,13 @@ import os
 import shutil
 import urllib.parse
 
-import httpx
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-from . import db, envs, hostops, jobs, models_index, security
+from . import db, envs, hostops, jobs, models_index, panel, security
 from .config import settings
 from .scheduler import scheduler
 
@@ -66,6 +65,20 @@ def admin_required(handler):
     return wrapper
 
 
+def _safe_next(request: Request, nxt: str) -> bool:
+    """로그인 뒤 돌아갈 주소: 포털의 경로이거나, 같은 메인의 작업공간 포트만 허용 (다른 사이트로 보내지 않게)."""
+    try:
+        u = urllib.parse.urlsplit(nxt)
+        port = u.port
+    except ValueError:
+        return False
+    if not u.scheme and not u.netloc:
+        return nxt.startswith("/") and not nxt.startswith("//") and "\\" not in nxt
+    if u.scheme != "http" or u.username or u.password or u.hostname != _host(request):
+        return False
+    return port in (None, settings.portal_port) or settings.env_port_start <= port <= settings.env_port_end
+
+
 def back(path: str, msg: str = "") -> RedirectResponse:
     return RedirectResponse(path + (f"?msg={urllib.parse.quote(msg)}" if msg else ""), 303)
 
@@ -85,7 +98,7 @@ async def login(request: Request):
     sid = await security.create_session(user["id"], _ip(request), request.headers.get("user-agent", ""))
     await db.log_access(user["id"], _ip(request), "login_ok")
     # 같은 호스트의 다른 포트(작업공간)에서도 쓰는 쿠키. 포트는 쿠키 범위를 나누지 않는다.
-    target = nxt if nxt.startswith(("/", f"http://{_host(request)}:")) else "/"
+    target = nxt if _safe_next(request, nxt) else "/"
     resp = RedirectResponse(target, 303)
     resp.set_cookie(security.SESSION_COOKIE, sid, httponly=True, samesite="lax",
                     max_age=settings.session_hours * 3600)
@@ -104,29 +117,39 @@ async def logout(request: Request):
     return resp
 
 
-# ── 홈: 모델 선택 ──────────────────────────────────────────
+# ── 첫 화면: 로그인하면 바로 내 ComfyUI 로 ─────────────────
 
-async def _ollama_models() -> tuple[list, list]:
-    try:
-        async with httpx.AsyncClient(timeout=5) as c:
-            data = (await c.get(f"{settings.ollama_upstream}/api/tags")).json()
-    except (httpx.HTTPError, ValueError):
-        return [], []
-    llm, embed = [], []
-    for m in data.get("models", []):
-        fam = " ".join((m.get("details") or {}).get("families") or [])
-        item = {"name": m.get("name"), "size_gb": round((m.get("size") or 0) / 1e9, 1),
-                "params": (m.get("details") or {}).get("parameter_size", "")}
-        (embed if ("embed" in item["name"] or "bert" in fam) else llm).append(item)
-    return llm, embed
+async def default_env(request: Request, user):
+    """마지막으로 연 작업공간(쿠키 mgs_env) → 기본 작업공간 'main' → 가장 먼저 만든 작업공간."""
+    slug = request.cookies.get("mgs_env")
+    if slug:
+        row = await db.fetchrow("SELECT * FROM envs WHERE slug=$1 AND owner_id=$2 AND state='running'",
+                                slug, user["id"])
+        if row:
+            return row
+    return await db.fetchrow(
+        "SELECT * FROM envs WHERE owner_id=$1 AND state='running' ORDER BY (name = 'main') DESC, id LIMIT 1",
+        user["id"])
 
+
+async def root(request: Request):
+    user = await current_user(request)
+    if user is None:
+        return RedirectResponse("/login", 302)
+    env = await default_env(request, user)
+    if env is None:
+        return back("/portal", "작업공간이 없습니다. 아래에서 새 작업공간을 만드세요.")
+    return RedirectResponse(env_url(request, env["port"]), 302)
+
+
+# ── 포털: 모델 선택·대기열·작업공간 관리 ───────────────────
 
 @login_required
 async def home(request: Request):
     user = request.state.user
     my_envs = await db.fetch("SELECT * FROM envs WHERE owner_id=$1 ORDER BY name", user["id"])
     cat = models_index.catalog()
-    llm, embed = await _ollama_models()
+    llm, embed = await panel.ollama_models()
     return render(request, "home.html", envs=my_envs, catalog=cat, llm=llm, embed=embed,
                   queue=await jobs.global_queue(), lease=scheduler.lease,
                   llm_url=f"http://{_host(request)}:{settings.llm_port}",
@@ -146,15 +169,15 @@ async def select(request: Request):
         try:
             env_id = int(env_id)
         except (TypeError, ValueError):
-            return back("/", "작업공간을 먼저 선택하세요.")
+            return back("/portal", "작업공간을 먼저 선택하세요.")
         env = await db.fetchrow("SELECT * FROM envs WHERE id=$1 AND owner_id=$2", env_id, user["id"])
         if env is None:
-            return back("/", "작업공간을 먼저 선택하세요.")
+            return back("/portal", "작업공간을 먼저 선택하세요.")
         await db.log_access(user["id"], _ip(request), "env_open", {"env": env["slug"]})
         return RedirectResponse(env_url(request, env["port"]), 303)
     if kind == "llm":
         return RedirectResponse(f"http://{_host(request)}:8090/", 303)
-    return back("/", f"임베딩 API: {settings.llm_port} 포트의 /api/embed 를 API 키와 함께 호출하세요. 모델: {model}")
+    return back("/portal", f"임베딩 API: {settings.llm_port} 포트의 /api/embed 를 API 키와 함께 호출하세요. 모델: {model}")
 
 
 @login_required
@@ -162,7 +185,7 @@ async def create_key(request: Request):
     user = request.state.user
     form = await request.form()
     key = await security.create_api_key(user["id"], str(form.get("label", ""))[:60])
-    return RedirectResponse(f"/?key={urllib.parse.quote(key)}", 303)
+    return RedirectResponse(f"/portal?key={urllib.parse.quote(key)}", 303)
 
 
 async def status_json(request: Request):
@@ -188,9 +211,9 @@ async def env_create(request: Request):
     try:
         env = await envs.create_env(user["id"], name, int(src) if src else None)
     except (ValueError, RuntimeError, hostops.HostOpError) as e:
-        return back("/", str(e))
+        return back("/portal", str(e))
     await db.log_access(user["id"], _ip(request), "env_create", {"env": env["slug"]})
-    return back("/", f"작업공간 '{name}' 을 만들었습니다 (포트 {env['port']}).")
+    return back("/portal", f"작업공간 '{name}' 을 만들었습니다 (포트 {env['port']}).")
 
 
 async def _my_env(request: Request):
@@ -205,16 +228,18 @@ async def _my_env(request: Request):
 async def env_restart(request: Request):
     env = await _my_env(request)
     if env is None:
-        return back("/", "작업공간이 없습니다.")
+        return back("/portal", "작업공간이 없습니다.")
+    if await envs.manager_busy(env):
+        return back("/portal", f"'{env['name']}' 에서 노드를 설치하는 중입니다. 설치가 끝난 뒤 다시 시작하세요.")
     await envs.restart_editor(env)
-    return back("/", f"'{env['name']}' 편집 공간을 다시 시작했습니다.")
+    return back("/portal", f"'{env['name']}' 편집 공간을 다시 시작했습니다.")
 
 
 @login_required
 async def env_versions(request: Request):
     env = await _my_env(request)
     if env is None:
-        return back("/", "작업공간이 없습니다.")
+        return back("/portal", "작업공간이 없습니다.")
     versions = await db.fetch("SELECT * FROM env_versions WHERE env_id=$1 ORDER BY vno DESC", env["id"])
     return render(request, "versions.html", env=env, versions=versions)
 
@@ -223,7 +248,7 @@ async def env_versions(request: Request):
 async def env_rollback(request: Request):
     env = await _my_env(request)
     if env is None:
-        return back("/", "작업공간이 없습니다.")
+        return back("/portal", "작업공간이 없습니다.")
     form = await request.form()
     try:
         version_id = int(form.get("version_id"))
@@ -351,7 +376,8 @@ async def admin_action(request: Request):
 
 def build_app() -> Starlette:
     return Starlette(routes=[
-        Route("/", home),
+        Route("/", root),
+        Route("/portal", home),
         Route("/login", login, methods=["GET", "POST"]),
         Route("/logout", logout, methods=["POST"]),
         Route("/select", select, methods=["POST"]),

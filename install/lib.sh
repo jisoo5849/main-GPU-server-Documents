@@ -22,5 +22,5 @@ warn() { printf '\033[1;33m[!] %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
 
 need_root() {
-  [[ $EUID -eq 0 ]] || die "관리자 권한이 필요합니다:  sudo $0 $*"
+  [[ $EUID -eq 0 ]] || die "관리자 권한이 필요합니다:  sudo bash $0 $*"
 }

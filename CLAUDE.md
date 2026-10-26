@@ -36,7 +36,11 @@
 | 파일 | 역할 |
 |---|---|
 | `hub/app/main.py` | 포털(80), LLM 중계(11434), 환경 포트(8101~)를 한 프로세스로 듣고 포트별로 나눔 |
-| `hub/app/portal.py` + `templates/` | 로그인, 모델 선택, 내 작업공간·버전, 공유 작업 이력, 모델 추가, 관리자 |
+| `hub/app/portal.py` + `templates/` | 로그인(`/` → 내 ComfyUI 로 이동), `/portal` 모델 선택, 내 작업공간·버전, 공유 작업 이력, 모델 추가, 관리자 |
+| `hub/app/panel.py` | ComfyUI 안 '메인 GPU' 패널용 API (`/mgs/api/me·catalog·queue·select·starter·keys`, 환경 포트) |
+| `hub/app/templates_index.py` | 공식 워크플로우 템플릿에서 모델 파일 → 시작 워크플로우 찾기 (정확 일치 → 같은 모델 다른 양자화, 파일 이름 바꿔 넣기) |
+| `runtime/nodes/mgs_bridge/web/mgs_panel.js` | ComfyUI 프런트엔드 확장: 상단 '메인 GPU' 버튼 + 왼쪽 패널 (1.57.1 번들로 API 확인) |
+| `install/update.sh` | 메인 업데이트: git → 런타임 복사 → compose → 편집 공간 재생성 (`.applied-commit` 로 반영 여부 기억) |
 | `hub/app/proxy.py` | 환경 포트의 ComfyUI 화면 중계. `/prompt`, `/queue`, `/history`, `/api/jobs`, `/view`, `/ws` 는 허브가 처리 |
 | `hub/app/jobs.py` | 실행 접수 (편집 공간 검증 → 스냅샷 고정 → 입력 고정 → 저장 위치 → DB 순번), 대기열·이력 조회 |
 | `hub/app/scheduler.py` | GPU 한 건 루프, 실행 공간 생명주기, 진행 중계, 결과 수집, 메모리 해제 확인, 감시, 복구 |
@@ -59,5 +63,5 @@
 ## 테스트
 
 ```bash
-cd hub && python -I tests/test_promptops.py
+cd hub && python -I tests/test_promptops.py && python tests/test_templates_index.py
 ```

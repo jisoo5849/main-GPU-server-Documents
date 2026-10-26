@@ -5,6 +5,8 @@
   docker compose exec hub python -m app.cli set-password alice --password-stdin
   docker compose exec hub python -m app.cli api-key alice "영상 파이프라인"
   docker compose exec hub python -m app.cli deactivate alice
+  docker compose exec hub python -m app.cli status            # 실행 중·대기 중 작업 수
+  docker compose exec hub python -m app.cli restart-editors   # 모든 편집 공간을 새 런타임으로 다시 만들기
 """
 import argparse
 import asyncio
@@ -55,6 +57,34 @@ async def run(args):
         if user is None:
             sys.exit("사용자가 없습니다.")
         print(await security.create_api_key(user["id"], args.label))
+    elif args.cmd == "status":
+        rows = await db.fetch("SELECT kind, state, count(*) AS n FROM jobs "
+                              "WHERE state IN ('queued','starting','running','cleaning') GROUP BY kind, state")
+        active = sum(r["n"] for r in rows if r["state"] != "queued")
+        queued = sum(r["n"] for r in rows if r["state"] == "queued")
+        print(f"active={active} queued={queued} paused={bool(await db.get_setting('paused', False))} "
+              f"blocked={bool(await db.get_setting('blocked'))}")
+    elif args.cmd == "restart-editors":
+        # 새 런타임 파일(허브 연동 노드, ComfyUI 패널)과 새 이미지를 편집 공간에 반영한다
+        await dockerctl.ensure_networks()
+        rows = await db.fetch("SELECT id FROM envs WHERE state='running' ORDER BY id")
+        failed, skipped = 0, 0
+        for r in rows:
+            env = await envs.get_env(r["id"])
+            # 노드 설치(pip·git) 중인 편집 공간을 끄면 설치가 반쯤 끝난 채 남는다
+            if await envs.manager_busy(env):
+                print(f"건너뜀 (노드 설치 중): {env['slug']}")
+                skipped += 1
+                continue
+            try:
+                await envs.restart_editor(env)
+                print(f"다시 만듦: {env['slug']} (포트 {env['port']})")
+            except Exception as e:  # noqa: BLE001
+                print(f"실패: {env['slug']}: {e}")
+                failed += 1
+        if failed or skipped:
+            print(f"실패 {failed}개, 건너뜀 {skipped}개. 나중에 다시: docker compose exec hub python -m app.cli restart-editors")
+            sys.exit(1)
     elif args.cmd == "deactivate":
         await db.execute("UPDATE users SET active=false WHERE username=$1", args.username)
         await db.execute("UPDATE sessions SET ended_at=now(), end_reason='admin' WHERE ended_at IS NULL AND "
@@ -82,6 +112,8 @@ def main():
     c.add_argument("label", nargs="?", default="")
     c = sub.add_parser("deactivate")
     c.add_argument("username")
+    sub.add_parser("status")
+    sub.add_parser("restart-editors")
     asyncio.run(run(p.parse_args()))
 
 

@@ -7,6 +7,7 @@
   /history, /api/jobs          이력 (DB 기준)
   GET /view                    결과·입력·미리보기 파일
   POST /free                   무시 (GPU 메모리는 스케줄러가 관리)
+  /mgs/api/*                   ComfyUI 안 '메인 GPU' 패널용 API (panel.py)
   /ws                          WebSocket: 편집 공간 연결 + GPU 실행 공간 진행 상황 전달
 """
 import asyncio
@@ -24,7 +25,7 @@ from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket
 
-from . import db, dockerctl, envs, jobs, security
+from . import db, dockerctl, envs, jobs, panel, security
 from .config import settings
 from .relay import sockets
 from .scheduler import scheduler
@@ -72,7 +73,8 @@ async def handle_http(request: Request):
     if problem == "login":
         if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
             return RedirectResponse(_portal_url(request.headers.get("host", ""), str(request.url)), 302)
-        return JSONResponse({"error": "로그인이 필요합니다."}, status_code=401)
+        return JSONResponse({"error": "로그인이 필요합니다.",
+                             "login": _portal_url(request.headers.get("host", ""))}, status_code=401)
     if problem == "forbidden":
         return Response("다른 사용자의 작업공간입니다.", status_code=403, media_type="text/plain; charset=utf-8")
 
@@ -141,12 +143,37 @@ async def handle_http(request: Request):
         return Response(status_code=200)
     if method == "GET" and path == "/view":
         return await _view(request, env)
+    if path.startswith("/mgs/api/"):
+        return await panel.handle(request, env, user, path)
     if path.startswith("/mgs/"):
         return Response(status_code=404)
-    if method == "GET" and path == "/":
-        await db.log_access(user["id"], ip, "env_open", {"env": env["slug"]})
 
-    return await _forward(request, env, raw)
+    is_page = method == "GET" and path == "/"
+    if is_page:
+        try:
+            await db.log_access(user["id"], ip, "env_open", {"env": env["slug"]})
+        except Exception:  # noqa: BLE001 - 기록 실패로 화면을 막지 않는다
+            log.exception("env_open log failed")
+    resp = await _forward(request, env, raw, page=is_page)
+    if is_page and resp.status_code < 400:
+        # 포털(http://main/)이 마지막으로 연 작업공간으로 바로 보내도록 기억해 둔다 (쿠키는 포트를 가리지 않는다)
+        resp.raw_headers.append((b"set-cookie",
+                                 f"mgs_env={env['slug']}; Path=/; Max-Age=31536000; SameSite=Lax".encode()))
+    return resp
+
+
+def _down_page(request: Request, env: dict, message: str, status: int) -> Response:
+    """편집 공간이 꺼져 있거나 시작 중일 때 보여 줄 화면 (포털로 가는 길과 자동 새로고침)."""
+    host = (request.headers.get("host") or settings.public_host).split(":")[0]
+    port = "" if settings.portal_port == 80 else f":{settings.portal_port}"
+    portal = f"http://{host}{port}/portal"
+    body = f"""<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="10">
+<title>작업공간 준비 중</title>
+<body style="font-family:'Malgun Gothic',system-ui,sans-serif;max-width:560px;margin:80px auto;padding:0 16px;line-height:1.7">
+<h2>'{env['name']}' 작업공간을 열 수 없습니다</h2><p>{message}</p>
+<p>이 화면은 10초마다 다시 시도합니다. 계속 안 되면 <a href="{portal}">포털</a>의 '내 작업공간'에서
+'편집 공간 다시 시작'을 누르세요.</p></body>"""
+    return Response(body, status_code=status, media_type="text/html; charset=utf-8")
 
 
 async def _json(request: Request) -> dict:
@@ -157,11 +184,13 @@ async def _json(request: Request) -> dict:
         return {}
 
 
-async def _forward(request: Request, env: dict, raw_path: str):
+async def _forward(request: Request, env: dict, raw_path: str, page: bool = False):
     ip = await dockerctl.editor_ip(env["slug"])
     if not ip:
-        return Response("편집 공간이 실행 중이 아닙니다. 포털의 '내 작업공간'에서 다시 시작하세요.",
-                        status_code=503, media_type="text/plain; charset=utf-8")
+        msg = "편집 공간이 실행 중이 아닙니다. 포털의 '내 작업공간'에서 다시 시작하세요."
+        if page:
+            return _down_page(request, env, "편집 공간이 꺼져 있거나 다시 시작하는 중입니다.", 503)
+        return Response(msg, status_code=503, media_type="text/plain; charset=utf-8")
     qs = request.scope.get("query_string", b"").decode("latin-1")
     url = f"http://{ip}:8189{raw_path}" + (f"?{qs}" if qs else "")
     headers = [(k, v) for k, v in request.headers.items() if k.lower() not in HOP and k.lower() != "cookie"]
@@ -173,6 +202,8 @@ async def _forward(request: Request, env: dict, raw_path: str):
     try:
         resp = await _client.send(req, stream=True)
     except (httpx.HTTPError, ClientDisconnect) as e:
+        if page:
+            return _down_page(request, env, "편집 공간이 아직 시작 중입니다 (ComfyUI 와 노드를 불러오는 중).", 502)
         return Response(f"편집 공간 연결 실패: {e}", status_code=502, media_type="text/plain; charset=utf-8")
     # content-length 는 그대로 넘겨 파일 다운로드 진행률이 보이게 한다 (본문이 없는 응답은 제외)
     drop = HOP - {"content-length"} if (request.method != "HEAD" and resp.status_code not in (204, 304)) else HOP

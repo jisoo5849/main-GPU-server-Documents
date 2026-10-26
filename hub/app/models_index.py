@@ -52,7 +52,11 @@ def catalog() -> dict[str, list[dict]]:
         for folder, full in hits:
             if folder not in ("checkpoints", "diffusion_models", "unet"):
                 continue
-            item = {"name": rel, "folder": folder, "size_gb": round(os.path.getsize(full) / 1e9, 1)}
+            try:
+                size = os.path.getsize(full)
+            except OSError:   # 깨진 링크, 방금 지워진 파일
+                continue
+            item = {"name": rel, "folder": folder, "size_gb": round(size / 1e9, 1)}
             (video if VIDEO_RE.search(rel) else image).append(item)
             break
     return {"image": image, "video": video}

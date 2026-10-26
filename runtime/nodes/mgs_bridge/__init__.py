@@ -3,6 +3,7 @@
 편집 공간(MGS_ROLE=editor)
   - POST /mgs/validate : 작업을 대기열에 넣지 않고 검증만 한다. 허브가 실행 접수 때 호출한다.
   - 편집 공간의 자체 대기열은 막는다. 편집 공간은 어떤 작업도 직접 실행하지 않는다.
+  - web/mgs_panel.js : ComfyUI 화면 안 '메인 GPU' 패널 (데이터는 허브의 /mgs/api/* 에서 받는다)
 실행 공간(MGS_ROLE=worker)
   - 아무것도 바꾸지 않는다.
 """
@@ -15,6 +16,8 @@ from aiohttp import web
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
+# ComfyUI 화면 안 '메인 GPU' 패널 (/extensions/mgs_bridge/mgs_panel.js)
+WEB_DIRECTORY = "./web"
 
 ROLE = os.environ.get("MGS_ROLE", "")
 log = logging.getLogger("mgs_bridge")
