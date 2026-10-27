@@ -30,6 +30,8 @@ Follow every rule:
 5. Style lock: if a style is given, it will be appended after your prompt by the system. Do not repeat it and do not add any other style or quality words such as photorealistic, 8K, Unreal Engine, octane render or 3D render. If no style is given, choose one style that fits the request and state it once.
 6. Words image models misread: write "figure" or "outline" instead of "silhouette" and "bending down" instead of "ducking". Do not name existing films, artists, studios or characters.
 7. Write in English, 60 to 160 words, as one paragraph of comma-separated phrases.
+8. Hidden hands: if the request or the must-keep details say the hands stay hidden in the sleeves, image models draw hands whenever the text mentions them. Then never write the words hand, hands, finger, fingers, fingertips, palm, fist, holding, hold, grip, gripping, grasp or clutching anywhere, including the "keep" list (keep "long sleeves" instead). Describe the sleeves as "oversized sleeves hanging well past the wrists, the cuffs closed and drooping". Make every carried object rest on the body or the sleeve: "the umbrella handle tucked inside the drooping sleeve cuff and propped against the shoulder", "the book hugged against the chest by both sleeves".
+9. Actions done for someone: if the action is done for or to another person (Korean "~해 주는", "~에게", "~와 함께", "둘이"; English "for her friend", "shares with", "gives to"), that person must appear too. Count them in "people", give them their own position (left, right, foreground, background) and a clearly different hair color and clothing color, and describe how the action connects the two, for example "the girl on the left raises the umbrella over the taller boy on the right".
 Return only JSON in this shape:
 {"prompt": "...", "keep": ["the English words for each subject, object, action and detail the user gave, copied exactly as they appear in your prompt"], "categories": {"lighting": "...", "camera": "...", "environment": "...", "texture": "..."}, "people": 0}
 Each categories value must be a phrase copied exactly from your prompt. "people" is the number of people or characters in the picture."""
@@ -40,6 +42,18 @@ STYLE_CONFLICTS = ("photorealistic", "photo-realistic", "hyperrealistic", "hyper
                    "unreal engine", "octane", "3d render", "cgi", "ray tracing", "ray-traced", "dslr")
 # 이번 컨셉아트 작업에서 엉뚱한 그림을 부른 말 (silhouette → 배경의 사람 모양 그림자, ducking → 오리)
 MISREAD_WORDS = {"silhouette": "figure / outline", "ducking": "bending down"}
+# 손을 숨기라고 한 요청: 글에 손·쥐는 동작이 나오면 Z-Image 가 손을 그렸다 (2026-10-27 우산 소녀 시험 2장 모두)
+HIDDEN_HANDS_RE = re.compile(r"손[^.\n]{0,20}(소매|숨|감춰|가려|안\s*보|보이지)|소매[^.\n]{0,20}손"
+                             r"|hands?\b[^.\n]{0,30}\b(hidden|tucked|inside|covered|concealed)[^.\n]{0,20}sleeve"
+                             r"|sleeves?\b[^.\n]{0,20}\b(cover|hide|hiding|covering)[^.\n]{0,10}hands?", re.I)
+HAND_WORDS_RE = re.compile(r"\b(?:hands?(?!-(?:drawn|painted|made|crafted))|fingers?|fingertips?|palms?|fists?|holding|holds?|grip(?:s|ping)?"
+                           r"|grasp(?:s|ing)?|clutch(?:es|ing)?)\b", re.I)
+# 다른 사람에게 해 주는 동작 (받는 사람이 그림에서 빠졌다: "우산을 씌워 주는 소녀" → 소녀 혼자)
+FOR_SOMEONE_RE = re.compile(r"[가-힣](?:아|어|여|해|워|와|줘)\s?주(?:는|고|며|다|기|던|었)|에게|한테|와\s?함께|과\s?함께"
+                            r"|둘이|두\s?(?:사람|명)|\b(?:for|with|to)\s+(?:her|his|their|a|an|the)\s+"
+                            r"(?:friend|brother|sister|mother|father|mom|dad|boy|girl|man|woman|child|partner)\b"
+                            r"|\btwo\s+(?:people|girls|boys|friends|children|kids)\b", re.I)
+POSITION_RE = re.compile(r"\b(?:left|right|foreground|background|behind|beside|next to|in front of)\b", re.I)
 
 
 class PromptxError(Exception):
@@ -121,7 +135,31 @@ def check_expansion(result: dict, style: str = "", user_text: str = "") -> list[
     for w, alt in MISREAD_WORDS.items():
         if re.search(rf"\b{w}", low) and w not in user_text.lower():
             problems.append(f'Avoid "{w}" (image models misread it); write "{alt}" instead.')
+    if hides_hands(user_text):
+        found = sorted({m.group(0).lower() for m in HAND_WORDS_RE.finditer(prompt + " " + " ".join(keep))})
+        if found:
+            problems.append("The hands must stay hidden, so remove these words (also from keep): "
+                            + ", ".join(f'"{w}"' for w in found)
+                            + '. Rest carried objects on the body or tuck them into the drooping sleeve cuffs.')
+    if for_someone(user_text):
+        try:
+            people = int(result.get("people") or 0)
+        except (TypeError, ValueError):
+            people = 0
+        if people < 2:
+            problems.append("The action is done for another person, so that person must be in the picture too; "
+                            'set "people" to at least 2 and describe them.')
+        elif len({m.group(0).lower() for m in POSITION_RE.finditer(prompt)}) < 1:
+            problems.append("Place each person (left, right, foreground or background) so they read as separate figures.")
     return problems
+
+
+def hides_hands(user_text: str) -> bool:
+    return bool(HIDDEN_HANDS_RE.search(user_text or ""))
+
+
+def for_someone(user_text: str) -> bool:
+    return bool(FOR_SOMEONE_RE.search(user_text or ""))
 
 
 def repair_message(problems: list[str]) -> dict:
@@ -348,7 +386,19 @@ async def expand(user, ip: str, text: str, style: str = "", notes: str = "") -> 
         raise PromptxError(str(e), 502) from None
     return {"prompt": final_prompt(result, style), "body": str(result.get("prompt") or ""),
             "keep": result.get("keep") or [], "categories": result.get("categories") or {},
-            "people": result.get("people"), "violations": problems, "rounds": rounds, "model": model}
+            "people": result.get("people"), "violations": problems, "rounds": rounds, "model": model,
+            "advice": expand_advice(text + " " + notes)}
+
+
+def expand_advice(user_text: str) -> list[str]:
+    """글만으로는 잘 안 지켜지는 요청에 붙이는 안내 (패널에 그대로 보여 준다)."""
+    advice = []
+    if hides_hands(user_text):
+        advice.append("손 숨김은 프롬프트만으로는 잘 지켜지지 않습니다. 구도가 좋은 컷을 고른 뒤 "
+                      "Qwen-Image-Edit 로 소매를 덮는 편집 단계를 계획하세요.")
+    if for_someone(user_text):
+        advice.append("두 사람 장면은 한 몸으로 붙기 쉽습니다. 결과 자동 검사의 인물 수를 확인하세요.")
+    return advice
 
 
 async def inspect(user, ip: str, username: str, filename: str, subfolder: str = "", expect=None) -> dict:

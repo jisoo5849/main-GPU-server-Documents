@@ -318,6 +318,7 @@ function helperCard() {
     } else {
       card.append(h("div", { class: "mgs-ok", text: "규칙 검사 통과: 주제 유지 · 조명·카메라·배경·질감 포함 · 부정어 없음" }));
     }
+    for (const a of r.advice || []) card.append(h("div", { class: "mgs-sub", text: `참고: ${a}` }));
     card.append(h("div", { class: "mgs-row" },
       h("button", { class: "mgs-btn", onclick: () => copyText(r.prompt, "프롬프트를 복사했습니다") }, "복사"),
       h("button", { class: "mgs-btn", onclick: () => putIntoSelectedNode(r.prompt) }, "선택한 노드에 넣기")));

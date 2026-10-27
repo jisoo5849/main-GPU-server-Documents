@@ -22,10 +22,17 @@ ComfyUI 화면의 '메인 GPU' 패널에 두 기능을 붙였다.
 | 그림체 고정 | 그림체 문장은 코드가 끝에 그대로 붙이고, LLM 은 다른 그림체 말을 넣지 않는다 | 고정했을 때 8K, Unreal Engine, photorealistic 같은 말 검색 |
 | 오독 단어 | silhouette, ducking 같은 말을 피한다 | 사용자가 쓰지 않았는데 나오면 위반 |
 | 길이 | 60~160 단어 | 40 미만, 220 초과면 위반 |
+| 손 숨김 | 요청에 손을 소매 속에 숨기라는 말이 있으면 hand, holding, grip 같은 말을 쓰지 않고, 물건은 소매 끝에 끼우거나 몸에 기대게 쓴다 | 손·쥐는 동작 단어가 프롬프트나 `keep` 에 있으면 위반 |
+| 해 주는 동작 | "~해 주는", "~에게", "~와 함께" 처럼 상대가 있는 동작이면 그 사람도 그리고, 위치와 색으로 구분한다 | `people` 이 2 미만이거나 위치 말(left, right 등)이 없으면 위반 |
 
 - 오독 단어는 이번 작업에서 실제로 나온 오류에서 가져왔다.
   - 예: "silhouette" 는 배경에 사람 모양 그림자를, "ducking" 은 오리를 그렸다.
 - 기존 작품·작가 이름을 넣지 않는 규칙은 지시에만 있고 코드 검사는 없다 [TBD].
+- 손 숨김과 해 주는 동작 규칙은 2026-10-27 메인 시험에서 나온 오류에서 가져왔다.
+  - 예: "비 오는 날 우산을 씌워 주는 소녀" + "손은 항상 긴 소매 속에 숨김" → "holding a large umbrella" 가 들어가 두 장 모두 손이 그려졌고, 우산을 씌워 줄 상대가 빠졌다.
+- 이 두 경우에는 패널 결과 아래에 '참고' 안내를 붙인다.
+  - 예: 손 숨김은 글만으로 잘 지켜지지 않으니 Qwen-Image-Edit 편집 단계를 계획하라는 안내
+- 손 단어를 빼도 Z-Image 가 손을 그리지 않는지는 메인 반영 뒤 확인한다 [TBD].
 
 ## 2. 결과 자동 검사 (시각 모델)
 
@@ -63,7 +70,7 @@ ComfyUI 화면의 '메인 GPU' 패널에 두 기능을 붙였다.
 
 ## API (환경 포트, 로그인 쿠키)
 
-- `POST /mgs/api/expand` 에 `{"text", "notes", "style"}` 를 보내면 `{"prompt", "violations", "rounds", "keep", "categories", "model"}` 을 돌려준다.
+- `POST /mgs/api/expand` 에 `{"text", "notes", "style"}` 를 보내면 `{"prompt", "violations", "rounds", "keep", "categories", "model", "advice"}` 을 돌려준다.
 - `POST /mgs/api/inspect` 에 `{"filename", "subfolder", "type": "output", "expect": []}` 를 보내면 `{"ok", "people", "issues", "traits", "figures"}` 를 돌려준다.
 - `figures` 는 인물별 `{"label", "box", "hands", "arms", "issues"}` 이다.
 

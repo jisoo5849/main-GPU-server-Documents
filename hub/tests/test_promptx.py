@@ -57,6 +57,50 @@ def test_length_rule():
     assert any("words" in p for p in promptx.check_expansion(short))
 
 
+def test_detects_hidden_hands_and_for_someone():
+    assert promptx.hides_hands("손은 항상 긴 소매 속에 숨김")
+    assert promptx.hides_hands("hands tucked inside her long sleeves")
+    assert promptx.hides_hands("sleeves cover her hands")
+    assert not promptx.hides_hands("손을 흔드는 아이")
+    assert promptx.for_someone("비 오는 날 우산을 씌워 주는 소녀")
+    assert promptx.for_someone("동생에게 책을 읽어주는 언니")
+    assert promptx.for_someone("a girl sharing an umbrella with her friend")
+    assert not promptx.for_someone("책상 위 고양이")
+    assert not promptx.for_someone("비 오는 날 우산을 쓴 소녀")
+
+
+UMBRELLA = {  # 2026-10-27 메인 시험에서 실제로 나온 확장 (손이 그려지고 상대가 빠졌다)
+    "prompt": ("A young girl standing in the rain, holding a large umbrella, her hands always hidden inside long "
+               "sleeves, soft watercolor background with gentle rain streaks, clean line art, warm diffused lighting, "
+               "medium shot from a slightly low angle, shallow depth of field, smooth fabric texture on the umbrella "
+               "and clothing, muted pastel color palette, calm and tender atmosphere, single figure centered in the "
+               "frame, delicate facial features, flowing hair, quiet emotional tone"),
+    "keep": ["girl", "umbrella", "rain"],
+    "categories": {"lighting": "warm diffused lighting", "camera": "medium shot from a slightly low angle",
+                   "environment": "soft watercolor background with gentle rain streaks",
+                   "texture": "smooth fabric texture on the umbrella and clothing"},
+    "people": 1,
+}
+
+
+def test_hidden_hands_and_second_person_rules():
+    user = "비 오는 날 우산을 씌워 주는 소녀 손은 항상 긴 소매 속에 숨김"
+    joined = " ".join(promptx.check_expansion(UMBRELLA, "", user))
+    assert '"holding"' in joined and '"hands"' in joined
+    assert "people" in joined
+    fixed = dict(UMBRELLA, people=2, prompt=(
+        "A small girl on the left in a cream sweater with oversized sleeves hanging well past the wrists, "
+        "the umbrella handle tucked inside the drooping sleeve cuff and propped against her shoulder, "
+        "raising the umbrella over a taller boy on the right in a navy raincoat, both standing in the rain, "
+        "soft watercolor background with gentle rain streaks, warm diffused lighting, medium shot from a "
+        "slightly low angle, smooth fabric texture on the umbrella and clothing, calm and tender atmosphere"))
+    assert promptx.check_expansion(fixed, "", user) == []
+    # 손을 숨기라는 말이 없으면 손 단어는 자유
+    assert not any("hidden" in p for p in promptx.check_expansion(UMBRELLA, "", "우산을 든 소녀"))
+    assert not promptx.check_expansion(dict(fixed, prompt=fixed["prompt"] + ", hand-drawn look"), "", user)
+    assert promptx.expand_advice(user) and promptx.expand_advice("책상 위 고양이") == []
+
+
 def test_parse_json_reply():
     assert promptx.parse_json_reply('<think>hmm</think>```json\n{"a": 1}\n```') == {"a": 1}
     assert promptx.parse_json_reply('Here you go: {"a": {"b": 2}} done') == {"a": {"b": 2}}
