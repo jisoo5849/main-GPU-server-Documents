@@ -8,6 +8,8 @@ ComfyUI 페이지와 같은 주소(origin)에서 불리므로 로그인 쿠키�
   POST /mgs/api/select    모델 선택 기록 (접속 기록에 portal_select)
   GET  /mgs/api/starter   모델에 맞는 시작 워크플로우 (공식 템플릿)
   POST /mgs/api/keys      API 키 발급 (작업공간 주인만)
+  POST /mgs/api/expand    짧은 요청 → 메타 규칙으로 검사한 생성용 프롬프트 (promptx.expand, GPU 대기열 경유)
+  POST /mgs/api/inspect   결과 이미지의 해부학 오류·필수 특징 자동 검사 (promptx.inspect, GPU 대기열 경유)
 """
 import asyncio
 import datetime
@@ -17,7 +19,7 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from . import db, jobs, models_index, security, templates_index
+from . import db, jobs, models_index, promptx, security, templates_index
 from .config import settings
 from .scheduler import scheduler
 
@@ -213,4 +215,26 @@ async def handle(request: Request, env: dict, user, path: str):
         key = await security.create_api_key(user["id"], str(data.get("label", "ComfyUI 패널"))[:60])
         await db.log_access(user["id"], ip, "api_key_create", {"via": "comfyui_panel"})
         return JSONResponse({"key": key})
+    if path == "/mgs/api/expand" and method == "POST":
+        data = await _body(request)
+        try:
+            result = await promptx.expand(user, ip, data.get("text"), data.get("style", ""), data.get("notes", ""))
+        except promptx.PromptxError as e:
+            return JSONResponse({"error": str(e)}, status_code=e.status)
+        await db.log_access(user["id"], ip, "prompt_expand",
+                            {"env": env["slug"], "rounds": result["rounds"], "left": len(result["violations"])})
+        return JSONResponse(result)
+    if path == "/mgs/api/inspect" and method == "POST":
+        data = await _body(request)
+        if str(data.get("type") or "output") != "output":
+            return JSONResponse({"error": "결과 폴더의 이미지만 검사합니다."}, status_code=400)
+        try:
+            # 결과 폴더는 작업공간 주인 기준 (proxy._view 와 같은 위치)
+            result = await promptx.inspect(user, ip, env["username"], str(data.get("filename") or ""),
+                                           str(data.get("subfolder") or ""), data.get("expect"))
+        except promptx.PromptxError as e:
+            return JSONResponse({"error": str(e)}, status_code=e.status)
+        await db.log_access(user["id"], ip, "image_inspect",
+                            {"env": env["slug"], "file": result["file"], "ok": result["ok"]})
+        return JSONResponse(result)
     return JSONResponse({"error": "not found"}, status_code=404)

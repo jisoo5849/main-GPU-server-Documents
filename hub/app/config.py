@@ -48,6 +48,12 @@ class Settings:
     ollama_upstream = _env("OLLAMA_UPSTREAM", "http://127.0.0.1:11435")
     ollama_container = _env("OLLAMA_CONTAINER", "mgs-ollama-1")
 
+    # 프롬프트 확장(메타 규칙)과 결과 자동 검사에 쓰는 Ollama 모델. 둘 다 GPU 대기열을 거친다.
+    expand_model = _env("PROMPT_EXPAND_MODEL", "qwen3.8:27b")
+    expand_repair_rounds = _int("PROMPT_EXPAND_REPAIR_ROUNDS", 2)
+    inspect_model = _env("IMAGE_INSPECT_MODEL", "qwen3-vl:8b-instruct")
+    helper_wait_seconds = _int("HELPER_WAIT_SECONDS", 900)
+
     editor_network = "mgs-editors"
     worker_network = "mgs-workers"
     editor_subnet = _env("EDITOR_SUBNET", "172.30.0.0/24")

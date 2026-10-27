@@ -6,6 +6,7 @@
   바로 처리한다. 자기 차례를 자기가 기다리는 교착을 막기 위해서다.
 """
 import asyncio
+import contextlib
 import ipaddress
 import json
 import logging
@@ -235,6 +236,81 @@ async def handle(request: Request):
         waiter.done.set()
 
     return await _forward(request, path, _force_unload(path, body), queued_done)
+
+
+class HelperBusy(Exception):
+    """허브 내부 LLM 호출이 차례를 받지 못했다 (대기열이 길거나 관리자가 취소)."""
+
+
+@contextlib.asynccontextmanager
+async def llm_turn(user, ip: str, model: str, purpose: str, wait_seconds: int | None = None):
+    """허브 안에서 쓰는 LLM 호출(프롬프트 확장·결과 검사)도 사용자 요청과 같은 GPU 대기열을 거친다.
+
+    차례가 오면 call(payload) 로 Ollama 를 여러 번 부를 수 있다 (고쳐 쓰기 반복 동안 모델을 다시 올리지 않게).
+    끝나면 모델을 내리고 llm_calls 에 한 번 기록한 뒤 대기열을 놓아 준다.
+    """
+    job_id = str(uuid.uuid4())
+    waiter = LlmWaiter()
+    scheduler.llm_waiters[job_id] = waiter
+    async with db.pool.acquire() as conn:
+        await jobs.insert_job(conn, job_id=job_id, kind="llm", user_id=user["id"], client_ip=ip,
+                              api_endpoint="/api/chat", model=model, request={"purpose": purpose})
+    scheduler.wake.set()
+    await jobs.notify_queue_changed()
+    try:
+        await asyncio.wait_for(waiter.go.wait(), timeout=wait_seconds or settings.helper_wait_seconds)
+    except (asyncio.TimeoutError, asyncio.CancelledError) as e:
+        waiter.cancelled = True
+        scheduler.llm_waiters.pop(job_id, None)
+        await asyncio.shield(jobs.cancel_queued(None, [job_id]))
+        if isinstance(e, asyncio.CancelledError):
+            raise
+        raise HelperBusy("GPU 대기열이 길어 차례를 받지 못했습니다. 잠시 뒤 다시 시도하세요.") from None
+    if waiter.cancelled:
+        scheduler.llm_waiters.pop(job_id, None)
+        raise HelperBusy(waiter.result.get("message", "요청이 취소되었습니다."))
+
+    t0 = time.monotonic()
+    counts = {"prompt_eval_count": 0, "eval_count": 0}
+    status = 200
+
+    async def call(payload: dict, endpoint: str = "/api/chat") -> dict:
+        nonlocal status
+        body = {**payload, "model": model, "stream": False, "keep_alive": "2m"}
+        try:
+            r = await _client.post(f"{settings.ollama_upstream}{endpoint}", json=body,
+                                   timeout=httpx.Timeout(600, connect=10))
+            data = r.json()
+        except (httpx.HTTPError, ValueError) as e:
+            status = 502
+            raise RuntimeError(f"Ollama 호출 실패: {e}") from None
+        if r.status_code >= 400:
+            status = r.status_code
+            raise RuntimeError(f"Ollama 오류 ({r.status_code}): {data.get('error', '')}")
+        for k in counts:
+            counts[k] += int(data.get(k) or 0)
+        return data
+
+    try:
+        yield call
+    except BaseException:
+        status = status if status >= 400 else 500
+        raise
+    finally:
+        # 끝나면 바로 모델을 내린다 (scheduler 의 메모리 해제 확인이 기다리지 않게). 실패해도 대기열은 놓아 준다.
+        try:
+            await asyncio.shield(_client.post(f"{settings.ollama_upstream}/api/generate",
+                                              json={"model": model, "keep_alive": 0}, timeout=30))
+        except Exception:  # noqa: BLE001 - 정리 단계
+            pass
+        try:
+            tail = json.dumps(counts).encode()
+            await asyncio.shield(_log_call(uuid.UUID(job_id), None, user["id"], f"helper:{purpose}", model, False,
+                                           status, tail, int((time.monotonic() - t0) * 1000)))
+        except Exception:  # noqa: BLE001
+            log.exception("llm_turn 기록 실패")
+        waiter.result = {"status": status}
+        waiter.done.set()
 
 
 async def _noop(*_a):

@@ -28,7 +28,20 @@ const state = {
   newKey: null,
   error: null,
   loginUrl: null,
+  // 프롬프트 도우미 (메타 규칙 확장)
+  helper: { text: "", style: "", notes: "", busy: false, result: null, open: false },
+  // 결과 자동 검사 (VLM)
+  check: { on: false, expect: "", results: [], seen: new Set() },
 };
+
+// 사용자가 적어 둔 그림체·필수 특징·자동 검사 설정은 브라우저에 기억한다 (작업공간 포트마다 따로)
+const SAVED_KEYS = { style: "mgs.helper.style", expect: "mgs.check.expect", on: "mgs.check.on" };
+try {
+  state.helper.style = localStorage.getItem(SAVED_KEYS.style) || "";
+  state.check.expect = localStorage.getItem(SAVED_KEYS.expect) || "";
+  state.check.on = localStorage.getItem(SAVED_KEYS.on) === "1";
+} catch { /* 저장소를 못 쓰는 브라우저 */ }
+const save = (k, v) => { try { localStorage.setItem(SAVED_KEYS[k], v); } catch { /* 무시 */ } };
 
 class LoginError extends Error {}
 
@@ -222,7 +235,8 @@ function draw() {
     root.replaceChildren(titleRow(), h("div", { class: "mgs-empty", text: "불러오는 중…" }));
     return;
   }
-  root.replaceChildren(...[header(), queueCard(), tabs(), search(), list(), keyBox(), footer()].filter(Boolean));
+  root.replaceChildren(...[header(), queueCard(), helperCard(), checkCard(), tabs(), search(), list(), keyBox(),
+    footer()].filter(Boolean));
 }
 
 function header() {
@@ -266,6 +280,178 @@ function queueCard() {
     }));
   }
   return card;
+}
+
+// ── 프롬프트 도우미 ──────────────────────────────────────
+
+function textArea(value, placeholder, rows, oninput) {
+  const ta = h("textarea", { class: "mgs-input", rows, placeholder, oninput: (ev) => oninput(ev.target.value) });
+  ta.value = value;
+  return ta;
+}
+
+function helperCard() {
+  const hp = state.helper;
+  const card = h("div", { class: "mgs-card mgs-helper" });
+  card.append(h("div", { class: "mgs-row" },
+    h("b", { text: "프롬프트 도우미" }),
+    h("button", { class: "mgs-link", onclick: () => { hp.open = !hp.open; redrawHelper(); } }, hp.open ? "접기" : "펼치기")));
+  if (!hp.open) {
+    card.append(h("div", { class: "mgs-sub", text: "짧게 적으면 조명·카메라·배경·질감을 채운 생성용 영문 프롬프트로 늘려 줍니다." }));
+    return card;
+  }
+  card.append(
+    textArea(hp.text, "예: 책상 위 고양이 / 비 오는 날 우산을 씌워 주는 청년", 3, (v) => { hp.text = v; }),
+    textArea(hp.notes, "꼭 지킬 특징 (선택) 예: 손은 항상 긴 소매 속에 숨김", 2, (v) => { hp.notes = v; }),
+    textArea(hp.style, "그림체 고정 문장 (선택, 영문). 적으면 끝에 그대로 붙이고 다른 그림체 말은 막습니다.", 2,
+      (v) => { hp.style = v; save("style", v); }),
+    h("div", { class: "mgs-row" },
+      h("button", { class: "mgs-btn primary", disabled: hp.busy, onclick: runExpand }, hp.busy ? "메인 GPU에서 작성 중…" : "프롬프트 확장"),
+      h("span", { class: "mgs-sub", text: "GPU 대기열을 거칩니다" })));
+  const r = hp.result;
+  if (r) {
+    card.append(h("div", { class: "mgs-code", text: r.prompt }));
+    card.append(h("div", { class: "mgs-sub", text: `규칙 검사 ${r.rounds}회 · ${r.model}` }));
+    if (r.violations?.length) {
+      card.append(h("div", { class: "mgs-warn", text: "아직 규칙에 어긋나는 점이 있습니다 (그대로 써도 되지만 확인하세요):" }));
+      for (const v of r.violations) card.append(h("div", { class: "mgs-sub", text: `· ${v}` }));
+    } else {
+      card.append(h("div", { class: "mgs-ok", text: "규칙 검사 통과: 주제 유지 · 조명·카메라·배경·질감 포함 · 부정어 없음" }));
+    }
+    card.append(h("div", { class: "mgs-row" },
+      h("button", { class: "mgs-btn", onclick: () => copyText(r.prompt, "프롬프트를 복사했습니다") }, "복사"),
+      h("button", { class: "mgs-btn", onclick: () => putIntoSelectedNode(r.prompt) }, "선택한 노드에 넣기")));
+  }
+  return card;
+}
+
+function redrawHelper() {
+  const old = state.root?.querySelector(".mgs-helper");
+  if (old) old.replaceWith(helperCard());
+}
+
+async function runExpand() {
+  const hp = state.helper;
+  if (hp.busy) return;
+  if (!hp.text.trim()) { toast("info", "요청을 먼저 적어 주세요"); return; }
+  hp.busy = true;
+  redrawHelper();
+  try {
+    hp.result = await postJSON("/mgs/api/expand", { text: hp.text, notes: hp.notes, style: hp.style });
+  } catch (e) {
+    if (e instanceof LoginError) { state.error = "login"; draw(); return; }
+    toast("error", "프롬프트를 확장하지 못했습니다", e.message, 8000);
+  } finally {
+    hp.busy = false;
+    redrawHelper();
+  }
+}
+
+function putIntoSelectedNode(text) {
+  // 선택한 노드의 글 입력칸(CLIPTextEncode 의 text, Qwen 편집 노드의 prompt 등)에 넣는다
+  const sel = Object.values(app.canvas?.selected_nodes || {});
+  for (const node of sel) {
+    const w = node.widgets?.find((x) => ["text", "prompt", "positive", "text_g"].includes(x.name) && typeof x.value === "string");
+    if (!w) continue;
+    w.value = text;
+    w.callback?.(w.value, app.canvas, node);
+    app.canvas?.setDirty?.(true, true);
+    markChanged();
+    toast("success", "노드에 넣었습니다", node.title || node.type);
+    return;
+  }
+  toast("info", "글 입력칸이 있는 노드를 먼저 선택하세요", "예: CLIP Text Encode (Prompt)", 6000);
+}
+
+// ── 결과 자동 검사 ──────────────────────────────────────
+
+function checkCard() {
+  const ck = state.check;
+  const card = h("div", { class: "mgs-card mgs-check" });
+  const box = h("input", {
+    type: "checkbox", checked: ck.on,
+    onchange: (ev) => { ck.on = ev.target.checked; save("on", ck.on ? "1" : "0"); redrawCheck(); },
+  });
+  card.append(h("label", { class: "mgs-row" }, box, h("b", { text: "결과 자동 검사" })));
+  card.append(h("div", { class: "mgs-sub", text: "이 화면에서 실행한 결과 이미지를 시각 모델이 보고 팔·다리·머리 오류와 아래 특징을 확인합니다. 한 장마다 GPU 대기열을 한 번 더 씁니다." }));
+  if (ck.on) {
+    card.append(textArea(ck.expect, "꼭 보여야 할 특징, 한 줄에 하나 (선택) 예: hands hidden inside long sleeves", 2,
+      (v) => { ck.expect = v; save("expect", v); }));
+  }
+  for (const r of ck.results.slice(0, 6)) card.append(checkResult(r));
+  return card;
+}
+
+function checkResult(r) {
+  const row = h("div", { class: "mgs-item" });
+  row.append(h("div", { class: "mgs-name", text: r.file }));
+  if (r.state === "wait") { row.append(h("div", { class: "mgs-sub", text: "검사 대기 중 (GPU 대기열)…" })); return row; }
+  if (r.state === "error") { row.append(h("div", { class: "mgs-warn", text: `검사 실패: ${r.error}` })); return row; }
+  const d = r.data;
+  row.append(h("div", { class: d.ok ? "mgs-ok" : "mgs-warn", text: d.ok ? `문제 없음 · 인물 ${d.people}` : `확인 필요 · 인물 ${d.people}` }));
+  for (const i of d.issues) row.append(h("div", { class: "mgs-sub", text: `· ${i.type}${i.where ? ` (${i.where})` : ""}: ${i.detail}` }));
+  for (const t of d.traits) row.append(h("div", { class: "mgs-sub", text: `${t.present ? "✓" : "✗"} ${t.trait}${t.note ? ` · ${t.note}` : ""}` }));
+  if (!d.ok) {
+    row.append(h("div", { class: "mgs-row" },
+      h("button", { class: "mgs-btn", onclick: rerollAndQueue }, "시드 바꿔 다시 실행")));
+  }
+  return row;
+}
+
+function redrawCheck() {
+  const old = state.root?.querySelector(".mgs-check");
+  if (old) old.replaceWith(checkCard());
+}
+
+async function onExecuted(ev) {
+  const ck = state.check;
+  if (!ck.on) return;
+  const images = ev?.detail?.output?.images || [];
+  for (const im of images) {
+    if ((im.type || "output") !== "output") continue;
+    const key = `${im.subfolder || ""}/${im.filename}`;
+    if (ck.seen.has(key)) continue;
+    ck.seen.add(key);
+    const r = { file: key.replace(/^\//, ""), state: "wait" };
+    ck.results.unshift(r);
+    ck.results.length = Math.min(ck.results.length, 20);
+    redrawCheck();
+    try {
+      r.data = await postJSON("/mgs/api/inspect", {
+        filename: im.filename, subfolder: im.subfolder || "", type: "output",
+        expect: ck.expect.split("\n").map((s) => s.trim()).filter(Boolean),
+      });
+      r.state = "done";
+      if (!r.data.ok) toast("warn", "결과 자동 검사: 확인이 필요합니다", r.file, 8000);
+    } catch (e) {
+      r.state = "error";
+      r.error = e.message;
+    }
+    redrawCheck();
+  }
+}
+
+async function rerollAndQueue() {
+  // 지금 화면의 워크플로우에서 시드 값만 새로 뽑아 다시 실행한다 (프롬프트와 설정은 그대로)
+  const nodes = currentGraph()?._nodes || currentGraph()?.nodes || [];
+  let n = 0;
+  for (const node of nodes) {
+    for (const w of node.widgets || []) {
+      if (w.name === "seed" || w.name === "noise_seed") {
+        w.value = Math.floor(Math.random() * 2 ** 48);
+        w.callback?.(w.value, app.canvas, node);
+        n++;
+      }
+    }
+  }
+  if (!n) { toast("info", "시드 입력칸이 있는 노드가 없습니다"); return; }
+  markChanged();
+  try {
+    await app.queuePrompt(0, 1);
+    toast("success", "시드를 바꿔 다시 실행했습니다", `시드 ${n}곳`);
+  } catch (e) {
+    toast("error", "다시 실행하지 못했습니다", e.message);
+  }
 }
 
 function tabs() {
@@ -590,6 +776,8 @@ app.registerExtension({
       render: (container) => render(container),
       destroy: () => stopTimer(),
     });
+    // 결과 자동 검사: 이 화면에서 실행한 작업이 끝날 때마다 (패널이 닫혀 있어도) 결과 이미지를 검사한다
+    api.addEventListener("executed", (ev) => { onExecuted(ev); });
     // 처음 접속한 브라우저에서는 패널을 한 번 열어 위치를 알려 준다
     try {
       if (!localStorage.getItem("mgs.panel.intro")) {
