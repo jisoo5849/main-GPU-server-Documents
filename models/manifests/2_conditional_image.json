@@ -1,0 +1,183 @@
+{
+ "comfy_models_base": "/home/mgs/models",
+ "mkdir_before_download": [
+  "checkpoints",
+  "controlnet",
+  "loras"
+ ],
+ "ollama": [],
+ "files": [
+  {
+   "tier": "추천",
+   "group": "2_conditional_image",
+   "name": "ltx-2-19b-lora-camera-control-dolly-left.safetensors",
+   "filename": "ltx-2-19b-lora-camera-control-dolly-left.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Lightricks/LTX-2-19b-LoRA-Camera-Control-Dolly-Left/resolve/main/ltx-2-19b-lora-camera-control-dolly-left.safetensors",
+   "size_bytes": 327309208,
+   "sha256": "fdd28ee1a53e5413d74b90064c7ec0fe98b78457b5da06c0c9c4ea5810d1f5f6",
+   "license": "ltx-2-community-license",
+   "repo": "Lightricks/LTX-2-19b-LoRA-Camera-Control-Dolly-Left",
+   "templates": [
+    "video_ltx2_i2v",
+    "video_ltx2_i2v_distilled",
+    "video_ltx2_t2v",
+    "video_ltx2_t2v_distilled"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_image",
+   "name": "ltx-2-19b-ic-lora-canny-control.safetensors",
+   "filename": "ltx-2-19b-ic-lora-canny-control.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Lightricks/LTX-2-19b-IC-LoRA-Canny-Control/resolve/main/ltx-2-19b-ic-lora-canny-control.safetensors",
+   "size_bytes": 654465256,
+   "sha256": "a95878f53b9fc19e2a3043472f32cc9dd9674b04293abcad4d553fe6114a62e2",
+   "license": "ltx-2-community-license",
+   "repo": "Lightricks/LTX-2-19b-IC-LoRA-Canny-Control",
+   "templates": [
+    "video_ltx2_canny_to_video"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_image",
+   "name": "ltx-2-19b-ic-lora-depth-control.safetensors",
+   "filename": "ltx-2-19b-ic-lora-depth-control.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Lightricks/LTX-2-19b-IC-LoRA-Depth-Control/resolve/main/ltx-2-19b-ic-lora-depth-control.safetensors",
+   "size_bytes": 654465256,
+   "sha256": "16abe99187f46990e60fbd68cc2c23fe77af024b2701963fddba2d37324ed088",
+   "license": "ltx-2-community-license",
+   "repo": "Lightricks/LTX-2-19b-IC-LoRA-Depth-Control",
+   "templates": [
+    "video_ltx2_depth_to_video"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_image",
+   "name": "stable-audio-open-1.0.safetensors",
+   "filename": "stable-audio-open-1.0.safetensors",
+   "folder": "checkpoints",
+   "url": "https://huggingface.co/Comfy-Org/stable-audio-open-1.0_repackaged/resolve/main/stable-audio-open-1.0.safetensors",
+   "size_bytes": 4853889016,
+   "sha256": "7b20458a071231aaf32613b6fbc7945f28f34dbba4f295bb49bad56f5f66b57e",
+   "license": "stable-audio-community",
+   "repo": "Comfy-Org/stable-audio-open-1.0_repackaged",
+   "templates": [
+    "audio_stable_audio_example"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_image",
+   "name": "sd3.5_large_controlnet_blur.safetensors",
+   "filename": "sd3.5_large_controlnet_blur.safetensors",
+   "folder": "controlnet",
+   "url": "https://huggingface.co/Comfy-Org/stable-diffusion-3.5-controlnets_ComfyUI_repackaged/resolve/main/split_files/controlnet/sd3.5_large_controlnet_blur.safetensors",
+   "size_bytes": 8654590644,
+   "sha256": "43d71c6f570d93e04a2d00711c530c74dcd7eef5d322efaab967c2d8296854dc",
+   "license": "stabilityai-ai-community",
+   "repo": "Comfy-Org/stable-diffusion-3.5-controlnets_ComfyUI_repackaged",
+   "templates": [
+    "sd3.5_large_blur"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_image",
+   "name": "sd3.5_large_controlnet_canny.safetensors",
+   "filename": "sd3.5_large_controlnet_canny.safetensors",
+   "folder": "controlnet",
+   "url": "https://huggingface.co/Comfy-Org/stable-diffusion-3.5-controlnets_ComfyUI_repackaged/resolve/main/split_files/controlnet/sd3.5_large_controlnet_canny.safetensors",
+   "size_bytes": 8654590644,
+   "sha256": "4bc5cf949f6501a4bd125c6c1190e8fba0f1471f5ce36e9ebd1114867abedd4c",
+   "license": "stabilityai-ai-community",
+   "repo": "Comfy-Org/stable-diffusion-3.5-controlnets_ComfyUI_repackaged",
+   "templates": [
+    "sd3.5_large_canny_controlnet_example"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_image",
+   "name": "sd3.5_large_controlnet_depth.safetensors",
+   "filename": "sd3.5_large_controlnet_depth.safetensors",
+   "folder": "controlnet",
+   "url": "https://huggingface.co/Comfy-Org/stable-diffusion-3.5-controlnets_ComfyUI_repackaged/resolve/main/split_files/controlnet/sd3.5_large_controlnet_depth.safetensors",
+   "size_bytes": 8654590644,
+   "sha256": "d6ded6aa4f60eda74ae48a8fdc1a9fa11b36f05488975916f1ecd4834fddffd0",
+   "license": "stabilityai-ai-community",
+   "repo": "Comfy-Org/stable-diffusion-3.5-controlnets_ComfyUI_repackaged",
+   "templates": [
+    "sd3.5_large_depth"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_image",
+   "name": "sd3.5_large_fp8_scaled.safetensors",
+   "filename": "sd3.5_large_fp8_scaled.safetensors",
+   "folder": "checkpoints",
+   "url": "https://huggingface.co/Comfy-Org/stable-diffusion-3.5-fp8/resolve/main/sd3.5_large_fp8_scaled.safetensors?download=true",
+   "size_bytes": 14934922866,
+   "sha256": "5ad94d6f951556b1ab6b75930fd4effbafaf3130fe9df440e7f2d05a220dd1be",
+   "license": "stabilityai-ai-community",
+   "repo": "Comfy-Org/stable-diffusion-3.5-fp8",
+   "templates": [
+    "sd3.5_large_blur",
+    "sd3.5_large_canny_controlnet_example",
+    "sd3.5_large_depth",
+    "sd3.5_simple_example"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_image",
+   "name": "ltx-2-19b-dev-fp8.safetensors",
+   "filename": "ltx-2-19b-dev-fp8.safetensors",
+   "folder": "checkpoints",
+   "url": "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-dev-fp8.safetensors",
+   "size_bytes": 27078716018,
+   "sha256": "8a67e709b6d1adc061cb19921887a5c15754178199e45801a04310e9b522760d",
+   "license": "ltx-2-community-license-agreement",
+   "repo": "Lightricks/LTX-2",
+   "templates": [
+    "video_ltx2_canny_to_video",
+    "video_ltx2_depth_to_video",
+    "video_ltx2_i2v",
+    "video_ltx2_t2v"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_image",
+   "name": "ltx-2-19b-distilled.safetensors",
+   "filename": "ltx-2-19b-distilled.safetensors",
+   "folder": "checkpoints",
+   "url": "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled.safetensors",
+   "size_bytes": 43285058186,
+   "sha256": "c4006d689061cde0967b9d96eaf44253ff08f5de0c78e5fa1331a763cd03ee28",
+   "license": "ltx-2-community-license-agreement",
+   "repo": "Lightricks/LTX-2",
+   "templates": [
+    "video_ltx2_canny_to_video",
+    "video_ltx2_depth_to_video",
+    "video_ltx2_i2v_distilled",
+    "video_ltx2_t2v_distilled"
+   ],
+   "minimax_license_hold": false
+  }
+ ]
+}

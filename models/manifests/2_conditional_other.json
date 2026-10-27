@@ -1,0 +1,126 @@
+{
+ "comfy_models_base": "/home/mgs/models",
+ "mkdir_before_download": [
+  "checkpoints",
+  "diffusion_models",
+  "loras",
+  "text_encoders"
+ ],
+ "ollama": [],
+ "files": [
+  {
+   "tier": "추천",
+   "group": "2_conditional_other",
+   "name": "krea2_style_reference.safetensors",
+   "filename": "krea2_style_reference.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/loras/krea2_style_reference.safetensors",
+   "size_bytes": 457111760,
+   "sha256": "f50df5a9e62e4be8aa926a63dd5bb1a64770c4004f763c1208007ae13daa82b8",
+   "license": "krea-2-community-license",
+   "repo": "Comfy-Org/Krea-2",
+   "templates": [
+    "image_krea2_turbo_int8_image_style_reference"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_other",
+   "name": "t5gemma_b_b_ul2.safetensors",
+   "filename": "t5gemma_b_b_ul2.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/stable-audio-3/resolve/main/text_encoders/t5gemma_b_b_ul2.safetensors",
+   "size_bytes": 1187264003,
+   "sha256": "1e1eba25be8872edb0d3c6335c6658fd6388e7b14b60da6e454e404cfcd8150e",
+   "license": "stable-audio-community",
+   "repo": "Comfy-Org/stable-audio-3",
+   "templates": [
+    "audio_stable_audio_3_medium",
+    "audio_stable_audio_3_medium_base"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_other",
+   "name": "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors",
+   "filename": "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Comfy-Org/ltx-2.3/resolve/main/split_files/loras/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors",
+   "size_bytes": 1308778338,
+   "sha256": "515e4e139001ac6282357a5b35372e42e98b3affd5fcc886a52242abeed19559",
+   "license": "ltx-2-community-license",
+   "repo": "Comfy-Org/ltx-2.3",
+   "templates": [
+    "template_ltx2_3_ic_lora_ingredients"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_other",
+   "name": "ltx-2.3-22b-distilled-lora-384.safetensors",
+   "filename": "ltx-2.3-22b-distilled-lora-384.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-distilled-lora-384.safetensors",
+   "size_bytes": 7605507256,
+   "sha256": "2943ab994f3c9d88052e5a2a34cca14e4a2dfc36b1d8c407931d52d5c25dd72b",
+   "license": "ltx-2-community-license-agreement",
+   "repo": "Lightricks/LTX-2.3",
+   "templates": [
+    "template_image_speech_to_video"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_other",
+   "name": "stable_audio_3_medium.safetensors",
+   "filename": "stable_audio_3_medium.safetensors",
+   "folder": "checkpoints",
+   "url": "https://huggingface.co/Comfy-Org/stable-audio-3/resolve/main/checkpoints/stable_audio_3_medium.safetensors",
+   "size_bytes": 9222116660,
+   "sha256": "48d9c65e290e7bcd5194e0633bfc2424a59ee9683f5c2d58762d997b7d8ce0b5",
+   "license": "stable-audio-community",
+   "repo": "Comfy-Org/stable-audio-3",
+   "templates": [
+    "audio_stable_audio_3_medium"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_other",
+   "name": "stable_audio_3_medium_base.safetensors",
+   "filename": "stable_audio_3_medium_base.safetensors",
+   "folder": "checkpoints",
+   "url": "https://huggingface.co/Comfy-Org/stable-audio-3/resolve/main/checkpoints/stable_audio_3_medium_base.safetensors",
+   "size_bytes": 9222116660,
+   "sha256": "c443fcc4d491475064cd0ff3eb92459b1e5f5060e86d96d016f048e528e24195",
+   "license": "stable-audio-community",
+   "repo": "Comfy-Org/stable-audio-3",
+   "templates": [
+    "audio_stable_audio_3_medium_base"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_other",
+   "name": "krea2_turbo_int8_convrot.safetensors",
+   "filename": "krea2_turbo_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_int8_convrot.safetensors",
+   "size_bytes": 13492686496,
+   "sha256": "8e4eeda70dd5037ab1ba2bef6b417f9f901e26093117cf397f741fc1fdaaf3f1",
+   "license": "krea-2-community-license",
+   "repo": "Comfy-Org/Krea-2",
+   "templates": [
+    "image_krea2_turbo_int8_image_style_reference",
+    "image_krea2_turbo_t2i_int8"
+   ],
+   "minimax_license_hold": false
+  }
+ ]
+}

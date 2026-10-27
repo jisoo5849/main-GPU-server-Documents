@@ -1,0 +1,463 @@
+{
+ "comfy_models_base": "/home/mgs/models",
+ "mkdir_before_download": [
+  "checkpoints",
+  "diffusion_models",
+  "loras",
+  "style_models",
+  "text_encoders"
+ ],
+ "ollama": [],
+ "files": [
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "flux1-redux-dev.safetensors",
+   "filename": "flux1-redux-dev.safetensors",
+   "folder": "style_models",
+   "url": "https://huggingface.co/Comfy-Org/Flux1-Redux-Dev/resolve/main/flux1-redux-dev.safetensors",
+   "size_bytes": 129063232,
+   "sha256": "a1b3bdcb4bdc58ce04874b9ca776d61fc3e914bb6beab41efb63e4e2694dca45",
+   "license": "flux-1-dev-non-commercial-license",
+   "repo": "Comfy-Org/Flux1-Redux-Dev",
+   "templates": [
+    "flux_redux_model_example"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "jina_clip_v2_bf16.safetensors",
+   "filename": "jina_clip_v2_bf16.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/NewBie-image-Exp0.1_repackaged/resolve/main/split_files/text_encoders/jina_clip_v2_bf16.safetensors",
+   "size_bytes": 1121730691,
+   "sha256": "149c302aecd9cda9985f16f1330611925f1f7875dcdbe57df296f210e6ab0d73",
+   "license": "newbie-nc-1.0",
+   "repo": "Comfy-Org/NewBie-image-Exp0.1_repackaged",
+   "templates": [
+    "image_newbieimage_exp0_1-t2i"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "qwen_3_06b_base.safetensors",
+   "filename": "qwen_3_06b_base.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/text_encoders/qwen_3_06b_base.safetensors",
+   "size_bytes": 1192135096,
+   "sha256": "cd2a512003e2f9f3cd3c32a9c3573f820bb28c940f73c57b1ddaa983d9223eba",
+   "license": "circlestone-labs-non-commercial-license",
+   "repo": "circlestone-labs/Anima",
+   "templates": [
+    "image_anima_base_v1",
+    "image_anima_lllite_any_control_to_image",
+    "image_anima_lllite_depth_control_to_image",
+    "image_anima_lllite_image_inpainting",
+    "image_anima_preview"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "flux1-depth-dev-lora.safetensors",
+   "filename": "flux1-depth-dev-lora.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/split_files/loras/flux1-depth-dev-lora.safetensors",
+   "size_bytes": 1244440512,
+   "sha256": "1938b38ea0fdd98080fa3e48beb2bedfbc7ad102d8b65e6614de704a46d8b907",
+   "license": "flux-1-dev-non-commercial-license",
+   "repo": "Comfy-Org/flux1-dev",
+   "templates": [
+    "flux_depth_lora_example"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "pixeldit_1300m_1024px_bf16.safetensors",
+   "filename": "pixeldit_1300m_1024px_bf16.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pixeldit_1300m_1024px_bf16.safetensors",
+   "size_bytes": 2604985230,
+   "sha256": "d904bae12526c48a522a503b80668fbd45bae6398e9d6f3c2a3e76629552d4ff",
+   "license": "nsclv1",
+   "repo": "Comfy-Org/PixelDiT",
+   "templates": [
+    "image_pixeldit_t2i"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "Flux2TurboComfyv2.safetensors",
+   "filename": "Flux2TurboComfyv2.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/loras/Flux2TurboComfyv2.safetensors",
+   "size_bytes": 2760814872,
+   "sha256": "dfc97af0180d432269361a7bc36b4a7df6a2a3ffb630763f8c3343d3d1991d87",
+   "license": "flux-1-dev-non-commercial-license",
+   "repo": "Comfy-Org/flux2-dev",
+   "templates": [
+    "image_flux2_fp8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "anima-base-v1.0.safetensors",
+   "filename": "anima-base-v1.0.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/diffusion_models/anima-base-v1.0.safetensors",
+   "size_bytes": 4182218328,
+   "sha256": "bd43b7cffe1ed1153d9c41e7beb2f18cb1273eafbaa3af3edd6a173dc90a006e",
+   "license": "circlestone-labs-non-commercial-license",
+   "repo": "circlestone-labs/Anima",
+   "templates": [
+    "image_anima_base_v1",
+    "image_anima_lllite_any_control_to_image",
+    "image_anima_lllite_depth_control_to_image",
+    "image_anima_lllite_image_inpainting"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "anima-preview3-base.safetensors",
+   "filename": "anima-preview3-base.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/diffusion_models/anima-preview3-base.safetensors",
+   "size_bytes": 4182218360,
+   "sha256": "14fffe8ad5116cd73b9a4696f6a89d7e5f6efdd24b2e4785603aa891a9b2295b",
+   "license": "circlestone-labs-non-commercial-license",
+   "repo": "circlestone-labs/Anima",
+   "templates": [
+    "image_anima_preview"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "gemma_2_2b_it_elm_bf16.safetensors",
+   "filename": "gemma_2_2b_it_elm_bf16.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/text_encoders/gemma_2_2b_it_elm_bf16.safetensors",
+   "size_bytes": 5232958571,
+   "sha256": "e7ae59c203c392db4aa4e27783e924ec3225eb563392260cf747e1130ffcdb88",
+   "license": "nsclv1",
+   "repo": "Comfy-Org/PixelDiT",
+   "templates": [
+    "image_pixeldit_t2i"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "sd_xl_turbo_1.0_fp16.safetensors",
+   "filename": "sd_xl_turbo_1.0_fp16.safetensors",
+   "folder": "checkpoints",
+   "url": "https://huggingface.co/stabilityai/sdxl-turbo/resolve/main/sd_xl_turbo_1.0_fp16.safetensors",
+   "size_bytes": 6938081905,
+   "sha256": "e869ac7d6942cb327d68d5ed83a40447aadf20e0c3358d98b2cc9e270db0da26",
+   "license": "sai-nc-community",
+   "repo": "stabilityai/sdxl-turbo",
+   "templates": [
+    "sdxlturbo_example"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "NewBie-Image-Exp0.1-bf16.safetensors",
+   "filename": "NewBie-Image-Exp0.1-bf16.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/NewBie-image-Exp0.1_repackaged/resolve/main/split_files/diffusion_models/NewBie-Image-Exp0.1-bf16.safetensors",
+   "size_bytes": 6973329400,
+   "sha256": "b8ed0f26c0b90b70a5a2ef0f69041529af7fbfef206f773c07d6cd1d56d77ef8",
+   "license": "newbie-nc-1.0",
+   "repo": "Comfy-Org/NewBie-image-Exp0.1_repackaged",
+   "templates": [
+    "image_newbieimage_exp0_1-t2i"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "gemma_3_4b_it_bf16.safetensors",
+   "filename": "gemma_3_4b_it_bf16.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/NewBie-image-Exp0.1_repackaged/resolve/main/split_files/text_encoders/gemma_3_4b_it_bf16.safetensors",
+   "size_bytes": 7765267250,
+   "sha256": "9ca0ed0c8b0093357c044fc528f439d369fb1029200dcd8011328771e8af8d6e",
+   "license": "newbie-nc-1.0",
+   "repo": "Comfy-Org/NewBie-image-Exp0.1_repackaged",
+   "templates": [
+    "image_newbieimage_exp0_1-t2i"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "qwen_3_8b_fp8mixed.safetensors",
+   "filename": "qwen_3_8b_fp8mixed.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/flux2-klein-9B/resolve/main/split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors",
+   "size_bytes": 8664848742,
+   "sha256": "abad16806e0cbabc54e0325d6565847443fe396d5f0be38bb3cd3fe75a1201d6",
+   "license": "flux-non-commercial-license",
+   "repo": "Comfy-Org/flux2-klein-9B",
+   "templates": [
+    "image_flux2_klein_9b_kv_image_edit",
+    "image_flux2_klein_image_edit_9b_base",
+    "image_flux2_klein_image_edit_9b_distilled",
+    "image_flux2_text_to_image_9b"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "ideogram4_fp8_scaled.safetensors",
+   "filename": "ideogram4_fp8_scaled.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/main/diffusion_models/ideogram4_fp8_scaled.safetensors",
+   "size_bytes": 9280741285,
+   "sha256": "49a946f1b0f8bcf5eab7d3b1ecc7b453c104e034cb1b592032745692724bd306",
+   "license": "ideogram-non-commercial-model-agreement",
+   "repo": "Comfy-Org/Ideogram-4",
+   "templates": [
+    "image_ideogram4_t2i"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "ideogram4_unconditional_fp8_scaled.safetensors",
+   "filename": "ideogram4_unconditional_fp8_scaled.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/main/diffusion_models/ideogram4_unconditional_fp8_scaled.safetensors",
+   "size_bytes": 9280741293,
+   "sha256": "9b359007dae162cca7591d00868feea733eb7c56e56e3a214a4d5a9a2a07cd60",
+   "license": "ideogram-non-commercial-model-agreement",
+   "repo": "Comfy-Org/Ideogram-4",
+   "templates": [
+    "image_ideogram4_t2i"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "flux-2-klein-9b-kv-fp8.safetensors",
+   "filename": "flux-2-klein-9b-kv-fp8.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-kv-fp8/resolve/main/flux-2-klein-9b-kv-fp8.safetensors",
+   "size_bytes": 9818935984,
+   "sha256": "33f7da5625a00798349a719742999d3c7dd20c1a7eda14663922c363640728f1",
+   "license": "flux-non-commercial-license",
+   "repo": "black-forest-labs/FLUX.2-klein-9b-kv-fp8",
+   "templates": [
+    "image_flux2_klein_9b_kv_image_edit"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "flux.1-fill-dev-OneReward-transformer_fp8.safetensors",
+   "filename": "flux.1-fill-dev-OneReward-transformer_fp8.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/OneReward_repackaged/resolve/main/split_files/diffusion_models/flux.1-fill-dev-OneReward-transformer_fp8.safetensors",
+   "size_bytes": 11902532704,
+   "sha256": "dd5cc73df9d2fb1e5e9d8ec518bcb7ea1103f55f679ad58877aa192e00481d1a",
+   "license": "cc-by-nc-4.0",
+   "repo": "Comfy-Org/OneReward_repackaged",
+   "templates": [
+    "image_flux.1_fill_dev_OneReward"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "flux1-krea-dev_fp8_scaled.safetensors",
+   "filename": "flux1-krea-dev_fp8_scaled.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/FLUX.1-Krea-dev_ComfyUI/resolve/main/split_files/diffusion_models/flux1-krea-dev_fp8_scaled.safetensors",
+   "size_bytes": 11904639672,
+   "sha256": "b17a8c21703c4d6ffb0e300dd920eff3cfd35c9a72a1abaf107e3788e408b8d8",
+   "license": "flux-1-dev-non-commercial-license",
+   "repo": "Comfy-Org/FLUX.1-Krea-dev_ComfyUI",
+   "templates": [
+    "flux1_krea_dev"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "flux1-dev-kontext_fp8_scaled.safetensors",
+   "filename": "flux1-dev-kontext_fp8_scaled.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/flux1-kontext-dev_ComfyUI/resolve/main/split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors",
+   "size_bytes": 11904640136,
+   "sha256": "630ba795ec64283b4230ea23cf79406c2c68b7c578229ed139f30043eadb30a2",
+   "license": "flux-1-dev-non-commercial-license",
+   "repo": "Comfy-Org/flux1-kontext-dev_ComfyUI",
+   "templates": [
+    "flux_kontext_dev_basic"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "flux1-dev-fp8.safetensors",
+   "filename": "flux1-dev-fp8.safetensors",
+   "folder": "checkpoints",
+   "url": "https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev-fp8.safetensors",
+   "size_bytes": 17246524772,
+   "sha256": "8e91b68084b53a7fc44ed2a3756d821e355ac1a7b6fe29be760c1db532f3d88a",
+   "license": "flux-1-dev-non-commercial-license",
+   "repo": "Comfy-Org/flux1-dev",
+   "templates": [
+    "flux1_dev_uso_reference_image_gen"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "flux1-dev-fp8.safetensors",
+   "filename": "flux1-dev-fp8.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev-fp8.safetensors",
+   "size_bytes": 17246524772,
+   "sha256": "8e91b68084b53a7fc44ed2a3756d821e355ac1a7b6fe29be760c1db532f3d88a",
+   "license": "flux-1-dev-non-commercial-license",
+   "repo": "Comfy-Org/flux1-dev",
+   "templates": [
+    "flux_depth_lora_example"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "mistral_3_small_flux2_fp8.safetensors",
+   "filename": "mistral_3_small_flux2_fp8.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/text_encoders/mistral_3_small_flux2_fp8.safetensors",
+   "size_bytes": 18034640095,
+   "sha256": "e3467b7d912a234fb929cdf215dc08efdb011810b44bc21081c4234cc75b370e",
+   "license": "flux-1-dev-non-commercial-license",
+   "repo": "Comfy-Org/flux2-dev",
+   "templates": [
+    "image_flux2_fp8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "flux1-dev.safetensors",
+   "filename": "flux1-dev.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev.safetensors",
+   "size_bytes": 23802932552,
+   "sha256": "4610115bb0c89560703c892c59ac2742fa821e60ef5871b33493ba544683abd7",
+   "license": "flux-1-dev-non-commercial-license",
+   "repo": "Comfy-Org/flux1-dev",
+   "templates": [
+    "flux_dev_checkpoint_example",
+    "flux_dev_full_text_to_image",
+    "flux_redux_model_example"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "flux1-canny-dev.safetensors",
+   "filename": "flux1-canny-dev.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/split_files/diffusion_models/flux1-canny-dev.safetensors",
+   "size_bytes": 23803351736,
+   "sha256": "996876670169591cb412b937fbd46ea14cbed6933aef17c48a2dcd9685c98cdb",
+   "license": "flux-1-dev-non-commercial-license",
+   "repo": "Comfy-Org/flux1-dev",
+   "templates": [
+    "flux_canny_model_example"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "flux1-fill-dev.safetensors",
+   "filename": "flux1-fill-dev.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/split_files/diffusion_models/flux1-fill-dev.safetensors",
+   "size_bytes": 23804922408,
+   "sha256": "03e289f530df51d014f48e675a9ffa2141bc003259bf5f25d75b957e920a41ca",
+   "license": "flux-1-dev-non-commercial-license",
+   "repo": "Comfy-Org/flux1-dev",
+   "templates": [
+    "flux_fill_inpaint_example",
+    "flux_fill_outpaint_example"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "flux2_dev_fp8mixed.safetensors",
+   "filename": "flux2_dev_fp8mixed.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/diffusion_models/flux2_dev_fp8mixed.safetensors",
+   "size_bytes": 35455599592,
+   "sha256": "863a82e4ff950a42a6b0e80bea824828f129eb1a8fbbdbd9e8cb29859127b486",
+   "license": "flux-1-dev-non-commercial-license",
+   "repo": "Comfy-Org/flux2-dev",
+   "templates": [
+    "image_flux2",
+    "image_flux2_fp8",
+    "image_flux2_text_to_image",
+    "templates-all_in_one-image_edit_models"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_image",
+   "name": "mistral_3_small_flux2_bf16.safetensors",
+   "filename": "mistral_3_small_flux2_bf16.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors",
+   "size_bytes": 35584897447,
+   "sha256": "7d79902f60b1aeb3a6de2cfad02f4367b5e300a1387de3d03ac717cfa3df117c",
+   "license": "flux-1-dev-non-commercial-license",
+   "repo": "Comfy-Org/flux2-dev",
+   "templates": [
+    "image_flux2",
+    "image_flux2_text_to_image",
+    "templates-all_in_one-image_edit_models"
+   ],
+   "minimax_license_hold": false
+  }
+ ]
+}

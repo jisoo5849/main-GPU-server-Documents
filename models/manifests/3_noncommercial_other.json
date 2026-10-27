@@ -1,0 +1,158 @@
+{
+ "comfy_models_base": "/home/mgs/models",
+ "mkdir_before_download": [
+  "audio_encoders",
+  "checkpoints",
+  "diffusion_models",
+  "model_patches",
+  "text_encoders"
+ ],
+ "ollama": [],
+ "files": [
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_other",
+   "name": "anima-lllite-depth-1.safetensors",
+   "filename": "anima-lllite-depth-1.safetensors",
+   "folder": "model_patches",
+   "url": "https://huggingface.co/Comfy-Org/Anima-LLLite/resolve/main/model_patches/anima-lllite-depth-1.safetensors",
+   "size_bytes": 7864128,
+   "sha256": "81357e51cd59874b4fbdda1eb3117aa73eafe36cc7efb9cf80a152d6bc8d0602",
+   "license": "circlestone-labs-non-commercial-license",
+   "repo": "Comfy-Org/Anima-LLLite",
+   "templates": [
+    "image_anima_lllite_depth_control_to_image"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_other",
+   "name": "anima-lllite-any-test-like-v2.safetensors",
+   "filename": "anima-lllite-any-test-like-v2.safetensors",
+   "folder": "model_patches",
+   "url": "https://huggingface.co/Comfy-Org/Anima-LLLite/resolve/main/model_patches/anima-lllite-any-test-like-v2.safetensors",
+   "size_bytes": 16403008,
+   "sha256": "8863424f04a2445815a827b22cbda557a085d2752e05fab54a2b303821a9e3b2",
+   "license": "circlestone-labs-non-commercial-license",
+   "repo": "Comfy-Org/Anima-LLLite",
+   "templates": [
+    "image_anima_lllite_any_control_to_image"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_other",
+   "name": "anima-lllite-inpainting-v2.safetensors",
+   "filename": "anima-lllite-inpainting-v2.safetensors",
+   "folder": "model_patches",
+   "url": "https://huggingface.co/Comfy-Org/Anima-LLLite/resolve/main/model_patches/anima-lllite-inpainting-v2.safetensors",
+   "size_bytes": 65772872,
+   "sha256": "5242e677d2be34ee70ca7c97c3b14ff5ee49838c03fc1e60ac4852a180db6ef5",
+   "license": "circlestone-labs-non-commercial-license",
+   "repo": "Comfy-Org/Anima-LLLite",
+   "templates": [
+    "image_anima_lllite_image_inpainting"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_other",
+   "name": "sheetsage2_bf16.safetensors",
+   "filename": "sheetsage2_bf16.safetensors",
+   "folder": "audio_encoders",
+   "url": "https://huggingface.co/Comfy-Org/YuE2/resolve/main/audio_encoders/sheetsage2_bf16.safetensors",
+   "size_bytes": 1386868122,
+   "sha256": "5fd960ce3df281e3f3a889d174584d88f96247711480cf96377b12d7e8b6adc5",
+   "license": "cc-by-nc-4.0",
+   "repo": "Comfy-Org/YuE2",
+   "templates": [
+    "audio_yue2_music_cover"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_other",
+   "name": "gemma_2_2b_it_elm_fp8_scaled.safetensors",
+   "filename": "gemma_2_2b_it_elm_fp8_scaled.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/text_encoders/gemma_2_2b_it_elm_fp8_scaled.safetensors",
+   "size_bytes": 2618902308,
+   "sha256": "87692b2ab1714028e29910ea645d96db656505ca0805051048d2298b225c02d1",
+   "license": "nsclv1",
+   "repo": "Comfy-Org/PixelDiT",
+   "templates": [
+    "utility_pid_latent_upscale_dit"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_other",
+   "name": "pid_flux1_1024_to_4096_4step_bf16.safetensors",
+   "filename": "pid_flux1_1024_to_4096_4step_bf16.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_flux1_1024_to_4096_4step_bf16.safetensors",
+   "size_bytes": 2724747428,
+   "sha256": "17c282ed387edad7bfdd3189c5a17363d73e3d60b5e841dfded81c3b76e211ee",
+   "license": "nsclv1",
+   "repo": "Comfy-Org/PixelDiT",
+   "templates": [
+    "utility_pid_latent_upscale_dit"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_other",
+   "name": "yue2_3b_int8_convrot.safetensors",
+   "filename": "yue2_3b_int8_convrot.safetensors",
+   "folder": "checkpoints",
+   "url": "https://huggingface.co/Comfy-Org/YuE2/resolve/main/checkpoints/yue2_3b_int8_convrot.safetensors",
+   "size_bytes": 3960938800,
+   "sha256": "96fe199377309001ed8cd26a944baeee8cc31a20ba7c36d1d3c0a7e1f4149db6",
+   "license": "cc-by-nc-4.0",
+   "repo": "Comfy-Org/YuE2",
+   "templates": [
+    "audio_yue2_music_cover",
+    "audio_yue2_text2music"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_other",
+   "name": "ideogram4_int8_convrot.safetensors",
+   "filename": "ideogram4_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/main/diffusion_models/ideogram4_int8_convrot.safetensors",
+   "size_bytes": 9583465712,
+   "sha256": "a9164002943463b4c7b2abd88c82a488c088acc35762651e4d8604d6ce4a163d",
+   "license": "ideogram-non-commercial-model-agreement",
+   "repo": "Comfy-Org/Ideogram-4",
+   "templates": [
+    "image_ideogram4_t2i_int8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "3_noncommercial_other",
+   "name": "ideogram4_unconditional_int8_convrot.safetensors",
+   "filename": "ideogram4_unconditional_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/main/diffusion_models/ideogram4_unconditional_int8_convrot.safetensors",
+   "size_bytes": 9583465712,
+   "sha256": "cd03ed94f244c9cb705e7d30ca0f40b5f5b004bb20674117adff88d16416c23d",
+   "license": "ideogram-non-commercial-model-agreement",
+   "repo": "Comfy-Org/Ideogram-4",
+   "templates": [
+    "image_ideogram4_t2i_int8"
+   ],
+   "minimax_license_hold": false
+  }
+ ]
+}

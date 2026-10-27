@@ -1,0 +1,986 @@
+{
+ "comfy_models_base": "/home/mgs/models",
+ "mkdir_before_download": [
+  "checkpoints",
+  "clip_vision",
+  "detection",
+  "diffusion_models",
+  "embeddings",
+  "frame_interpolation",
+  "geometry_estimation",
+  "loras",
+  "optical_flow",
+  "text_encoders",
+  "vae"
+ ],
+ "ollama": [],
+ "files": [
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "marigold_v2_depth_conditioning.safetensors",
+   "filename": "marigold_v2_depth_conditioning.safetensors",
+   "folder": "embeddings",
+   "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/embeddings/marigold_v2_depth_conditioning.safetensors",
+   "size_bytes": 2422904,
+   "sha256": "9f5c00a2df993136c541cdbc37bcfb81ab1ba81adaec25bfb9cbfff81edd7c9c",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/marigold-v2-0",
+   "templates": [
+    "image_marigold_v2_depth_estimation"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "marigold_v2_normals_conditioning.safetensors",
+   "filename": "marigold_v2_normals_conditioning.safetensors",
+   "folder": "embeddings",
+   "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/embeddings/marigold_v2_normals_conditioning.safetensors",
+   "size_bytes": 2537592,
+   "sha256": "a0f82526b471482dfb2c2403aa63582f7732241d706f1f5b0daeda88762eeb5f",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/marigold-v2-0",
+   "templates": [
+    "image_marigold_v2_surface_normal_estimation"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "marigold_v2_albedo_conditioning.safetensors",
+   "filename": "marigold_v2_albedo_conditioning.safetensors",
+   "folder": "embeddings",
+   "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/embeddings/marigold_v2_albedo_conditioning.safetensors",
+   "size_bytes": 2573432,
+   "sha256": "f3d70cc7d4d37743e3f4da197b97a2d2847a8a172a50f86112642ecfa99834fd",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/marigold-v2-0",
+   "templates": [
+    "image_marigold_v2_albedo_estimation"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "raft_large_C_T_SKHT_V2-ff5fadd5.safetensors",
+   "filename": "raft_large_C_T_SKHT_V2-ff5fadd5.safetensors",
+   "folder": "optical_flow",
+   "url": "https://huggingface.co/Comfy-Org/void-model/resolve/main/optical_flow/raft_large_C_T_SKHT_V2-ff5fadd5.safetensors",
+   "size_bytes": 21060840,
+   "sha256": "aac3561dbbb49a30853bc7d9bb1bf39ce59cc260f670911d43c900ba27a4a8bb",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/void-model",
+   "templates": [
+    "utility_void_video_inpainting"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "film_net_fp16.safetensors",
+   "filename": "film_net_fp16.safetensors",
+   "folder": "frame_interpolation",
+   "url": "https://huggingface.co/Comfy-Org/frame_interpolation/resolve/main/frame_interpolation/film_net_fp16.safetensors",
+   "size_bytes": 68882302,
+   "sha256": "f226e51375dc839d4b40e5c3d63da560dd1ea1c962364ec78f5adf2d05db05c0",
+   "license": "mit-and-apache-2.0",
+   "repo": "Comfy-Org/frame_interpolation",
+   "templates": [
+    "utility_video_frame_interpolation"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "rt_detr_v4-x-hgnet_fp16.safetensors",
+   "filename": "rt_detr_v4-x-hgnet_fp16.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/SDPose/resolve/main/diffusion_models/rt_detr_v4-x-hgnet_fp16.safetensors",
+   "size_bytes": 123968978,
+   "sha256": "581f9af9bbabb664d1891cbccd823308b176ecd409146f954dfa39af3bec2476",
+   "license": "mit",
+   "repo": "Comfy-Org/SDPose",
+   "templates": [
+    "utility_sdpose_multi_person",
+    "utility_sdpose_multi_person_video",
+    "video_minimax_h3_fun_controlnet_union"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "pixel_art_style_z_image_turbo.safetensors",
+   "filename": "pixel_art_style_z_image_turbo.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/tarn59/pixel_art_style_lora_z_image_turbo/resolve/main/pixel_art_style_z_image_turbo.safetensors",
+   "size_bytes": 170128328,
+   "sha256": "09b1b45ceed0202929bca528e51b50208d0160f4e9d2ba0f42cb7e739a43577f",
+   "license": "apache-2.0",
+   "repo": "tarn59/pixel_art_style_lora_z_image_turbo",
+   "templates": [
+    "basic_switch_node"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "rt_detr_v4-x-hgnet_fp32.safetensors",
+   "filename": "rt_detr_v4-x-hgnet_fp32.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/SDPose/resolve/main/diffusion_models/rt_detr_v4-x-hgnet_fp32.safetensors",
+   "size_bytes": 247790660,
+   "sha256": "1ba4a7794c2f8b176327c887ba38fbe0f977049cbef149960288aa923d0239f3",
+   "license": "mit",
+   "repo": "Comfy-Org/SDPose",
+   "templates": [
+    "utility_sam3d_body"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "marigold_v2_albedo_vae.safetensors",
+   "filename": "marigold_v2_albedo_vae.safetensors",
+   "folder": "vae",
+   "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/vae/marigold_v2_albedo_vae.safetensors",
+   "size_bytes": 253806278,
+   "sha256": "91524d3ecafcbb25ceea3d7a76b09581eb27664fb1ba09996db3da2b1f91563f",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/marigold-v2-0",
+   "templates": [
+    "image_marigold_v2_albedo_estimation"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "marigold_v2_depth_log_stage2_vae.safetensors",
+   "filename": "marigold_v2_depth_log_stage2_vae.safetensors",
+   "folder": "vae",
+   "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/vae/marigold_v2_depth_log_stage2_vae.safetensors",
+   "size_bytes": 253806278,
+   "sha256": "0c1a95f7410678a93b59ba42b3a069f50b54ff9f6e35525699eb8fcd63ce332c",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/marigold-v2-0",
+   "templates": [
+    "image_marigold_v2_depth_estimation"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "marigold_v2_normals_vae.safetensors",
+   "filename": "marigold_v2_normals_vae.safetensors",
+   "folder": "vae",
+   "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/vae/marigold_v2_normals_vae.safetensors",
+   "size_bytes": 253806278,
+   "sha256": "66db6213a47b53e8835df48c9977f06cd74c9a973c6f0ac4d65a725de03add71",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/marigold-v2-0",
+   "templates": [
+    "image_marigold_v2_surface_normal_estimation"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "ming_image_vae_bf16.safetensors",
+   "filename": "ming_image_vae_bf16.safetensors",
+   "folder": "vae",
+   "url": "https://huggingface.co/Comfy-Org/Ming-Image/resolve/main/vae/ming_image_vae_bf16.safetensors",
+   "size_bytes": 253816696,
+   "sha256": "7f5bed402dc8c77dc2e0ab1929a85d4df433b7cf7b599dfa8c353da98db0b90a",
+   "license": "mit",
+   "repo": "Comfy-Org/Ming-Image",
+   "templates": [
+    "image_ming_image_01_design_image_edit",
+    "image_ming_image_01_design_t2i"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "QWEN_EDIT_ACTION_V1.safetensors",
+   "filename": "QWEN_EDIT_ACTION_V1.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/systms/SYSTMS-ACTION-LoRA-Qwen-Image-Edit-2511/resolve/main/QWEN_EDIT_ACTION_V1.safetensors",
+   "size_bytes": 295146192,
+   "sha256": "52287ccc0544b0fa611df7ee15c96f1320548b7eec5feed759f7ffbf7adeae3a",
+   "license": "apache-2.0",
+   "repo": "systms/SYSTMS-ACTION-LoRA-Qwen-Image-Edit-2511",
+   "templates": [
+    "template_qwen_image_edit_2511_systms_action"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "mage_flow_vae_bf16.safetensors",
+   "filename": "mage_flow_vae_bf16.safetensors",
+   "folder": "vae",
+   "url": "https://huggingface.co/Comfy-Org/Mage-Flow/resolve/main/vae/mage_flow_vae_bf16.safetensors",
+   "size_bytes": 345053056,
+   "sha256": "34e076dc1e8a15321e1e07be5111d59cf16dd10b804b7c7e20b4de29013427e0",
+   "license": "mit",
+   "repo": "Comfy-Org/Mage-Flow",
+   "templates": [
+    "image_mage_flow_edit_int8",
+    "image_mage_flow_edit_turbo_int8",
+    "image_mage_flow_t2i_int8",
+    "image_mage_flow_turbo_t2i_int8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "ltx2.3-transition.safetensors",
+   "filename": "ltx2.3-transition.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/valiantcat/LTX-2.3-Transition-LORA/resolve/main/ltx2.3-transition.safetensors",
+   "size_bytes": 390229424,
+   "sha256": "ba420d6fefafced8e317e2d6ff951b312b52f534377d016b491877a00b830d33",
+   "license": "apache-2.0",
+   "repo": "valiantcat/LTX-2.3-Transition-LORA",
+   "templates": [
+    "template_ltx2_3_style_transition"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "cogvideox_vae.safetensors",
+   "filename": "cogvideox_vae.safetensors",
+   "folder": "vae",
+   "url": "https://huggingface.co/Comfy-Org/void-model/resolve/main/vae/cogvideox_vae.safetensors",
+   "size_bytes": 431221142,
+   "sha256": "bd47d57ad948ff80da0af0cb2e4dcdef65073aba59bccfd383ada9a7d1c02024",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/void-model",
+   "templates": [
+    "utility_void_video_inpainting"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "triposplat_vae_decoder_fp16.safetensors",
+   "filename": "triposplat_vae_decoder_fp16.safetensors",
+   "folder": "vae",
+   "url": "https://huggingface.co/VAST-AI/TripoSplat/resolve/main/vae/triposplat_vae_decoder_fp16.safetensors",
+   "size_bytes": 576148442,
+   "sha256": "ed0d0c3d43b599e326845d0ec70f3cf77be9a55e2d97627ac3b34d2830763cc8",
+   "license": "mit",
+   "repo": "VAST-AI/TripoSplat",
+   "templates": [
+    "3d_triposplat_image_to_gaussian_splat"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "gummycandy_qwen.safetensors",
+   "filename": "gummycandy_qwen.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/enigmatic/gummycandy_qwen/resolve/main/gummycandy_qwen.safetensors",
+   "size_bytes": 590154464,
+   "sha256": "e4eafd58dbe861c12f13a45dbd12fed005b2d8d0f1a94f923b4556dc1cb9ddde",
+   "license": "apache-2.0",
+   "repo": "enigmatic/gummycandy_qwen",
+   "templates": [
+    "template_sugar_coated_gummy_style_qwen"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "triposplat_fp16.safetensors",
+   "filename": "triposplat_fp16.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/VAST-AI/TripoSplat/resolve/main/diffusion_models/triposplat_fp16.safetensors",
+   "size_bytes": 741106994,
+   "sha256": "c870b97ac1d6bc9177608a5ec625e19ef9f3c5019aa68f64b0fb7803abcd6d20",
+   "license": "mit",
+   "repo": "VAST-AI/TripoSplat",
+   "templates": [
+    "3d_triposplat_image_to_gaussian_splat"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "qwen-360-diffusion-2512-int8-bf16-v2.safetensors",
+   "filename": "qwen-360-diffusion-2512-int8-bf16-v2.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/ProGamerGov/qwen-360-diffusion/resolve/main/qwen-360-diffusion-2512-int8-bf16-v2.safetensors",
+   "size_bytes": 755039336,
+   "sha256": "11065421c2a4c8f503ee1be5d6dc0320a9ffb5bfaded2490813046fd2312578d",
+   "license": "mit",
+   "repo": "ProGamerGov/qwen-360-diffusion",
+   "templates": [
+    "template_qwen_Image_2512_360_lora"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "trellis_2_texture_vae_bf16.safetensors",
+   "filename": "trellis_2_texture_vae_bf16.safetensors",
+   "folder": "vae",
+   "url": "https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/vae/trellis_2_texture_vae_bf16.safetensors",
+   "size_bytes": 948461364,
+   "sha256": "714e5ebf094a610e12a8e3b5175c18a62f37f6ea4218acb6073644456b73ab0e",
+   "license": "mit",
+   "repo": "Comfy-Org/Pixal3D",
+   "templates": [
+    "3d_pixal3d_multi_views",
+    "3d_pixal3d_trellis2_image_to_model"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "trellis_2_shape_vae_bf16.safetensors",
+   "filename": "trellis_2_shape_vae_bf16.safetensors",
+   "folder": "vae",
+   "url": "https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/vae/trellis_2_shape_vae_bf16.safetensors",
+   "size_bytes": 1095844024,
+   "sha256": "de0cb4949a76c59ee5c091a995a69bcc8c51d5aeda939f0c641a50d2a72341f4",
+   "license": "mit",
+   "repo": "Comfy-Org/Pixal3D",
+   "templates": [
+    "3d_pixal3d_multi_views",
+    "3d_pixal3d_trellis2_image_to_model"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "dino_v3_L_naf_fp32.safetensors",
+   "filename": "dino_v3_L_naf_fp32.safetensors",
+   "folder": "clip_vision",
+   "url": "https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/clip_vision/dino_v3_L_naf_fp32.safetensors",
+   "size_bytes": 1215214176,
+   "sha256": "4ad2ec4e0879a5b5b04cd97325cc37da954a7b6edca5170b86510f17f2b2290f",
+   "license": "mit",
+   "repo": "Comfy-Org/Pixal3D",
+   "templates": [
+    "3d_pixal3d_multi_views",
+    "3d_pixal3d_trellis2_image_to_model"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "dino_v3_vit_h.safetensors",
+   "filename": "dino_v3_vit_h.safetensors",
+   "folder": "clip_vision",
+   "url": "https://huggingface.co/VAST-AI/TripoSplat/resolve/main/clip_vision/dino_v3_vit_h.safetensors",
+   "size_bytes": 1681247696,
+   "sha256": "a29ef35101a16966972a0d50732a6f3a608ff7cfffb2afa9bbe9007cb842cc53",
+   "license": "mit",
+   "repo": "VAST-AI/TripoSplat",
+   "templates": [
+    "3d_triposplat_image_to_gaussian_splat"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "Qwen-Image-2512-Lightning-4steps-V1.0-fp32.safetensors",
+   "filename": "Qwen-Image-2512-Lightning-4steps-V1.0-fp32.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/lightx2v/Qwen-Image-2512-Lightning/resolve/main/Qwen-Image-2512-Lightning-4steps-V1.0-fp32.safetensors",
+   "size_bytes": 1698951104,
+   "sha256": "ad12117461cb41e2ea637fec8df6392ce8e8550c47fbe2b829ed3deb98262066",
+   "license": "apache-2.0",
+   "repo": "lightx2v/Qwen-Image-2512-Lightning",
+   "templates": [
+    "image_qwen_Image_2512",
+    "template_qwen_Image_2512_360_lora"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "marigold_v2_albedo.safetensors",
+   "filename": "marigold_v2_albedo.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/loras/marigold_v2_albedo.safetensors",
+   "size_bytes": 1703764632,
+   "sha256": "263ec11bb29625c5ec7b145ea2fbc9e8e7854ad4a229031e020e55d614e8e919",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/marigold-v2-0",
+   "templates": [
+    "image_marigold_v2_albedo_estimation"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "marigold_v2_depth_log_stage2.safetensors",
+   "filename": "marigold_v2_depth_log_stage2.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/loras/marigold_v2_depth_log_stage2.safetensors",
+   "size_bytes": 1703764632,
+   "sha256": "ec1f5649eef5ddb487b4de2222f6b62837f094c02d652843bd4fceb481037ca0",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/marigold-v2-0",
+   "templates": [
+    "image_marigold_v2_depth_estimation"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "marigold_v2_normals.safetensors",
+   "filename": "marigold_v2_normals.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/loras/marigold_v2_normals.safetensors",
+   "size_bytes": 1703764632,
+   "sha256": "94a96e203f47797b23a21c6fe0bf169db178342698871f6a95d944537a680135",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/marigold-v2-0",
+   "templates": [
+    "image_marigold_v2_surface_normal_estimation"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "sdpose_wholebody_fp16.safetensors",
+   "filename": "sdpose_wholebody_fp16.safetensors",
+   "folder": "checkpoints",
+   "url": "https://huggingface.co/Comfy-Org/SDPose/resolve/main/checkpoints/sdpose_wholebody_fp16.safetensors",
+   "size_bytes": 1916645792,
+   "sha256": "63d01f9a7494560693b24767f4469d59c9d3266b31ff0a253e74d1e611442721",
+   "license": "mit",
+   "repo": "Comfy-Org/SDPose",
+   "templates": [
+    "utility_sdpose_multi_person",
+    "utility_sdpose_multi_person_video",
+    "utility_sdpose_ood_image_to_pose",
+    "utility_sdpose_ood_video_to_pose_map",
+    "video_minimax_h3_fun_controlnet_union"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "moge_3_vitg_fp16.safetensors",
+   "filename": "moge_3_vitg_fp16.safetensors",
+   "folder": "geometry_estimation",
+   "url": "https://huggingface.co/Comfy-Org/MoGe/resolve/main/geometry_estimation/moge_3_vitg_fp16.safetensors",
+   "size_bytes": 2501605198,
+   "sha256": "a587e42936ae7080b419df4c047b0f0b075d3492418f76ce81fb0779925a1fe6",
+   "license": "mit",
+   "repo": "Comfy-Org/MoGe",
+   "templates": [
+    "utility_moge3_geometry_estimation"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "sam_3d_body_dinov3_bf16.safetensors",
+   "filename": "sam_3d_body_dinov3_bf16.safetensors",
+   "folder": "detection",
+   "url": "https://huggingface.co/Comfy-Org/sam-3d-body/resolve/main/detection/sam_3d_body_dinov3_bf16.safetensors",
+   "size_bytes": 2830737652,
+   "sha256": "59fa45200c504c5b56625004d7d3385daf48c616613e88099e43bf83b3e249cf",
+   "license": "sam-license",
+   "repo": "Comfy-Org/sam-3d-body",
+   "templates": [
+    "utility_sam3d_body"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "mage_flow_edit_turbo_int8_convrot.safetensors",
+   "filename": "mage_flow_edit_turbo_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Mage-Flow/resolve/main/diffusion_models/mage_flow_edit_turbo_int8_convrot.safetensors",
+   "size_bytes": 4159146840,
+   "sha256": "345dd8a3376306624912dc46e1db18a6457d692053afe21c9822ed6719f79937",
+   "license": "mit",
+   "repo": "Comfy-Org/Mage-Flow",
+   "templates": [
+    "image_mage_flow_edit_turbo_int8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "mage_flow_turbo_int8_convrot.safetensors",
+   "filename": "mage_flow_turbo_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Mage-Flow/resolve/main/diffusion_models/mage_flow_turbo_int8_convrot.safetensors",
+   "size_bytes": 4159146840,
+   "sha256": "327c3967a5190ea52e453ec3dd81ba168e37a2a0ff2c763aa3e9260bbbe1913c",
+   "license": "mit",
+   "repo": "Comfy-Org/Mage-Flow",
+   "templates": [
+    "image_mage_flow_turbo_t2i_int8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "mage_flow_edit_int8_convrot.safetensors",
+   "filename": "mage_flow_edit_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Mage-Flow/resolve/main/diffusion_models/mage_flow_edit_int8_convrot.safetensors",
+   "size_bytes": 4159146848,
+   "sha256": "e7ce4c48df7cd044f53d69fd1dbdb18a5fca320c34945b8289ba5b5e627c9221",
+   "license": "mit",
+   "repo": "Comfy-Org/Mage-Flow",
+   "templates": [
+    "image_mage_flow_edit_int8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "mage_flow_int8_convrot.safetensors",
+   "filename": "mage_flow_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Mage-Flow/resolve/main/diffusion_models/mage_flow_int8_convrot.safetensors",
+   "size_bytes": 4159146848,
+   "sha256": "e081068163d7793b7e0d54ae2a773d3ac1c0d5b099c09b69dcbff36448485ae8",
+   "license": "mit",
+   "repo": "Comfy-Org/Mage-Flow",
+   "templates": [
+    "image_mage_flow_t2i_int8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "qwen3.5_2b_bf16.safetensors",
+   "filename": "qwen3.5_2b_bf16.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/Qwen3.5/resolve/main/text_encoders/qwen3.5_2b_bf16.safetensors",
+   "size_bytes": 4548221488,
+   "sha256": "aa33250c4fc64891ddfaba3a314fd9542ea371843c387178b425fbcc5ed680b1",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/Qwen3.5",
+   "templates": [
+    "audio_stable_audio_3_medium",
+    "audio_stable_audio_3_medium_base"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "trellis_2_int8_convrot.safetensors",
+   "filename": "trellis_2_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/TRELLIS.2/resolve/main/diffusion_models/trellis_2_int8_convrot.safetensors",
+   "size_bytes": 5253048192,
+   "sha256": "d01952ad137213f6a868f86b6b877026276f84af5eec23069217475a0bad3a31",
+   "license": "mit",
+   "repo": "Comfy-Org/TRELLIS.2",
+   "templates": [
+    "3d_pixal3d_trellis2_image_to_model"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "moss_image_base_int8_convrot.safetensors",
+   "filename": "moss_image_base_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/diffusion_models/moss_image_base_int8_convrot.safetensors",
+   "size_bytes": 5413698958,
+   "sha256": "f601c1e1161915fb3fea003da0c1782e374dd960fbb3978bc0e4e3fa1f2d8e6f",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/MOSS-Image",
+   "templates": [
+    "image_moss_image_base_t2i",
+    "image_moss_image_base_t2i_bboxes"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "pixal3d_multiview_int8_convrot.safetensors",
+   "filename": "pixal3d_multiview_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/diffusion_models/pixal3d_multiview_int8_convrot.safetensors",
+   "size_bytes": 5584555824,
+   "sha256": "6b1eb3328930d921d3b57508d9c46cceec1c174dcedeebc14f176ab67d49f477",
+   "license": "mit",
+   "repo": "Comfy-Org/Pixal3D",
+   "templates": [
+    "3d_pixal3d_multi_views"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "pixal3d_int8_convrot.safetensors",
+   "filename": "pixal3d_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/diffusion_models/pixal3d_int8_convrot.safetensors",
+   "size_bytes": 5584555824,
+   "sha256": "4621eac3b715484f79303c7152af641fe0b2b14f4d0e3d394fd6922d00f955ec",
+   "license": "mit",
+   "repo": "Comfy-Org/Pixal3D",
+   "templates": [
+    "3d_pixal3d_trellis2_image_to_model"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "qwen_3_4b_fp8_mixed.safetensors",
+   "filename": "qwen_3_4b_fp8_mixed.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b_fp8_mixed.safetensors",
+   "size_bytes": 5631994051,
+   "sha256": "72450b19758172c5a7273cf7de729d1c17e7f434a104a00167624cba94f68f15",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/z_image_turbo",
+   "templates": [
+    "image_z_image_turbo_int8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "ming_image_0.1_design_int8_convrot.safetensors",
+   "filename": "ming_image_0.1_design_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Ming-Image/resolve/main/diffusion_models/ming_image_0.1_design_int8_convrot.safetensors",
+   "size_bytes": 6175239953,
+   "sha256": "0d3f5bcc6d2cb830578ea6d0925b30b9fb66058bcb651cc8633e60760dceb1d0",
+   "license": "mit",
+   "repo": "Comfy-Org/Ming-Image",
+   "templates": [
+    "image_ming_image_01_design_image_edit",
+    "image_ming_image_01_design_t2i"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "z_image_int8_convrot.safetensors",
+   "filename": "z_image_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/z_image/resolve/main/split_files/diffusion_models/z_image_int8_convrot.safetensors",
+   "size_bytes": 6201001296,
+   "sha256": "eb2b470694fbd9778f15efd309000ea0091312c018c10a352c120b1da9bf4279",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/z_image",
+   "templates": [
+    "image_z_image_int8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "z_image_turbo_int8_convrot.safetensors",
+   "filename": "z_image_turbo_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_int8_convrot.safetensors",
+   "size_bytes": 6201001296,
+   "sha256": "be517ebd47c912a5626a588e1aeea43e6be4a43c0cdcd2b48a2a780d9f358635",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/z_image_turbo",
+   "templates": [
+    "image_z_image_turbo_int8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "qwen3vl_4b_bf16.safetensors",
+   "filename": "qwen3vl_4b_bf16.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/Mage-Flow/resolve/main/text_encoders/qwen3vl_4b_bf16.safetensors",
+   "size_bytes": 8875719384,
+   "sha256": "36f3ff447ef59201722e8f9ce6020c9819fdcfba6aa2608c4e09b1c0ce114e34",
+   "license": "mit",
+   "repo": "Comfy-Org/Mage-Flow",
+   "templates": [
+    "image_mage_flow_edit_int8",
+    "image_mage_flow_edit_turbo_int8",
+    "image_mage_flow_t2i_int8",
+    "image_mage_flow_turbo_t2i_int8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "acestep_v1.5_xl_base_bf16.safetensors",
+   "filename": "acestep_v1.5_xl_base_bf16.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/ace_step_1.5_ComfyUI_files/resolve/main/split_files/diffusion_models/acestep_v1.5_xl_base_bf16.safetensors",
+   "size_bytes": 9974719930,
+   "sha256": "56bf816fc9a69a5f45635e867b2ad742e1e648eb51fadb7d124cb8332d2e0940",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/ace_step_1.5_ComfyUI_files",
+   "templates": [
+    "audio_ace_step1_5_xl_base"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "acestep_v1.5_xl_sft_bf16.safetensors",
+   "filename": "acestep_v1.5_xl_sft_bf16.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/ace_step_1.5_ComfyUI_files/resolve/main/split_files/diffusion_models/acestep_v1.5_xl_sft_bf16.safetensors",
+   "size_bytes": 9974719930,
+   "sha256": "3c05ae268353b3540fb1fd7db4fd77ffbda9802ec641b624e15648e030ecf3ce",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/ace_step_1.5_ComfyUI_files",
+   "templates": [
+    "audio_ace_step1_5_xl_sft"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "qwen3vl_8b_joyimage_edit_int8_convrot.safetensors",
+   "filename": "qwen3vl_8b_joyimage_edit_int8_convrot.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/JoyAI-Image-Edit/resolve/main/text_encoders/qwen3vl_8b_joyimage_edit_int8_convrot.safetensors",
+   "size_bytes": 10064089100,
+   "sha256": "683de3ab15337afb9dcf19caaabb683a5ce53eb311eb302ff8eeaf4f553ad1a8",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/JoyAI-Image-Edit",
+   "templates": [
+    "image_joyai_image_edit"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "void_pass2.safetensors",
+   "filename": "void_pass2.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/void-model/resolve/main/diffusion_models/void_pass2.safetensors",
+   "size_bytes": 11143025952,
+   "sha256": "884d96ae3be9e2c899f15446aee69260f56e21496c1005400fc6676701e67704",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/void-model",
+   "templates": [
+    "utility_void_video_inpainting"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "void_pass1.safetensors",
+   "filename": "void_pass1.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/void-model/resolve/main/diffusion_models/void_pass1.safetensors",
+   "size_bytes": 11143025952,
+   "sha256": "f3fff936d57008c39054e37ae0db6a3fd3f48ccaf1291a186e28d8760d68e6f3",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/void-model",
+   "templates": [
+    "utility_void_video_inpainting"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "boogu_image_edit_int8_convrot.safetensors",
+   "filename": "boogu_image_edit_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Boogu-Image/resolve/main/diffusion_models/boogu_image_edit_int8_convrot.safetensors",
+   "size_bytes": 11370550632,
+   "sha256": "39e15fc64cf3254171b9d2d839c71360baa994cdd72cd2eea1affe5e679431b5",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/Boogu-Image",
+   "templates": [
+    "image_boogu_image_0_1_edit_int8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "joyai_image_edit_int8_convrot.safetensors",
+   "filename": "joyai_image_edit_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/JoyAI-Image-Edit/resolve/main/diffusion_models/joyai_image_edit_int8_convrot.safetensors",
+   "size_bytes": 16433221208,
+   "sha256": "da8301c271764c63e018826f12c41c36d24c840c95c5385782bbf6a96268eeae",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/JoyAI-Image-Edit",
+   "templates": [
+    "image_joyai_image_edit"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "wan_animate_2_distill_int8_convrot.safetensors",
+   "filename": "wan_animate_2_distill_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Wan-Animate-2/resolve/main/diffusion_models/wan_animate_2_distill_int8_convrot.safetensors",
+   "size_bytes": 16653175528,
+   "sha256": "d2e566ecac3f164cb1a6b63dc7d868d6678c9affa49fbceb3abe4f9458f89c8a",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/Wan-Animate-2",
+   "templates": [
+    "video_wan_animate2_distilled"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "wan2.1_14B_SCAIL_2_int8_convrot.safetensors",
+   "filename": "wan2.1_14B_SCAIL_2_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/SCAIL-2/resolve/main/diffusion_models/wan2.1_14B_SCAIL_2_int8_convrot.safetensors",
+   "size_bytes": 16654506256,
+   "sha256": "a2114c18a811243185f103765cd5004b61652141aa55a9016d3bdceebceb5ac0",
+   "license": "mit",
+   "repo": "Comfy-Org/SCAIL-2",
+   "templates": [
+    "video_wan21_scail2_character_replacement_int8"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "qwen3.8_27b_w4a8.safetensors",
+   "filename": "qwen3.8_27b_w4a8.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/Qwen3.8-27B/resolve/main/text_encoders/qwen3.8_27b_w4a8.safetensors",
+   "size_bytes": 17286101500,
+   "sha256": "9b992a8f6142e6bad602ecc7bab1a56580483c2651824dd0ae64c346e08f60a5",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/Qwen3.8-27B",
+   "templates": [
+    "image_ming_image_01_design_t2i"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "wan2.2_dancer_14b_global_fp8_scaled.safetensors",
+   "filename": "wan2.2_dancer_14b_global_fp8_scaled.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Wan-Dancer/resolve/main/diffusion_models/wan2.2_dancer_14b_global_fp8_scaled.safetensors",
+   "size_bytes": 18342596856,
+   "sha256": "e6590802f488979209cb416dee711e55d44f1e651d4dbf7e92b2358fe74a2143",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/Wan-Dancer",
+   "templates": [
+    "video_wan_dancer"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "wan2.2_dancer_14b_local_fp8_scaled.safetensors",
+   "filename": "wan2.2_dancer_14b_local_fp8_scaled.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/Wan-Dancer/resolve/main/diffusion_models/wan2.2_dancer_14b_local_fp8_scaled.safetensors",
+   "size_bytes": 18342596856,
+   "sha256": "744b93871a4ca8d9645790dd9a52fe8b2e6876557aac94c930906270d3d9bd60",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/Wan-Dancer",
+   "templates": [
+    "video_wan_dancer"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "ming_image_0.1_ling_mini_2.0_int8_convrot.safetensors",
+   "filename": "ming_image_0.1_ling_mini_2.0_int8_convrot.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/Ming-Image/resolve/main/text_encoders/ming_image_0.1_ling_mini_2.0_int8_convrot.safetensors",
+   "size_bytes": 19507670525,
+   "sha256": "9d9f31cfce37c24ae1589287f5c33bd9dda80e14ddf773b5e17a0bb69c8cc4b1",
+   "license": "mit",
+   "repo": "Comfy-Org/Ming-Image",
+   "templates": [
+    "image_ming_image_01_design_image_edit",
+    "image_ming_image_01_design_t2i"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "1_free_other",
+   "name": "qwen_image_edit_2509_int8_convrot.safetensors",
+   "filename": "qwen_image_edit_2509_int8_convrot.safetensors",
+   "folder": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/diffusion_models/qwen_image_edit_2509_int8_convrot.safetensors",
+   "size_bytes": 20499083752,
+   "sha256": "638402843782296122f42f2ff557a63a9535c4fbc3f6978308042c8d0f4012b4",
+   "license": "apache-2.0",
+   "repo": "Comfy-Org/marigold-v2-0",
+   "templates": [
+    "image_marigold_v2_albedo_estimation",
+    "image_marigold_v2_depth_estimation",
+    "image_marigold_v2_surface_normal_estimation"
+   ],
+   "minimax_license_hold": false
+  }
+ ]
+}

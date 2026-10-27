@@ -30,5 +30,10 @@ mgs:
   model_patches: model_patches
   latent_upscale_models: latent_upscale_models
   vae_approx: vae_approx
+  # 2026-10-27 추가: 공식 템플릿이 쓰는 폴더 4종 (얼굴 검출, 프레임 보간, 깊이·법선, 배경 제거)
+  detection: detection
+  frame_interpolation: frame_interpolation
+  geometry_estimation: geometry_estimation
+  background_removal: background_removal
   # 허브 연동 노드 (사용자 custom_nodes 와 별도, 읽기 전용)
   custom_nodes: /opt/mgs/nodes

@@ -1,0 +1,169 @@
+{
+ "comfy_models_base": "/home/mgs/models",
+ "mkdir_before_download": [
+  "checkpoints",
+  "latent_upscale_models",
+  "loras",
+  "text_encoders"
+ ],
+ "ollama": [],
+ "files": [
+  {
+   "tier": "추천",
+   "group": "2_conditional_video",
+   "name": "ltx2-squish.safetensors",
+   "filename": "ltx2-squish.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Comfy-Org/ltx-2/resolve/main/split_files/loras/ltx2-squish.safetensors",
+   "size_bytes": 428150664,
+   "sha256": "5ea13df1478ccc8cf6022a1e4671c7da4d3f503fd1dc25d887f827d6de527208",
+   "license": "ltx-2-community-license-agreement",
+   "repo": "Comfy-Org/ltx-2",
+   "templates": [
+    "video_ltx2_i2v_lora"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_video",
+   "name": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
+   "filename": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Lightricks/LTX-2.3-22b-IC-LoRA-Union-Control/resolve/main/ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
+   "size_bytes": 654465352,
+   "sha256": "a1b888a87f661d27f08b394ae559e8e1050be33900bcc36a5cdf659e48f88d18",
+   "license": "ltx-2-community-license",
+   "repo": "Lightricks/LTX-2.3-22b-IC-LoRA-Union-Control",
+   "templates": [
+    "video_ltx2_3_ic_lora"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_video",
+   "name": "ltx-2-spatial-upscaler-x2-1.0.safetensors",
+   "filename": "ltx-2-spatial-upscaler-x2-1.0.safetensors",
+   "folder": "latent_upscale_models",
+   "url": "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-spatial-upscaler-x2-1.0.safetensors",
+   "size_bytes": 995765578,
+   "sha256": "3160fabf8edf0bc4dd8de40353a180813b111ce586b655ad54af9a7b8c6736de",
+   "license": "ltx-2-community-license-agreement",
+   "repo": "Lightricks/LTX-2",
+   "templates": [
+    "video_ltx2_canny_to_video",
+    "video_ltx2_depth_to_video",
+    "video_ltx2_i2v",
+    "video_ltx2_i2v_distilled",
+    "video_ltx2_i2v_lora",
+    "video_ltx2_t2v"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_video",
+   "name": "ltx-2.3-id-lora-talkvid-3k.safetensors",
+   "filename": "ltx-2.3-id-lora-talkvid-3k.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Comfy-Org/ltx-2.3/resolve/main/split_files/loras/ltx-2.3-id-lora-talkvid-3k.safetensors",
+   "size_bytes": 1157884304,
+   "sha256": "e5af73441743b4852f228b03e444888dff3da80d2666033af2367ab7bda6d8b9",
+   "license": "ltx-2-community-license",
+   "repo": "Comfy-Org/ltx-2.3",
+   "templates": [
+    "template_image_speech_to_video",
+    "video_ltx2_3_id_lora"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_video",
+   "name": "ltx-2-19b-distilled-lora-384.safetensors",
+   "filename": "ltx-2-19b-distilled-lora-384.safetensors",
+   "folder": "loras",
+   "url": "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-distilled-lora-384.safetensors",
+   "size_bytes": 7674558424,
+   "sha256": "2718f89582003cbb5b616635f18c091641917a3f3e5a2f2ad0fb3d5fdd153534",
+   "license": "ltx-2-community-license-agreement",
+   "repo": "Lightricks/LTX-2",
+   "templates": [
+    "video_ltx2_canny_to_video",
+    "video_ltx2_depth_to_video",
+    "video_ltx2_i2v",
+    "video_ltx2_i2v_lora",
+    "video_ltx2_t2v"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_video",
+   "name": "svd_xt.safetensors",
+   "filename": "svd_xt.safetensors",
+   "folder": "checkpoints",
+   "url": "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt/resolve/main/svd_xt.safetensors?download=true",
+   "size_bytes": 9559625980,
+   "sha256": "b2652c23d64a1da5f14d55011b9b6dce55f2e72e395719f1cd1f8a079b00a451",
+   "license": "stable-video-diffusion-community",
+   "repo": "stabilityai/stable-video-diffusion-img2vid-xt",
+   "templates": [
+    "txt_to_image_to_video"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_video",
+   "name": "gemma_3_12B_it.safetensors",
+   "filename": "gemma_3_12B_it.safetensors",
+   "folder": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/ltx-2/resolve/main/split_files/text_encoders/gemma_3_12B_it.safetensors",
+   "size_bytes": 24379468890,
+   "sha256": "56eaa964a0d9325d2dc9ecaf7759bfaf0fac78ae36c789bed6e03e275a3729ec",
+   "license": "ltx-2-community-license-agreement",
+   "repo": "Comfy-Org/ltx-2",
+   "templates": [
+    "video_ltx2_i2v_lora"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_video",
+   "name": "ltx-2.3-22b-distilled-fp8.safetensors",
+   "filename": "ltx-2.3-22b-distilled-fp8.safetensors",
+   "folder": "checkpoints",
+   "url": "https://huggingface.co/Lightricks/LTX-2.3-fp8/resolve/main/ltx-2.3-22b-distilled-fp8.safetensors",
+   "size_bytes": 29531884062,
+   "sha256": "d9646b6f2d5c42d337b23671634c43bfeece6989644f51b4a3aa088465ccd3b2",
+   "license": "ltx-2-community-license-agreement",
+   "repo": "Lightricks/LTX-2.3-fp8",
+   "templates": [
+    "template_ltx2_3_ic_lora_ingredients",
+    "template_ltx2_3_style_transition",
+    "video_ltx2_3_flf2v",
+    "video_ltx2_3_ic_lora"
+   ],
+   "minimax_license_hold": false
+  },
+  {
+   "tier": "추천",
+   "group": "2_conditional_video",
+   "name": "ltx-2-19b-dev.safetensors",
+   "filename": "ltx-2-19b-dev.safetensors",
+   "folder": "checkpoints",
+   "url": "https://huggingface.co/Lightricks/LTX-2/resolve/main/ltx-2-19b-dev.safetensors",
+   "size_bytes": 43285058242,
+   "sha256": "4a51e70aad660e55648d6f0b8af15c8acaaffc06e2a4ae7c7cb01ede701981a8",
+   "license": "ltx-2-community-license-agreement",
+   "repo": "Lightricks/LTX-2",
+   "templates": [
+    "video_ltx2_i2v_lora"
+   ],
+   "minimax_license_hold": false
+  }
+ ]
+}

@@ -1,0 +1,192 @@
+[
+ {
+  "group": "1_free",
+  "media": "image",
+  "missing_files": 85,
+  "missing_gb": 852.2,
+  "have_files": 11,
+  "licenses": [
+   "apache-2.0",
+   "bsd-3-clause",
+   "mit",
+   "openrail++"
+  ]
+ },
+ {
+  "group": "1_free",
+  "media": "other",
+  "missing_files": 59,
+  "missing_gb": 308.3,
+  "have_files": 16,
+  "licenses": [
+   "apache-2.0",
+   "mit",
+   "mit-and-apache-2.0",
+   "sam-license"
+  ]
+ },
+ {
+  "group": "1_free",
+  "media": "video",
+  "missing_files": 38,
+  "missing_gb": 424.3,
+  "have_files": 10,
+  "licenses": [
+   "apache-2.0",
+   "mit",
+   "openrail++",
+   "sam-license"
+  ]
+ },
+ {
+  "group": "2_conditional",
+  "media": "image",
+  "missing_files": 10,
+  "missing_gb": 117.8,
+  "have_files": 3,
+  "licenses": [
+   "krea-2-community-license",
+   "ltx-2-community-license",
+   "ltx-2-community-license-agreement",
+   "stabilityai-ai-community",
+   "stable-audio-community"
+  ]
+ },
+ {
+  "group": "2_conditional",
+  "media": "other",
+  "missing_files": 7,
+  "missing_gb": 42.5,
+  "have_files": 0,
+  "licenses": [
+   "krea-2-community-license",
+   "ltx-2-community-license",
+   "ltx-2-community-license-agreement",
+   "stable-audio-community"
+  ]
+ },
+ {
+  "group": "2_conditional",
+  "media": "video",
+  "missing_files": 9,
+  "missing_gb": 117.7,
+  "have_files": 5,
+  "licenses": [
+   "ltx-2-community-license",
+   "ltx-2-community-license-agreement",
+   "stable-video-diffusion-community"
+  ]
+ },
+ {
+  "group": "3_noncommercial",
+  "media": "image",
+  "missing_files": 27,
+  "missing_gb": 312.1,
+  "have_files": 0,
+  "licenses": [
+   "cc-by-nc-4.0",
+   "circlestone-labs-non-commercial-license",
+   "flux-1-dev-non-commercial-license",
+   "flux-non-commercial-license",
+   "ideogram-non-commercial-model-agreement",
+   "newbie-nc-1.0",
+   "nsclv1",
+   "sai-nc-community"
+  ]
+ },
+ {
+  "group": "3_noncommercial",
+  "media": "other",
+  "missing_files": 9,
+  "missing_gb": 29.9,
+  "have_files": 6,
+  "licenses": [
+   "cc-by-nc-4.0",
+   "circlestone-labs-non-commercial-license",
+   "ideogram-non-commercial-model-agreement",
+   "nsclv1",
+   "qwen-research"
+  ]
+ },
+ {
+  "group": "x_gated",
+  "media": "image",
+  "missing_files": 2,
+  "missing_gb": 0.0,
+  "have_files": 0,
+  "licenses": [
+   "flux-non-commercial-license"
+  ]
+ },
+ {
+  "group": "x_gated",
+  "media": "other",
+  "missing_files": 4,
+  "missing_gb": 0.0,
+  "have_files": 5,
+  "licenses": [
+   "flux-kommunity-license",
+   "ltx-2.x-community-license-agreement"
+  ]
+ },
+ {
+  "group": "x_territory",
+  "media": "image",
+  "missing_files": 7,
+  "missing_gb": 57.4,
+  "have_files": 0,
+  "licenses": [
+   "tencent-hunyuan-community"
+  ]
+ },
+ {
+  "group": "x_territory",
+  "media": "other",
+  "missing_files": 9,
+  "missing_gb": 109.6,
+  "have_files": 0,
+  "licenses": [
+   "minimax-h3-community-license-agreement"
+  ]
+ },
+ {
+  "group": "x_territory",
+  "media": "video",
+  "missing_files": 9,
+  "missing_gb": 87.2,
+  "have_files": 1,
+  "licenses": [
+   "tencent-hunyuan-community"
+  ]
+ },
+ {
+  "group": "x_unknown",
+  "media": "image",
+  "missing_files": 6,
+  "missing_gb": 36.3,
+  "have_files": 0,
+  "licenses": [
+   "None"
+  ]
+ },
+ {
+  "group": "x_unknown",
+  "media": "other",
+  "missing_files": 2,
+  "missing_gb": 2.7,
+  "have_files": 0,
+  "licenses": [
+   "None"
+  ]
+ },
+ {
+  "group": "x_unknown",
+  "media": "video",
+  "missing_files": 6,
+  "missing_gb": 33.9,
+  "have_files": 2,
+  "licenses": [
+   "None"
+  ]
+ }
+]

@@ -9,6 +9,7 @@
 2. `README.md` — 구조와 설치 순서
 3. `docs/install-guide.md` — 메인 설치 절차와 검수표
 4. `docs/main-gpu-server-design.html` — 설계서 v1.1 (브라우저로 열기)
+5. `docs/install-steps-main-2026-10-26.md` — 실제 메인(192.168.10.29) 설치 기록, `docs/checklist-2026-10-27.md` — 검수 절차, `models/README_KO.md` — 모델 일괄 다운로드
 
 ## 바뀌지 않는 설계 원칙
 

@@ -1,0 +1,92 @@
+[
+ {
+  "tier": "추천",
+  "tag": "qwen3.5:9b",
+  "size_gb": 6.55,
+  "license": "Apache-2.0"
+ },
+ {
+  "tier": "추천",
+  "tag": "gemma4:e4b",
+  "size_gb": 6.58,
+  "license": "Apache-2.0"
+ },
+ {
+  "tier": "추천",
+  "tag": "qwen3.8:27b",
+  "size_gb": 17.74,
+  "license": "Apache-2.0"
+ },
+ {
+  "tier": "추천",
+  "tag": "qwen3-vl:8b-instruct",
+  "size_gb": 6.19,
+  "license": "Apache-2.0"
+ },
+ {
+  "tier": "추천",
+  "tag": "bge-m3",
+  "size_gb": 1.16,
+  "license": "MIT"
+ },
+ {
+  "tier": "선택",
+  "tag": "qwen3.5:4b",
+  "size_gb": 3.32,
+  "license": "Apache-2.0"
+ },
+ {
+  "tier": "선택",
+  "tag": "gemma4:26b",
+  "size_gb": 18.73,
+  "license": "Apache-2.0"
+ },
+ {
+  "tier": "선택",
+  "tag": "qwen3.6:35b",
+  "size_gb": 22.62,
+  "license": "Apache-2.0"
+ },
+ {
+  "tier": "선택",
+  "tag": "gpt-oss:20b",
+  "size_gb": 13.79,
+  "license": "Apache-2.0"
+ },
+ {
+  "tier": "선택",
+  "tag": "minicpm-v4.5:8b",
+  "size_gb": 6.12,
+  "license": "Apache-2.0"
+ },
+ {
+  "tier": "선택",
+  "tag": "nomic-embed-text",
+  "size_gb": 0.27,
+  "license": "Apache-2.0"
+ },
+ {
+  "tier": "선택",
+  "tag": "nomic-embed-text-v2-moe",
+  "size_gb": 0.96,
+  "license": "Apache-2.0"
+ },
+ {
+  "tier": "선택",
+  "tag": "mxbai-embed-large",
+  "size_gb": 0.67,
+  "license": "Apache-2.0"
+ },
+ {
+  "tier": "선택",
+  "tag": "embeddinggemma-2:270m",
+  "size_gb": 0.3,
+  "license": "Apache-2.0"
+ },
+ {
+  "tier": "선택",
+  "tag": "qwen3-embedding:8b",
+  "size_gb": 4.68,
+  "license": "Apache-2.0"
+ }
+]
