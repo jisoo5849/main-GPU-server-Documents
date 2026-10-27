@@ -4,11 +4,13 @@
    돌아온 결과를 코드가 다시 검사해(check_expansion) 어긋나면 고쳐 쓰게 한다. 그림체 문장은 LLM 이 손대지 않게
    코드가 끝에 그대로 붙인다.
 2) 검사: 결과 이미지를 시각 모델(VLM)에 보여 팔·다리·머리 같은 해부학 오류와, 꼭 있어야 할 특징(예: 소매 속에
-   숨긴 손)이 보이는지 묻는다.
+   숨긴 손)이 보이는지 묻는다. 시각 모델은 여러 사람이 있는 그림에서 개수를 잘 틀리므로, 사람마다 상자를 받아
+   잘라 낸 뒤 손·팔·다리를 하나씩 나열하게 하고 개수는 코드가 센다.
 
 둘 다 GPU 를 쓰므로 llm.llm_turn 으로 다른 작업과 같은 대기열을 거친다. 아래 순수 함수들은 hub/tests 에서 검증한다.
 """
 import base64
+import io
 import json
 import os
 import re
@@ -180,6 +182,123 @@ def parse_inspection(data: dict, expect: list[str] | None = None) -> dict:
             "people": people, "issues": issues, "traits": traits}
 
 
+LOCATE_RULES = """Find every person or character figure in the image, including each separate view on a turnaround or character sheet.
+Return only JSON: {"people": [{"label": "short description, e.g. front view girl in green coat", "box": [x1, y1, x2, y2]}]}
+Box coordinates are on a 0-1000 scale relative to the image width and height. One box per figure, covering the whole body from head to feet."""
+
+BODY_RULES = """You are checking one figure cropped from an illustration. Other figures may be partly visible at the edges; ignore them.
+List what you actually see on the main figure, one entry per body part. Do not count, list each one separately.
+Return only JSON:
+{"heads": [{"where": "..."}], "head_connected_to_body": true,
+ "arms": [{"side": "left | right | other", "where": "...", "doing": "..."}],
+ "hands": [{"where": "...", "doing": "...", "attached_to": "left arm | right arm | nothing"}],
+ "legs": [{"where": "..."}],
+ "stray_part": false, "stray_detail": ""}
+A hand hidden inside a sleeve is not listed. Set stray_part true if any hand, arm or leg appears that is not attached to the figure's own shoulders or hips."""
+
+MAX_FIGURES = 8
+
+
+def build_locate_messages(image_b64: str) -> list[dict]:
+    return [{"role": "system", "content": LOCATE_RULES},
+            {"role": "user", "content": "Find every figure in this image.", "images": [image_b64]}]
+
+
+def build_body_messages(crop_b64: str, label: str = "") -> list[dict]:
+    text = "Check the main figure in this crop" + (f" ({label})." if label else ".")
+    return [{"role": "system", "content": BODY_RULES},
+            {"role": "user", "content": text, "images": [crop_b64]}]
+
+
+def parse_boxes(data: dict, width: int, height: int, pad: float = 0.06) -> list[dict]:
+    """0~1000 상자를 픽셀 상자로 바꾼다. 여백을 두고, 너무 작거나 거의 겹치는 상자는 버린다."""
+    out = []
+    for p in (data.get("people") or [])[:MAX_FIGURES * 2]:
+        box = p.get("box") if isinstance(p, dict) else None
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            x1, y1, x2, y2 = (float(v) for v in box)
+        except (TypeError, ValueError):
+            continue
+        x1, x2 = sorted((x1, x2))
+        y1, y2 = sorted((y1, y2))
+        if x2 - x1 < 20 or y2 - y1 < 20:
+            continue
+        px, py = (x2 - x1) * pad, (y2 - y1) * pad
+        b = (max(0, int((x1 - px) * width / 1000)), max(0, int((y1 - py) * height / 1000)),
+             min(width, int((x2 + px) * width / 1000)), min(height, int((y2 + py) * height / 1000)))
+        if any(_overlap(b, o["box"]) > 0.85 for o in out):
+            continue
+        out.append({"label": str(p.get("label") or "")[:80], "box": b})
+    return out[:MAX_FIGURES]
+
+
+def _overlap(a, b) -> float:
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])) or 1
+    return ix * iy / small
+
+
+def body_issues(data: dict, where: str = "") -> list[dict]:
+    """부위 나열 결과에서 개수를 세어 문제로 바꾼다 (모델에게 세게 하지 않는다)."""
+    def n(key):
+        v = data.get(key)
+        return len(v) if isinstance(v, list) else 0
+
+    issues = []
+    for key, name in (("hands", "hands"), ("arms", "arms"), ("legs", "legs")):
+        if n(key) > 2:
+            issues.append({"type": "extra_limb", "where": where, "detail": f"{n(key)} {name} listed"})
+    if n("heads") > 1:
+        issues.append({"type": "extra_head", "where": where, "detail": f"{n('heads')} heads listed"})
+    elif n("heads") == 0:
+        issues.append({"type": "missing_head", "where": where, "detail": "no head listed"})
+    elif data.get("head_connected_to_body") is False:
+        issues.append({"type": "detached_head", "where": where, "detail": "head not connected to the body"})
+    loose = [h for h in data.get("hands") or [] if isinstance(h, dict)
+             and str(h.get("attached_to") or "").strip().lower() in ("nothing", "none")]
+    if data.get("stray_part") is True or loose:
+        detail = str(data.get("stray_detail") or "") or "; ".join(str(h.get("where") or "") for h in loose)
+        issues.append({"type": "floating_limb", "where": where, "detail": detail or "stray body part"})
+    return issues
+
+
+def merge_figures(parsed: dict, figures: list[dict]) -> dict:
+    """사람별 부위 검사 결과를 전체 검사 결과에 더한다."""
+    extra = [i for f in figures for i in f["issues"]]
+    anatomy_ok = parsed["anatomy_ok"] and not extra
+    return {**parsed, "issues": parsed["issues"] + extra, "anatomy_ok": anatomy_ok,
+            "ok": anatomy_ok and all(t["present"] for t in parsed["traits"]),
+            "people": max(parsed["people"], len(figures)),
+            "figures": [{"label": f["label"], "box": list(f["box"]), "hands": f["hands"], "arms": f["arms"],
+                         "issues": len(f["issues"])} for f in figures]}
+
+
+def image_size(image_bytes: bytes) -> tuple[int, int]:
+    from PIL import Image   # 허브 이미지에만 있다 (단위 테스트는 없어도 돈다)
+
+    return Image.open(io.BytesIO(image_bytes)).size
+
+
+def crop_figures(image_bytes: bytes, boxes: list[dict], max_side: int = 1024) -> list[str]:
+    """상자마다 잘라 base64 PNG 로. 작은 조각은 키워서 손이 보이게 한다."""
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    out = []
+    for b in boxes:
+        c = img.crop(b["box"])
+        scale = max_side / max(c.size)
+        if scale < 1 or max(c.size) < 512:
+            c = c.resize((max(1, int(c.width * scale)), max(1, int(c.height * scale))), Image.LANCZOS)
+        buf = io.BytesIO()
+        c.save(buf, "PNG")
+        out.append(base64.b64encode(buf.getvalue()).decode())
+    return out
+
+
 def clean_expect(raw) -> list[str]:
     if isinstance(raw, str):
         raw = raw.splitlines()
@@ -214,7 +333,9 @@ async def expand(user, ip: str, text: str, style: str = "", notes: str = "") -> 
     try:
         async with llm.llm_turn(user, ip, model, "prompt_expand") as call:
             for rounds in range(1, settings.expand_repair_rounds + 2):
-                data = await call({"messages": messages, "format": "json", "options": {"temperature": 0.4}})
+                # 생각 단계를 끄면 같은 결과를 훨씬 빨리 낸다 (메인 측정: 27b 확장 한 번 약 100초)
+                data = await call({"messages": messages, "format": "json", "think": False,
+                                   "options": {"temperature": 0.4}})
                 content = (data.get("message") or {}).get("content", "")
                 result = parse_json_reply(content)
                 problems = check_expansion(result, style, text + " " + notes)
@@ -236,15 +357,31 @@ async def inspect(user, ip: str, username: str, filename: str, subfolder: str = 
     path = result_image_path(username, filename, subfolder)
     expect = clean_expect(expect)
     with open(path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode()
+        raw = f.read()
+    b64 = base64.b64encode(raw).decode()
     model = settings.inspect_model
+
+    async def ask(call, messages):
+        data = await call({"messages": messages, "format": "json", "think": False, "options": {"temperature": 0}})
+        return parse_json_reply((data.get("message") or {}).get("content", ""))
+
+    figures = []
     try:
+        # 한 차례 안에서 전체 검사 → 사람 찾기 → 사람마다 부위 나열 (모델을 다시 올리지 않는다)
         async with llm.llm_turn(user, ip, model, "image_inspect") as call:
-            data = await call({"messages": build_inspect_messages(b64, expect), "format": "json",
-                               "options": {"temperature": 0}})
+            whole = await ask(call, build_inspect_messages(b64, expect))
+            try:
+                w, h = image_size(raw)
+                boxes = parse_boxes(await ask(call, build_locate_messages(b64)), w, h)
+                for box, crop in zip(boxes, crop_figures(raw, boxes)):
+                    body = await ask(call, build_body_messages(crop, box["label"]))
+                    figures.append({**box, "issues": body_issues(body, box["label"] or f"figure at {box['box']}"),
+                                    "hands": len(body.get("hands") or []), "arms": len(body.get("arms") or [])})
+            except PromptxError:
+                figures = []    # 사람 찾기가 실패해도 전체 검사 결과는 돌려준다
     except llm.HelperBusy as e:
         raise PromptxError(str(e), 503) from None
     except RuntimeError as e:
         raise PromptxError(str(e), 502) from None
-    parsed = parse_inspection(parse_json_reply((data.get("message") or {}).get("content", "")), expect)
+    parsed = merge_figures(parse_inspection(whole, expect), figures)
     return {**parsed, "file": f"{subfolder}/{filename}".lstrip("/"), "model": model}

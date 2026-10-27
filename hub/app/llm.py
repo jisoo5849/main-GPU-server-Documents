@@ -281,6 +281,12 @@ async def llm_turn(user, ip: str, model: str, purpose: str, wait_seconds: int | 
             r = await _client.post(f"{settings.ollama_upstream}{endpoint}", json=body,
                                    timeout=httpx.Timeout(600, connect=10))
             data = r.json()
+            # 생각(thinking) 기능이 없는 모델에 think 옵션을 주면 거부하므로 빼고 한 번 더
+            if r.status_code == 400 and "think" in body and "think" in str(data.get("error", "")).lower():
+                body.pop("think")
+                r = await _client.post(f"{settings.ollama_upstream}{endpoint}", json=body,
+                                       timeout=httpx.Timeout(600, connect=10))
+                data = r.json()
         except (httpx.HTTPError, ValueError) as e:
             status = 502
             raise RuntimeError(f"Ollama 호출 실패: {e}") from None

@@ -97,6 +97,41 @@ def test_parse_inspection():
     assert not r["ok"]
 
 
+def test_parse_boxes():
+    data = {"people": [{"label": "left girl", "box": [100, 0, 300, 1000]},
+                       {"label": "same girl again", "box": [105, 5, 300, 990]},     # 거의 같은 상자는 버린다
+                       {"label": "tiny", "box": [500, 500, 510, 505]},
+                       {"label": "flipped", "box": [900, 1000, 700, 0]},
+                       {"box": "bad"}]}
+    boxes = promptx.parse_boxes(data, 2000, 1000)
+    assert [b["label"] for b in boxes] == ["left girl", "flipped"]
+    x1, y1, x2, y2 = boxes[0]["box"]
+    assert x1 < 200 and x2 > 600 and y1 == 0 and y2 == 1000     # 여백을 두되 그림 밖으로는 안 나간다
+    assert promptx.parse_boxes({}, 100, 100) == []
+
+
+def test_body_issues_counts_listed_parts():
+    good = {"heads": [{}], "head_connected_to_body": True, "arms": [{}, {}],
+            "hands": [{"attached_to": "left arm"}], "legs": [{}, {}], "stray_part": False}
+    assert promptx.body_issues(good) == []
+    three = dict(good, hands=[{"attached_to": "left arm"}, {"attached_to": "right arm"},
+                              {"where": "right hip", "attached_to": "nothing"}])
+    types = [i["type"] for i in promptx.body_issues(three, "right girl")]
+    assert "extra_limb" in types and "floating_limb" in types
+    assert [i["type"] for i in promptx.body_issues(dict(good, head_connected_to_body=False))] == ["detached_head"]
+    assert [i["type"] for i in promptx.body_issues(dict(good, heads=[]))] == ["missing_head"]
+
+
+def test_merge_figures():
+    base = promptx.parse_inspection({"people": 1, "issues": []})
+    figs = [{"label": "a", "box": (0, 0, 1, 1), "hands": 3, "arms": 2,
+             "issues": [{"type": "extra_limb", "where": "a", "detail": "3 hands listed"}]},
+            {"label": "b", "box": (1, 1, 2, 2), "hands": 2, "arms": 2, "issues": []}]
+    r = promptx.merge_figures(base, figs)
+    assert not r["ok"] and r["people"] == 2 and len(r["issues"]) == 1 and r["figures"][0]["hands"] == 3
+    assert promptx.merge_figures(base, [])["ok"]
+
+
 def test_clean_expect():
     assert promptx.clean_expect("a\n\n b \n") == ["a", "b"]
     assert len(promptx.clean_expect([str(i) for i in range(20)])) == 8
