@@ -4,6 +4,7 @@
 
 - 설계서: [docs/main-gpu-server-design.html](docs/main-gpu-server-design.html) (브라우저로 열기)
 - 설치 안내: [docs/install-guide.md](docs/install-guide.md)
+- 캐릭터 LoRA 학습 계획서 (이 서버에 학습 작업을 더하는 안): [LoRA-FINE-TUNING-Image-models](https://github.com/jisoo5849/LoRA-FINE-TUNING-Image-models)
 
 ## 핵심 동작
 
