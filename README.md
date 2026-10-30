@@ -3,8 +3,23 @@
 사무실 작업자가 브라우저로 ComfyUI 를 자유롭게 쓰고, **모든 연산은 메인(Ubuntu) GPU 한 장에서 접수 순서대로 한 건씩** 처리하는 서버입니다.
 
 - 설계서: [docs/main-gpu-server-design.html](docs/main-gpu-server-design.html) (브라우저로 열기)
+- 사용 방법(사내·외부): [docs/usage-guide.md](docs/usage-guide.md)
 - 설치 안내: [docs/install-guide.md](docs/install-guide.md)
 - 캐릭터 LoRA 학습 계획서 (이 서버에 학습 작업을 더하는 안): [LoRA-FINE-TUNING-Image-models](https://github.com/jisoo5849/LoRA-FINE-TUNING-Image-models)
+
+## 사용 방법
+
+자세한 내용: [docs/usage-guide.md](docs/usage-guide.md)
+
+| 위치 | 접속 주소 | 준비 |
+|---|---|---|
+| 사내 | `http://192.168.10.29/` | 관리자가 만든 ComfyUI 계정 |
+| 외부 (VPN) | `http://100.112.253.4/` | Tailscale 설치·초대 로그인(`Connected`) + ComfyUI 계정 |
+
+- 사내와 외부 모두 같은 GPU 대기열을 쓰고, 한 번에 한 작업씩 순서대로 처리됩니다.
+- 외부에서는 결과 폴더(`\\...\results`)와 채팅 화면(8090)이 막혀 있습니다. 결과는 ComfyUI 화면에서 저장합니다.
+- 메인 서버가 꺼져 있거나 재부팅 중이면 사용할 수 없습니다.
+- 계정은 관리자(지수)에게 요청합니다. 새 계정 만들기, 외부 접속 절차는 [docs/usage-guide.md](docs/usage-guide.md)에 있습니다.
 
 ## 핵심 동작
 
