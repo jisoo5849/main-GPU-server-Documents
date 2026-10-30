@@ -10,6 +10,7 @@
 3. `docs/install-guide.md` — 메인 설치 절차와 검수표
 4. `docs/main-gpu-server-design.html` — 설계서 v1.1 (브라우저로 열기)
 5. `docs/install-steps-main-2026-10-26.md` — 실제 메인(192.168.10.29) 설치 기록, `docs/checklist-2026-10-27.md` — 검수 절차, `models/README_KO.md` — 모델 일괄 다운로드
+6. `docs/handover-2026-10-30-vpn.md` — 사무실 밖 접속(Tailscale VPN) 결정과 보안 판단, `docs/vpn-tailscale.md` — 설치·작업자 안내
 
 ## 바뀌지 않는 설계 원칙
 
@@ -22,6 +23,7 @@
 - **결과 폴더(`\\main\results`)는 누구나 읽기·쓰기.** 삭제·덮어쓰기는 `.recycle/<사용자>/` 에 30일 보관.
   공용 모델 저장소(`/srv/models`)는 읽기 전용이고 `model-inbox` → 포털 "모델 추가" 로만 넣는다.
 - Redis·Celery 는 쓰지 않는다 (GPU 1장, 순서 보장은 PostgreSQL 잠금과 LISTEN/NOTIFY 로 충분).
+- **인터넷 쪽 포트는 열지 않는다.** 사무실 밖 접속은 VPN(`tailscale0`)으로만 (`docs/handover-2026-10-30-vpn.md`).
 
 ## 작업 규칙
 
@@ -54,7 +56,7 @@
 | `hub/app/schema.sql` | DB. `jobs_one_gpu_holder` 고유 인덱스가 "실행 중 1건" 을 DB 수준에서 보장 |
 | `runtime/nodes/mgs_bridge` | 편집 공간용 `/mgs/validate`, 편집 공간 자체 큐 차단 |
 | `images/comfy-runtime/entrypoint.sh` | build / editor / worker 세 모드 |
-| `install/` | 메인 설치 스크립트 (순서대로 00~05, add-user) |
+| `install/` | 메인 설치 스크립트 (순서대로 00~05, add-user, 선택 06-vpn) |
 
 ## 현재 상태 (2026-10-23)
 

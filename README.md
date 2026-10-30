@@ -48,12 +48,15 @@ sudo bash install/02-storage.sh --format /dev/<빈 파티션>   # 이미 btrfs �
 sudo bash install/03-samba.sh
 sudo bash install/04-firewall.sh
 sudo bash install/05-build-runtime.sh
+sudo bash install/06-vpn.sh          # 선택: 사무실 밖 접속(Tailscale). 이후 sudo tailscale up 은 직접
 sudo docker compose up -d --build
 sudo bash install/add-user.sh admin "관리자" --admin
 sudo bash install/add-user.sh alice "앨리스"
 ```
 
 업데이트: `cd /opt/mgs-src && sudo bash install/update.sh`
+
+사무실 밖 접속은 Tailscale VPN 으로만 허용하고 인터넷 쪽 포트는 열지 않습니다: [docs/vpn-tailscale.md](docs/vpn-tailscale.md)
 
 자세한 설명과 확인 방법은 [docs/install-guide.md](docs/install-guide.md) 에 있습니다.
 

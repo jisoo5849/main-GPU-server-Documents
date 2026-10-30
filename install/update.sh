@@ -83,7 +83,7 @@ fi
 if [[ -n "$base" ]]; then
   git diff --quiet "$base" HEAD -- .env.example || \
     warn ".env.example 이 바뀌었습니다. 기존 값이 바뀐 항목은 .env 에 자동 반영되지 않습니다:  git diff $base HEAD -- .env.example"
-  manual=$(grep -E '^install/(0[0-5]-|smb\.conf)' <<<"$changed" || true)
+  manual=$(grep -E '^install/(0[0-6]-|smb\.conf)' <<<"$changed" || true)
   [[ -n "$manual" ]] && warn "다음 설치 스크립트가 바뀌었습니다. 필요하면 직접 다시 실행하세요: $(echo $manual)"
   grep -q '^images/comfy-runtime/entrypoint.sh' <<<"$changed" && \
     warn "템플릿 만들기(build) 방식이 바뀌었을 수 있습니다. 기존 작업공간에는 영향이 없고, 새 템플릿은 05-build-runtime.sh 로 만듭니다."

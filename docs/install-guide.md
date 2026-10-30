@@ -70,6 +70,7 @@ sudo bash install/04-firewall.sh
 
 사무실 대역에서만 포털(80), 작업공간 포트(8101~8130), LLM(11434), 채팅(8090), Samba 를 허용합니다.
 컨테이너는 메인의 LLM 중계 포트(11434)만 쓸 수 있습니다.
+VPN 인터페이스(`VPN_IFACE`, 기본 `tailscale0`)에도 포털·작업공간·LLM 포트를 엽니다 (14단계, VPN 을 안 쓰면 아무 영향 없음).
 
 ## 7. ComfyUI 이미지와 템플릿
 
@@ -153,6 +154,36 @@ cd /opt/mgs-src && sudo bash install/update.sh
 - `--force` 는 GPU 작업을 기다리지 않는다. 이때 실행 중(running)인 ComfyUI 작업만 이어받고, 준비 중·정리 중 작업은
   '끊김(lost)' 으로 기록되며, 기다리던 LLM 요청은 모두 끊긴다 (결과 파일은 남는다).
 - 허브가 응답하지 않으면 스크립트가 되돌리는 명령(`git reset --hard <이전 커밋>`)을 알려 준다.
+
+## 14. 사무실 밖 접속 (VPN, 선택)
+
+자세한 절차와 작업자 노트북 안내는 [vpn-tailscale.md](vpn-tailscale.md), 보안 판단은 [handover-2026-10-30-vpn.md](handover-2026-10-30-vpn.md)에 있습니다.
+
+- 사무실 밖에서는 Tailscale VPN 에 들어온 기기만 메인에 접속합니다.
+  - 예: 공유기 포트 포워딩, 공개 터널(Cloudflare Tunnel, ngrok, `tailscale funnel`)은 쓰지 않습니다.
+- 설치 전에 회사 네트워크·IT 담당의 승인을 받습니다.
+  - 예: Tailscale 은 외부 회사의 조정 서버를 씁니다. 금지되면 자체 WireGuard 로 바꿉니다.
+- 방화벽을 다시 적용하고 Tailscale 을 설치합니다.
+
+```bash
+cd /opt/mgs-src && sudo bash install/04-firewall.sh
+sudo bash install/06-vpn.sh
+```
+
+- 메인 로그인은 관리자가 직접 합니다.
+  - 예: 나오는 주소를 브라우저로 열어 회사 계정으로 승인합니다.
+
+```bash
+sudo tailscale up --hostname=main-gpu --accept-dns=false
+tailscale ip -4
+```
+
+- 관리 콘솔에서 메인의 키 만료를 끄고, 태그와 접근 정책을 넣습니다.
+  - 예: 정책 예시는 [vpn-tailscale.md](vpn-tailscale.md) 3절.
+- VPN 으로 열리는 것은 포털(80), 작업공간(8101~8130), LLM(11434)입니다.
+  - 예: SSH(22)와 결과 폴더(Samba)는 기본으로 막히고, `.env` 의 `VPN_ALLOW_SSH`, `VPN_ALLOW_SAMBA` 를 `true` 로 바꾼 뒤 `04-firewall.sh` 를 다시 실행하면 열립니다.
+  - 예: 채팅(Open WebUI, 8090)은 사무실 전용입니다.
+- 작업자는 노트북에 Tailscale 을 설치하고 `http://main-gpu/`(또는 `http://100.x.y.z/`)를 엽니다.
 
 ## 문제 해결
 
