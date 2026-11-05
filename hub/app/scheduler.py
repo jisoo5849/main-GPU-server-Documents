@@ -634,11 +634,20 @@ class Scheduler:
                             continue
                         if kind == "graphics" and cid is None:
                             continue   # 메인의 화면 프로그램(Xorg, gnome-shell 등)은 정상
+                        if cid is None and 0 < mem < settings.foreign_incident_min_mb:
+                            # GTK4 화면 앱(터미널·파일 관리자 등)은 compute 로 잡히지만 수십 MB 라 남기지 않는다.
+                            # 0 은 NVML 이 사용량을 못 준 경우라 크기를 모르므로 남긴다
+                            continue
                         if now - self._incident_pids.get(pid, 0) > 600:
                             self._incident_pids[pid] = now
                             name = gpu.process_name(pid)
-                            await db.incident("foreign_gpu_process",
-                                              {"pid": pid, "name": name, "mem_mb": mem, "kind": kind, "container": cid})
+                            detail = {"pid": pid, "name": name, "mem_mb": mem, "max_mem_mb": mem,
+                                      "kind": kind, "container": cid}
+                            key = gpu.proc_key(pid)
+                            if key:
+                                await db.proc_incident("foreign_gpu_process", key, detail)
+                            else:   # 시작 시각을 못 읽으면 같은 프로세스인지 알 수 없어 따로 남긴다
+                                await db.incident("foreign_gpu_process", detail)
                             log.error("허용되지 않은 GPU 연산 프로세스: pid=%s %s mem=%sMB container=%s", pid, name, mem, cid)
             except Exception:  # noqa: BLE001
                 log.exception("watchdog error")

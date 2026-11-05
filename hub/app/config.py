@@ -44,6 +44,8 @@ class Settings:
     vram_worker_margin_mb = _int("VRAM_WORKER_MARGIN_MB", 512)
     vram_total_margin_mb = _int("VRAM_TOTAL_MARGIN_MB", 768)
     vram_idle_margin_mb = _int("VRAM_IDLE_MARGIN_MB", 256)
+    # 이보다 작은 컨테이너 밖 GPU 프로세스는 감시 기록에서 뺀다 (GTK4 화면 앱이 NVML 에 compute 로 잡힌다)
+    foreign_incident_min_mb = _int("FOREIGN_INCIDENT_MIN_MB", 256)
 
     ollama_upstream = _env("OLLAMA_UPSTREAM", "http://127.0.0.1:11435")
     ollama_container = _env("OLLAMA_CONTAINER", "mgs-ollama-1")

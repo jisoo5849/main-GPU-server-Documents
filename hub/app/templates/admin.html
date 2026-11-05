@@ -30,9 +30,9 @@
 
 <h2>GPU 감시 기록</h2>
 <div class="tbl"><table>
-  <tr><th>시각</th><th>종류</th><th>내용</th></tr>
-  {% for i in incidents %}<tr><td class="small">{{ i.ts.strftime('%m-%d %H:%M:%S') }}</td><td>{{ i.kind }}</td><td class="small"><code>{{ i.detail }}</code></td></tr>
-  {% else %}<tr><td colspan="3" class="muted">없음</td></tr>{% endfor %}
+  <tr><th>처음 감지</th><th>마지막 감지 (횟수)</th><th>종류</th><th>내용</th></tr>
+  {% for i in incidents %}<tr><td class="small">{{ i.ts.strftime('%m-%d %H:%M:%S') }}</td><td class="small">{% if i.last_seen %}{{ i.last_seen.strftime('%m-%d %H:%M:%S') }} ({{ i.seen_count }}회){% else %}-{% endif %}</td><td>{{ i.kind }}</td><td class="small"><code>{{ i.detail }}</code></td></tr>
+  {% else %}<tr><td colspan="4" class="muted">없음</td></tr>{% endfor %}
 </table></div>
 
 <h2>작업공간</h2>

@@ -348,7 +348,7 @@ async def admin(request: Request):
         request, "admin.html",
         queue=await jobs.global_queue(), lease=scheduler.lease, worker=scheduler.worker, b0=scheduler.b0,
         paused=await db.get_setting("paused", False), blocked=await db.get_setting("blocked"),
-        incidents=await db.fetch("SELECT * FROM incidents ORDER BY id DESC LIMIT 30"),
+        incidents=await db.fetch("SELECT * FROM incidents ORDER BY coalesce(last_seen, ts) DESC LIMIT 30"),
         users=await db.fetch("SELECT * FROM users ORDER BY username"),
         envs=await db.fetch("SELECT e.*, u.username FROM envs e JOIN users u ON u.id=e.owner_id ORDER BY port"),
         access=await db.fetch("SELECT a.*, u.username FROM access_log a LEFT JOIN users u ON u.id=a.user_id "
@@ -368,9 +368,12 @@ async def admin_action(request: Request):
     elif action == "unblock":
         await db.execute("DELETE FROM settings WHERE key='blocked'")
         scheduler.wake.set()
-    elif action == "cancel":
-        await jobs.cancel_queued(None, [str(form.get("job_id"))])
-    await db.log_access(user["id"], _ip(request), "admin_action", {"action": action})
+    detail = {"action": action}
+    if action == "cancel":
+        detail["job_id"] = form.get("job_id") or None
+        # 이미 시작된 작업이면 취소되지 않아 0 이다
+        detail["cancelled"] = await jobs.cancel_queued(None, [str(form.get("job_id"))])
+    await db.log_access(user["id"], _ip(request), "admin_action", detail)
     return back("/admin", "처리했습니다.")
 
 

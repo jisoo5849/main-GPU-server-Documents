@@ -89,3 +89,17 @@ def pid_container(pid: int) -> str | None:
             if len(part) == 64 and all(c in "0123456789abcdef" for c in part):
                 return part
     return None
+
+
+def parse_starttime(stat_text: str) -> str:
+    """/proc/<pid>/stat 의 22번째 필드(프로세스 시작 시각). 이름에 공백·괄호가 있어도 되게 마지막 ')' 뒤를 센다."""
+    return stat_text.rsplit(")", 1)[1].split()[19]
+
+
+def proc_key(pid: int) -> str | None:
+    """PID 재사용과 구분하려고 시작 시각을 붙인다. 읽지 못하면 None (다른 프로세스와 한 줄로 합쳐지지 않게)."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as f:
+            return f"{pid}:{parse_starttime(f.read())}"
+    except (OSError, IndexError):
+        return None

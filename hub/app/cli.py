@@ -7,6 +7,7 @@
   docker compose exec hub python -m app.cli deactivate alice
   docker compose exec hub python -m app.cli status            # 실행 중·대기 중 작업 수
   docker compose exec hub python -m app.cli restart-editors   # 모든 편집 공간을 새 런타임으로 다시 만들기
+  docker compose exec hub python -m app.cli --by 홍길동 set-password alice --password-stdin   # 실행한 사람 기록
 """
 import argparse
 import asyncio
@@ -25,18 +26,29 @@ def _password(args) -> str:
     return pw
 
 
+async def _log(args, target, **extra):
+    """터미널 관리 명령에는 로그인 사용자가 없으므로 무엇을·누구에게 했는지 접속 기록에 남긴다. 비밀번호·키 원문은 넣지 않는다."""
+    await db.log_access(None, None, "admin_cli", {"cmd": args.cmd, "target": target, "by": args.by or None, **extra})
+
+
 async def run(args):
     await db.init()
     if args.cmd == "create-user":
         pw = _password(args)
         if len(pw) < 8:
             sys.exit("비밀번호는 8자 이상이어야 합니다.")
+        # 이미 있는 계정이면 비밀번호·권한을 덮어쓰고 다시 켠다. 기록에서 새 계정과 구분한다
+        before = await db.fetchrow("SELECT role, active FROM users WHERE username=$1", args.username)
         await db.execute(
             "INSERT INTO users(username, display_name, pw_hash, role, linux_uid) VALUES ($1,$2,$3,$4,$5) "
             "ON CONFLICT (username) DO UPDATE SET display_name=EXCLUDED.display_name, pw_hash=EXCLUDED.pw_hash, "
             "role=EXCLUDED.role, linux_uid=EXCLUDED.linux_uid, active=true",
             args.username, args.display or args.username, security.hash_password(pw),
             "admin" if args.admin else "user", args.uid)
+        extra = {"existed": before is not None}
+        if before is not None:
+            extra.update(prev_role=before["role"], prev_active=before["active"])
+        await _log(args, args.username, admin=args.admin, uid=args.uid, **extra)
         print(f"사용자 {args.username} 저장 완료")
     elif args.cmd == "create-env":
         user = await db.fetchrow("SELECT * FROM users WHERE username=$1", args.username)
@@ -47,16 +59,22 @@ async def run(args):
             return
         await dockerctl.ensure_networks()
         env = await envs.create_env(user["id"], args.name)
+        await _log(args, args.username, env=env["slug"])
         print(f"작업공간 {env['slug']} 생성: 포트 {env['port']}")
     elif args.cmd == "set-password":
         pw = _password(args)
-        await db.execute("UPDATE users SET pw_hash=$2 WHERE username=$1", args.username, security.hash_password(pw))
+        res = await db.execute("UPDATE users SET pw_hash=$2 WHERE username=$1", args.username, security.hash_password(pw))
+        if res == "UPDATE 0":
+            sys.exit("사용자가 없습니다.")
+        await _log(args, args.username)
         print("비밀번호를 바꿨습니다. Samba 비밀번호는 메인에서 sudo smbpasswd 로 따로 바꾸세요.")
     elif args.cmd == "api-key":
         user = await db.fetchrow("SELECT * FROM users WHERE username=$1", args.username)
         if user is None:
             sys.exit("사용자가 없습니다.")
-        print(await security.create_api_key(user["id"], args.label))
+        key = await security.create_api_key(user["id"], args.label)
+        await _log(args, args.username, label=args.label)   # 키 원문은 남기지 않는다
+        print(key)
     elif args.cmd == "status":
         rows = await db.fetch("SELECT kind, state, count(*) AS n FROM jobs "
                               "WHERE state IN ('queued','starting','running','cleaning') GROUP BY kind, state")
@@ -82,18 +100,24 @@ async def run(args):
             except Exception as e:  # noqa: BLE001
                 print(f"실패: {env['slug']}: {e}")
                 failed += 1
+        await _log(args, None, total=len(rows), failed=failed, skipped=skipped)
         if failed or skipped:
             print(f"실패 {failed}개, 건너뜀 {skipped}개. 나중에 다시: docker compose exec hub python -m app.cli restart-editors")
             sys.exit(1)
     elif args.cmd == "deactivate":
-        await db.execute("UPDATE users SET active=false WHERE username=$1", args.username)
+        res = await db.execute("UPDATE users SET active=false WHERE username=$1", args.username)
+        if res == "UPDATE 0":
+            sys.exit("사용자가 없습니다.")
         await db.execute("UPDATE sessions SET ended_at=now(), end_reason='admin' WHERE ended_at IS NULL AND "
                          "user_id=(SELECT id FROM users WHERE username=$1)", args.username)
+        await _log(args, args.username)
         print("사용 중지했습니다.")
 
 
 def main():
     p = argparse.ArgumentParser(prog="app.cli")
+    # 메인 리눅스 계정은 공용이라 실행한 사람을 알 수 없다. 기록용으로 이름을 적는다 (하위 명령 앞에 쓴다)
+    p.add_argument("--by", default="", help="실행한 사람 이름 (access_log 기록용)")
     sub = p.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("create-user")
     c.add_argument("username")
