@@ -1,0 +1,522 @@
+{
+  "version": "crew-knowledge-1",
+  "note": "제작진 모드(B2)가 분야별로 고르는 선택 메뉴와 전문가 규칙. 우리가 직접 쓴 문장이며 외부 사전을 복사하지 않았다(GPL 원본 DENO 와 분리). 값은 전문가가 고치고 version 을 올린다.",
+  "global_rules": [
+    "Keep every subject, object, action, count and color the user gave.",
+    "Use positive phrasing only; never use no, not, without, avoid or never.",
+    "Do not mention text, letters, logos, brand names or captions anywhere, and do not put any person in the picture unless the request names one.",
+    "If the request names a purpose (poster, banner, thumbnail, ad), the purpose decides composition and brightness, and no menu choice may contradict it.",
+    "Choose time of day and weather only when the request names them; otherwise pick the one that fits the purpose."
+  ],
+  "purpose_words": {
+    "포스터": "poster: bright clear colors, one strong focal element, a clean horizon or axis, open empty space where a title could go (but no text)",
+    "썸네일": "thumbnail: a large simple subject, high contrast, readable at a small size",
+    "배너": "banner: wide composition with the subject on one side and open space on the other",
+    "광고": "advertisement: the subject is the hero, polished lighting, clean uncluttered surroundings",
+    "홍보": "promotion: inviting, bright, clearly shows the place or product being promoted",
+    "표지": "cover: one centered or third-aligned subject with generous margin"
+  },
+  "categories": {
+    "product": {
+      "title": "제품 사진·광고",
+      "keywords": [
+        "광고",
+        "제품",
+        "향수",
+        "신발",
+        "운동화",
+        "시계",
+        "가방",
+        "화장품",
+        "크림",
+        "병",
+        "노트북",
+        "이어폰",
+        "스마트워치",
+        "상품",
+        "perfume",
+        "shoe",
+        "sneaker",
+        "watch",
+        "bottle",
+        "product",
+        "laptop",
+        "cosmetic"
+      ],
+      "rule": "Product advertising: the product itself is the hero and fills most of the frame; show it alone; make the material (glass, metal, leather, fabric) look rich with one clear reflection or highlight design; one lighting logic only.",
+      "steps": [
+        {
+          "key": "presentation",
+          "title": "보여 주는 방식",
+          "options": [
+            {
+              "id": "front_single",
+              "ko": "단독 정면 컷",
+              "en": "the product alone, facing the camera, symmetrical"
+            },
+            {
+              "id": "hero_45",
+              "ko": "45도 히어로 샷",
+              "en": "the product at a three-quarter angle showing its depth and design"
+            },
+            {
+              "id": "macro_detail",
+              "ko": "재질 클로즈업",
+              "en": "a macro close-up of the surface, material and craftsmanship"
+            },
+            {
+              "id": "podium",
+              "ko": "받침대 위 연출",
+              "en": "the product on a simple podium or plinth with space around it"
+            },
+            {
+              "id": "lifestyle_still",
+              "ko": "생활 소품과 함께",
+              "en": "the product among a few matching still-life props"
+            }
+          ]
+        },
+        {
+          "key": "background",
+          "title": "배경",
+          "options": [
+            {
+              "id": "dark_premium",
+              "ko": "어두운 프리미엄 배경",
+              "en": "a dark gradient studio backdrop that makes edges glow"
+            },
+            {
+              "id": "white_clean",
+              "ko": "흰 배경 스튜디오",
+              "en": "a seamless clean white studio backdrop"
+            },
+            {
+              "id": "solid_color",
+              "ko": "단색 컬러 배경",
+              "en": "a solid color backdrop that complements the product color"
+            },
+            {
+              "id": "marble_surface",
+              "ko": "대리석·돌 표면",
+              "en": "a polished stone surface with soft reflections"
+            },
+            {
+              "id": "natural_table",
+              "ko": "자연광 테이블",
+              "en": "a wooden table in soft natural window light"
+            }
+          ]
+        },
+        {
+          "key": "focus",
+          "title": "강조할 점",
+          "options": [
+            {
+              "id": "gloss",
+              "ko": "광택·반사",
+              "en": "crisp reflections and glossy highlights"
+            },
+            {
+              "id": "texture",
+              "ko": "질감·재료",
+              "en": "visible material grain, stitching or brushed metal texture"
+            },
+            {
+              "id": "silhouette",
+              "ko": "형태·실루엣",
+              "en": "a clean readable silhouette and proportions"
+            },
+            {
+              "id": "luxury",
+              "ko": "고급감",
+              "en": "a refined premium feeling through restraint and contrast"
+            },
+            {
+              "id": "transparency",
+              "ko": "투명감",
+              "en": "clear see-through glass or liquid with visible depth"
+            }
+          ]
+        },
+        {
+          "key": "lighting",
+          "title": "조명",
+          "options": [
+            {
+              "id": "rim_backlight",
+              "ko": "역광과 림 라이트",
+              "en": "a soft backlight with thin rim light outlining the edges"
+            },
+            {
+              "id": "soft_top",
+              "ko": "부드러운 상단 조명",
+              "en": "soft diffused light from above with gentle shadows"
+            },
+            {
+              "id": "side_key",
+              "ko": "측면 주광",
+              "en": "a single side key light that sculpts the form"
+            },
+            {
+              "id": "window_light",
+              "ko": "창가 자연광",
+              "en": "warm natural window light from one side"
+            },
+            {
+              "id": "hard_spot",
+              "ko": "강한 스포트 조명",
+              "en": "a hard spotlight with sharp reflections and deep shadows"
+            }
+          ]
+        },
+        {
+          "key": "mood",
+          "title": "분위기",
+          "options": [
+            {
+              "id": "luxurious",
+              "ko": "고급스럽게",
+              "en": "luxurious and restrained"
+            },
+            {
+              "id": "clean",
+              "ko": "깨끗하고 맑게",
+              "en": "clean, bright and crisp"
+            },
+            {
+              "id": "warm",
+              "ko": "따뜻하고 부드럽게",
+              "en": "warm and soft"
+            },
+            {
+              "id": "bold",
+              "ko": "대담하고 선명하게",
+              "en": "bold, saturated and graphic"
+            },
+            {
+              "id": "calm",
+              "ko": "차분하고 담백하게",
+              "en": "calm and minimal"
+            }
+          ]
+        }
+      ]
+    },
+    "space": {
+      "title": "공간·인테리어·매장",
+      "keywords": [
+        "카페",
+        "매장",
+        "가게",
+        "식당",
+        "거실",
+        "방",
+        "집 안",
+        "인테리어",
+        "공간",
+        "침실",
+        "주방",
+        "서점",
+        "도서관",
+        "사무실",
+        "cafe",
+        "interior",
+        "living room",
+        "room",
+        "shop",
+        "restaurant",
+        "내부",
+        "로비",
+        "베란다"
+      ],
+      "rule": "Place and interior: the place itself is the subject with one clear focal area, one light-source direction and two or three material textures; show it empty of people unless the request names them.",
+      "steps": [
+        {
+          "key": "style",
+          "title": "공간 스타일",
+          "options": [
+            {
+              "id": "natural_wood",
+              "ko": "내추럴·우드",
+              "en": "natural wood and plants with a warm handmade feeling"
+            },
+            {
+              "id": "cozy",
+              "ko": "코지·아늑함",
+              "en": "soft textiles, cushions and warm lived-in details"
+            },
+            {
+              "id": "modern_minimal",
+              "ko": "모던·미니멀",
+              "en": "clean lines, few objects and calm neutral colors"
+            },
+            {
+              "id": "vintage",
+              "ko": "빈티지",
+              "en": "aged materials, old furniture and muted warm tones"
+            },
+            {
+              "id": "industrial",
+              "ko": "인더스트리얼",
+              "en": "concrete, metal and exposed structure"
+            }
+          ]
+        },
+        {
+          "key": "lighting",
+          "title": "빛",
+          "options": [
+            {
+              "id": "morning_window",
+              "ko": "오전 창가 햇살",
+              "en": "clear morning sunlight entering from a window"
+            },
+            {
+              "id": "golden_hour",
+              "ko": "해질녘 따뜻한 빛",
+              "en": "low warm golden-hour light with long soft shadows"
+            },
+            {
+              "id": "overcast_soft",
+              "ko": "흐린 날 부드러운 빛",
+              "en": "soft even daylight from a cloudy sky"
+            },
+            {
+              "id": "evening_lamps",
+              "ko": "저녁 조명",
+              "en": "warm pendant and lamp light in the evening"
+            },
+            {
+              "id": "candle_dim",
+              "ko": "은은한 어두운 조명",
+              "en": "dim low light with a few glowing accents"
+            }
+          ]
+        },
+        {
+          "key": "composition",
+          "title": "구도",
+          "options": [
+            {
+              "id": "wide_room",
+              "ko": "공간 전체 와이드",
+              "en": "a wide view showing the whole space"
+            },
+            {
+              "id": "corner_focal",
+              "ko": "한 구석에 초점",
+              "en": "a medium view with one focal corner and a blurred rest"
+            },
+            {
+              "id": "table_detail",
+              "ko": "테이블 위 디테일",
+              "en": "a close view of a table with a few props"
+            },
+            {
+              "id": "one_point",
+              "ko": "소실점 구도",
+              "en": "a one-point perspective leading into the space"
+            },
+            {
+              "id": "window_view",
+              "ko": "창 밖을 함께",
+              "en": "an interior with the window and the view outside"
+            }
+          ]
+        },
+        {
+          "key": "mood",
+          "title": "분위기",
+          "options": [
+            {
+              "id": "inviting",
+              "ko": "맞이하는 듯 밝게",
+              "en": "bright and welcoming"
+            },
+            {
+              "id": "cozy_warm",
+              "ko": "따뜻하고 편안하게",
+              "en": "warm and comfortable"
+            },
+            {
+              "id": "serene",
+              "ko": "고요하게",
+              "en": "quiet and serene"
+            },
+            {
+              "id": "stylish",
+              "ko": "세련되게",
+              "en": "stylish and polished"
+            },
+            {
+              "id": "lively",
+              "ko": "활기차게",
+              "en": "lively and fresh"
+            }
+          ]
+        }
+      ]
+    },
+    "landscape": {
+      "title": "풍경·자연·도시",
+      "keywords": [
+        "풍경",
+        "바다",
+        "해변",
+        "산",
+        "숲",
+        "호수",
+        "하늘",
+        "도시",
+        "거리",
+        "비 오는",
+        "눈 오는",
+        "노을",
+        "분위기 사진",
+        "자연",
+        "sea",
+        "ocean",
+        "beach",
+        "mountain",
+        "forest",
+        "landscape",
+        "cityscape",
+        "street",
+        "숲속",
+        "바닷가",
+        "해안",
+        "일몰",
+        "설경",
+        "야경",
+        "폭포"
+      ],
+      "rule": "Scenery: one clear focal point with a foreground, a middle ground and a background; one light logic; no people unless the request names them; show the mood through weather, light and color.",
+      "steps": [
+        {
+          "key": "time_weather",
+          "title": "시간·날씨",
+          "options": [
+            {
+              "id": "clear_day",
+              "ko": "맑은 낮",
+              "en": "clear bright daylight with a blue sky"
+            },
+            {
+              "id": "golden_hour",
+              "ko": "노을 시간",
+              "en": "warm golden-hour light low on the horizon"
+            },
+            {
+              "id": "rainy",
+              "ko": "비 오는 날",
+              "en": "rain with wet surfaces and soft reflections"
+            },
+            {
+              "id": "misty_dawn",
+              "ko": "안개 낀 새벽",
+              "en": "soft mist at dawn with cool diffused light"
+            },
+            {
+              "id": "night",
+              "ko": "밤",
+              "en": "night with a few small light sources and cool tones"
+            }
+          ]
+        },
+        {
+          "key": "composition",
+          "title": "구도",
+          "options": [
+            {
+              "id": "panorama",
+              "ko": "파노라마 와이드",
+              "en": "a wide panorama emphasizing scale"
+            },
+            {
+              "id": "leading_lines",
+              "ko": "시선을 끄는 선",
+              "en": "leading lines guiding the eye to one focal point"
+            },
+            {
+              "id": "layered_depth",
+              "ko": "겹겹이 깊이",
+              "en": "clear foreground, middle ground and background layers"
+            },
+            {
+              "id": "centered_focal",
+              "ko": "중앙 한 점",
+              "en": "one centered focal element with open space around it"
+            },
+            {
+              "id": "low_angle",
+              "ko": "낮은 시점",
+              "en": "a low viewpoint that makes the scene feel larger"
+            }
+          ]
+        },
+        {
+          "key": "color",
+          "title": "색 팔레트",
+          "options": [
+            {
+              "id": "turquoise_blue",
+              "ko": "청록과 하늘색",
+              "en": "turquoise and sky blue"
+            },
+            {
+              "id": "warm_orange",
+              "ko": "주황과 분홍",
+              "en": "orange and pink"
+            },
+            {
+              "id": "cool_teal_gray",
+              "ko": "차가운 청회색",
+              "en": "cool teal and gray"
+            },
+            {
+              "id": "green_gold",
+              "ko": "초록과 금빛",
+              "en": "fresh green with golden highlights"
+            },
+            {
+              "id": "muted_earth",
+              "ko": "차분한 흙빛",
+              "en": "muted earth tones"
+            }
+          ]
+        },
+        {
+          "key": "mood",
+          "title": "분위기",
+          "options": [
+            {
+              "id": "refreshing",
+              "ko": "청량하게",
+              "en": "fresh and breezy"
+            },
+            {
+              "id": "serene",
+              "ko": "고요하게",
+              "en": "quiet and serene"
+            },
+            {
+              "id": "moody",
+              "ko": "차분하고 몽환적으로",
+              "en": "calm and dreamy"
+            },
+            {
+              "id": "majestic",
+              "ko": "웅장하게",
+              "en": "grand and majestic"
+            },
+            {
+              "id": "melancholic",
+              "ko": "쓸쓸하게",
+              "en": "quietly melancholic"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

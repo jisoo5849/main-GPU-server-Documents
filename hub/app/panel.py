@@ -218,11 +218,15 @@ async def handle(request: Request, env: dict, user, path: str):
     if path == "/mgs/api/expand" and method == "POST":
         data = await _body(request)
         try:
-            result = await promptx.expand(user, ip, data.get("text"), data.get("style", ""), data.get("notes", ""))
+            crew = data.get("crew")   # 제작진 모드: true/false 면 이 요청만 그 값, 없으면 설정(CREW_MODE)
+            result = await promptx.expand(user, ip, data.get("text"), data.get("style", ""), data.get("notes", ""),
+                                          crew if isinstance(crew, bool) else None)
         except promptx.PromptxError as e:
             return JSONResponse({"error": str(e)}, status_code=e.status)
         await db.log_access(user["id"], ip, "prompt_expand",
-                            {"env": env["slug"], "rounds": result["rounds"], "left": len(result["violations"])})
+                            {"env": env["slug"], "rounds": result["rounds"], "left": len(result["violations"]),
+                             "crew": (result.get("crew") or {}).get("category"),
+                             "crew_used": bool((result.get("crew") or {}).get("used"))})
         return JSONResponse(result)
     if path == "/mgs/api/inspect" and method == "POST":
         data = await _body(request)

@@ -29,15 +29,16 @@ const state = {
   error: null,
   loginUrl: null,
   // 프롬프트 도우미 (메타 규칙 확장)
-  helper: { text: "", style: "", notes: "", busy: false, result: null, open: false },
+  helper: { text: "", style: "", notes: "", busy: false, result: null, open: false, crew: true },
   // 결과 자동 검사 (VLM)
   check: { on: false, expect: "", results: [], seen: new Set() },
 };
 
 // 사용자가 적어 둔 그림체·필수 특징·자동 검사 설정은 브라우저에 기억한다 (작업공간 포트마다 따로)
-const SAVED_KEYS = { style: "mgs.helper.style", expect: "mgs.check.expect", on: "mgs.check.on" };
+const SAVED_KEYS = { style: "mgs.helper.style", expect: "mgs.check.expect", on: "mgs.check.on", crew: "mgs.helper.crew" };
 try {
   state.helper.style = localStorage.getItem(SAVED_KEYS.style) || "";
+  state.helper.crew = localStorage.getItem(SAVED_KEYS.crew) !== "0";
   state.check.expect = localStorage.getItem(SAVED_KEYS.expect) || "";
   state.check.on = localStorage.getItem(SAVED_KEYS.on) === "1";
 } catch { /* 저장소를 못 쓰는 브라우저 */ }
@@ -305,11 +306,15 @@ function helperCard() {
     textArea(hp.notes, "꼭 지킬 특징 (선택) 예: 손은 항상 긴 소매 속에 숨김", 2, (v) => { hp.notes = v; }),
     textArea(hp.style, "그림체 고정 문장 (선택, 영문). 적으면 끝에 그대로 붙이고 다른 그림체 말은 막습니다.", 2,
       (v) => { hp.style = v; save("style", v); }),
+    h("label", { class: "mgs-row" },
+      h("input", { type: "checkbox", checked: hp.crew, onchange: (ev) => { hp.crew = ev.target.checked; save("crew", hp.crew ? "1" : "0"); } }),
+      h("span", { class: "mgs-sub", text: "제작진 모드: 제품·공간·풍경 요청이면 전문가 지식으로 기획·연출·촬영·디테일을 먼저 정합니다 (캐릭터 요청은 건너뜀)" })),
     h("div", { class: "mgs-row" },
       h("button", { class: "mgs-btn primary", disabled: hp.busy, onclick: runExpand }, hp.busy ? "메인 GPU에서 작성 중…" : "프롬프트 확장"),
       h("span", { class: "mgs-sub", text: "GPU 대기열을 거칩니다" })));
   const r = hp.result;
   if (r) {
+    if (r.crew?.used) card.append(crewSheet(r.crew));
     card.append(h("div", { class: "mgs-code", text: r.prompt }));
     card.append(h("div", { class: "mgs-sub", text: `규칙 검사 ${r.rounds}회 · ${r.model}` }));
     if (r.violations?.length) {
@@ -326,6 +331,16 @@ function helperCard() {
   return card;
 }
 
+// 제작진 모드가 쓰였을 때 보여 주는 한국어 지시서: 고른 항목과 [기획][연출][촬영·조명][디테일]
+function crewSheet(c) {
+  const box = h("div", { class: "mgs-item" });
+  box.append(h("div", { class: "mgs-name", text: `제작진 지시서 · ${c.title}` }));
+  box.append(h("div", { class: "mgs-sub", text: c.picked.map((p) => `${p.step}: ${p.ko}`).join(" / ") }));
+  const parts = [["기획", c.ko.plan], ["연출", c.ko.direction], ["촬영·조명", c.ko.camera_lighting], ["디테일", c.ko.details]];
+  for (const [name, text] of parts) if (text) box.append(h("div", { class: "mgs-sub", text: `[${name}] ${text}` }));
+  return box;
+}
+
 function redrawHelper() {
   const old = state.root?.querySelector(".mgs-helper");
   if (old) old.replaceWith(helperCard());
@@ -338,7 +353,7 @@ async function runExpand() {
   hp.busy = true;
   redrawHelper();
   try {
-    hp.result = await postJSON("/mgs/api/expand", { text: hp.text, notes: hp.notes, style: hp.style });
+    hp.result = await postJSON("/mgs/api/expand", { text: hp.text, notes: hp.notes, style: hp.style, crew: hp.crew });
   } catch (e) {
     if (e instanceof LoginError) { state.error = "login"; draw(); return; }
     toast("error", "프롬프트를 확장하지 못했습니다", e.message, 8000);

@@ -359,17 +359,48 @@ def result_image_path(username: str, filename: str, subfolder: str = "") -> str:
 
 # ── GPU 를 쓰는 부분 (대기열 경유) ──────────────────────────
 
-async def expand(user, ip: str, text: str, style: str = "", notes: str = "") -> dict:
-    from . import llm   # llm → scheduler 를 불러오므로 순환을 피해 여기서
+CREW_SKIP_ADVICE = {
+    "character": "캐릭터 정본이 있는 요청이라 정본 특징을 지키려고 제작진 모드를 쓰지 않았습니다.",
+    "hidden_hands": "손 숨김 요청이라 제작진 모드를 쓰지 않았습니다.",
+    "person": "사람이 나오는 요청이라 제작진 모드를 쓰지 않았습니다.",
+}
+
+
+async def expand(user, ip: str, text: str, style: str = "", notes: str = "", crew=None) -> dict:
+    """짧은 요청을 생성용 프롬프트로 늘린다. crew 는 제작진 모드(B2): None 이면 설정(CREW_MODE)을 따르고,
+    True/False 면 그 요청에 한해 켜거나 끈다 (분야 메뉴가 없는 요청과 캐릭터 정본 요청은 켜도 건너뛴다)."""
+    from . import crew as crew_mod, llm   # llm → scheduler 를 불러오므로 순환을 피해 여기서
 
     text = clean_input(text)
     style = str(style or "").strip()[:2000]
     notes = str(notes or "").strip()[:2000]
-    messages = build_expand_messages(text, style, notes)
     model = settings.expand_model
+    want_crew = settings.crew_mode != "off" and crew is not False
+    rt = crew_mod.route(text, notes) if want_crew else None
+    crew_info, crew_advice = None, []
+    if want_crew and rt is None:
+        reason = crew_mod.skip_reason(text, notes)
+        if reason:   # 분야가 없는 요청은 조용히 도우미로 가고, 건너뛴 이유가 분명할 때만 알린다
+            crew_advice.append(CREW_SKIP_ADVICE[reason])
     rounds, result, problems = 0, {}, []
     try:
         async with llm.llm_turn(user, ip, model, "prompt_expand") as call:
+            used_notes = notes
+            if rt is not None:
+                # 같은 차례 안에서 제작진 초안을 먼저 받는다 (모델을 다시 올리지 않는다)
+                try:
+                    draft, crew_rounds, left = await crew_mod.draft(call, text, rt, style, notes)
+                except Exception:  # noqa: BLE001 - 초안이 어떻게 깨져도 기존 도우미로 돌아간다
+                    draft, crew_rounds, left = {}, 0, ["crew draft failed"]
+                crew_info = {"category": rt["category"], "title": rt["title"], "rounds": crew_rounds,
+                             "used": not left, "violations": left}
+                if not left:
+                    used_notes = crew_mod.merge_notes(notes, draft)
+                    crew_info.update(crew_mod.describe(draft, rt["category"]))
+                    crew_info["notes_en"] = [str(n) for n in draft.get("notes_en") or []]
+                else:
+                    crew_advice.append("제작진 초안이 규칙을 통과하지 못해 기존 도우미로 처리했습니다.")
+            messages = build_expand_messages(text, style, used_notes)
             for rounds in range(1, settings.expand_repair_rounds + 2):
                 # 생각 단계를 끄면 같은 결과를 훨씬 빨리 낸다 (메인 측정: 27b 확장 한 번 약 100초)
                 data = await call({"messages": messages, "format": "json", "think": False,
@@ -387,7 +418,7 @@ async def expand(user, ip: str, text: str, style: str = "", notes: str = "") -> 
     return {"prompt": final_prompt(result, style), "body": str(result.get("prompt") or ""),
             "keep": result.get("keep") or [], "categories": result.get("categories") or {},
             "people": result.get("people"), "violations": problems, "rounds": rounds, "model": model,
-            "advice": expand_advice(text + " " + notes)}
+            "crew": crew_info, "advice": crew_advice + expand_advice(text + " " + notes)}
 
 
 def expand_advice(user_text: str) -> list[str]:

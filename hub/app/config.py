@@ -56,6 +56,14 @@ class Settings:
     inspect_model = _env("IMAGE_INSPECT_MODEL", "qwen3-vl:8b-instruct")
     helper_wait_seconds = _int("HELPER_WAIT_SECONDS", 900)
 
+    # 제작진 모드(B2, docs/crew-mode.md): 분야 메뉴가 있는 요청(제품·공간·풍경)에만 도우미 앞에 전문가 지식 초안 단계를 붙인다.
+    # off 는 서버에서 끈다(패널 값은 무시). 그 밖의 값은 auto: 패널이 crew 로 true/false 를 보내면 그 요청만 따르고, 안 보내면 켠다.
+    crew_mode = "off" if _env("CREW_MODE", "auto").strip().lower() in ("off", "0", "false", "no") else "auto"
+    crew_repair_rounds = _int("CREW_REPAIR_ROUNDS", 1)
+    # 캐릭터 정본 이름이 요청에 있으면 제작진 모드를 건너뛴다 (정본 특징이 메뉴 선택보다 우선). 쉼표로 구분.
+    crew_guard_names = _env("CREW_GUARD_NAMES", "니키,niki,푸토르,putor,퀼린스,quillins,제임스,james,베스,beth,타오바,taoba,"
+                                                "일리아,ilia,일로케,iloke,일루키,iluki")
+
     editor_network = "mgs-editors"
     worker_network = "mgs-workers"
     editor_subnet = _env("EDITOR_SUBNET", "172.30.0.0/24")
