@@ -1,52 +1,36 @@
-"""제작진 모드(B2): 분야별 전문가 지식을 붙인 초안으로 프롬프트 도우미를 돕는다.
+"""제작진 모드(B2): 분야별 전문가 지식을 붙인 초안으로 프롬프트 도우미를 돕는다 (docs/crew-mode.md).
 
-2026-11-10 G0 A/B 시험 결과(docs/crew-mode.md): 같은 모델이 두 번 추측하는 '지식 없는 제작진'은 도우미보다 낫지 않았고,
-분야별 선택 메뉴와 전문가 규칙을 붙인 초안(B2)이 제품·공간·풍경에서 더 상업적인 결과를 냈다. 그래서 이 모드는
-- 분야 메뉴가 있는 요청(제품·공간·풍경)에만 켜지고, 그 밖의 요청과 캐릭터 정본·손 숨김·사람이 나오는 요청은 기존 도우미 경로를 탄다.
-- LLM 이 메뉴에서 단계마다 하나씩 고르고(스키마 enum 으로 강제), 한국어 지시서 네 칸과 영문 메모 3~6줄을 쓴다.
-- 코드가 검사하고(check_crew) 어긋나면 고쳐 쓰게 한다. 그래도 어긋나면 이 모드를 버리고 도우미로 돌아간다.
-- 영문 메모는 도우미의 '꼭 지킬 특징' 칸에 더해지고, 최종 프롬프트는 도우미가 만든다 (같은 GPU 차례 안에서).
+- 사용자의 말이 최우선이다. 요청에 적힌 장르·스타일·날씨·색·조명·분위기(crew_lib.user_demands)는 메뉴 선택이 덮어쓸 수 없고,
+  코드가 초안과 최종 글을 검사해 빠지면 고쳐 쓰게 한다 (11-11 시험: 'SF 영화처럼' 요청에서 SF 가 사라졌다).
+- 단계마다 고를 선택지는 수천~수만 개 라이브러리(crew_library/*.jsonl)에서 요청마다 골라 메뉴로 준다. 사용자 말과 맞는 항목을
+  먼저 넣고, 나머지는 여러 그룹에서 골고루 무작위로 채워 같은 선택('어두운 프리미엄')만 반복되지 않게 한다.
+- 분야 메뉴가 있는 요청(제품·공간·풍경)에만 켜지고, 캐릭터 정본·손 숨김·사람이 나오는 요청은 기존 도우미 경로를 탄다.
+- 초안은 같은 GPU 차례 안에서 받고, 영문 메모는 도우미의 '꼭 지킬 특징' 칸에 더해진다.
 
-이 파일의 순수 함수는 hub/tests/test_crew.py 가 GPU·DB 없이 검증한다.
+순수 함수는 hub/tests/test_crew.py 가 GPU·DB 없이 검증한다.
 """
-import json
-import os
+import asyncio
+import random
 import re
 from functools import lru_cache
 
+from . import crew_lib
 from .config import settings
+from .crew_lib import any_word, word_pattern
 from .promptx import HAND_WORDS_RE, NEGATION_RE, PromptxError, hides_hands, parse_json_reply, repair_message
 
-KNOWLEDGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crew_knowledge.json")
+KNOWLEDGE_PATH = crew_lib.KNOWLEDGE_PATH
+load_knowledge = crew_lib.load_knowledge   # 지식 파일은 crew_lib 한 곳에서 읽는다
 GENERIC_KEYWORDS = ("광고", "풍경")   # 여러 분야에 걸치는 말은 반 점만 준다
 HANGUL_RE = re.compile(r"[가-힣]")
 MIN_NOTES, MAX_NOTES, MAX_NOTE_WORDS, MAX_TOTAL_WORDS = 3, 6, 28, 110
-
-# 한글 낱말은 앞뒤가 한글이면 다른 낱말의 일부다 ("아이스크림" 속 "아이", "우산" 속 "산"). 조사만 허용한다.
-PARTICLES = ("이랑|이나|이란|이라는|에서|에도|으로|처럼|같은|같이|하고|까지|부터|들|이|가|은|는|을|를|의|에|와|과|도|로|만|나|랑")
-
-
-def _ko_word(word: str) -> str:
-    return rf"(?<![가-힣A-Za-z0-9]){re.escape(word)}(?:{PARTICLES})?(?![가-힣A-Za-z0-9])"
-
-
-def _word(word: str) -> str:
-    """키워드 하나를 낱말 단위 정규식으로 (영문은 \\b 와 복수 s, 한글은 위 규칙)."""
-    word = re.sub(r"\s+", " ", word.strip())
-    if word.isascii():
-        return rf"\b{re.escape(word)}s?\b"
-    return _ko_word(word)
-
-
-def _any_word(words) -> re.Pattern:
-    return re.compile("|".join(_word(w) for w in words), re.I)
-
+MENU_SIZE = 8
 
 # 요청에 사람이 있는지 (제작진 모드는 사람이 나오는 요청을 기존 도우미에 맡긴다)
 PERSON_WORDS = ("사람", "인물", "모델", "소녀", "소년", "남자", "여자", "아이", "손님", "점원", "사장", "커플", "가족", "친구",
                 "주인공", "청년", "노인", "마법사", "여행자", "아기", "학생", "person", "people", "man", "men", "woman", "women",
                 "girl", "boy", "child", "children", "customer", "barista", "model", "wizard", "traveler")
-PERSON_REQ_RE = _any_word(PERSON_WORDS)
+PERSON_REQ_RE = any_word(PERSON_WORDS)
 # 제작진 메모에 사람이 들어갔는지 (G0 V04: 신발 광고가 사람 다리 컷이 됐다). 시곗바늘(watch hands)·소파 팔걸이(arm)는 사람이 아니다.
 PERSON_NOTE_RE = re.compile(
     r"\b(?:person|people|man|men|woman|women|girl|boy|child|children|customer|barista|model|human|someone|figure)\b"
@@ -57,16 +41,14 @@ TEXT_NOTE_RE = re.compile(r"\b(?:text|letters?|lettering|logos?|brand(?:ing)?|ca
                           r"labels?|signage|signs?|words?|writing)\b|[\"“”]", re.I)
 
 
-@lru_cache(maxsize=1)
-def load_knowledge() -> dict:
-    with open(KNOWLEDGE_PATH, encoding="utf-8") as f:
-        return json.load(f)
+def steps_of(cat: str) -> list[dict]:
+    return load_knowledge()["categories"][cat]["steps"]
 
 
 @lru_cache(maxsize=8)
 def _guard_re(names: str):
     words = [n.strip() for n in names.split(",") if n.strip()]
-    return _any_word(words) if words else None
+    return any_word(words) if words else None
 
 
 def mentions_guarded_name(text: str) -> bool:
@@ -89,7 +71,7 @@ def skip_reason(text: str, notes: str = "") -> str | None:
 
 @lru_cache(maxsize=1)
 def _keyword_res() -> dict:
-    return {cat: [(k, re.compile(_word(k), re.I)) for k in spec["keywords"]]
+    return {cat: [(k, re.compile(word_pattern(k), re.I)) for k in spec["keywords"]]
             for cat, spec in load_knowledge()["categories"].items()}
 
 
@@ -117,11 +99,55 @@ def route(text: str, notes: str = "") -> dict | None:
     return {"category": top[0], "title": kn["categories"][top[0]]["title"], "score": best, "purposes": purposes}
 
 
-def menu_text(cat: str) -> str:
+def build_menus(text: str, rt: dict, rng: random.Random | None = None, size: int = MENU_SIZE) -> dict:
+    """단계마다 라이브러리에서 메뉴를 고른다. 사용자 요구 항목은 반드시 넣는다.
+
+    text 는 요청과 사용자가 적은 특징을 합친 글이다(특징 칸에 쓴 'SF 느낌' 도 사용자 요구다).
+    한 단계에 요구가 둘 이상이면(예: '눈 오는 밤') 둘 다 맞는 항목을 먼저 넣는다.
+    """
+    rng = rng or random.Random()
+    cat = rt["category"]
+    demands = crew_lib.query(text).demands
+    menus = {}
+    for st in steps_of(cat):
+        must = []
+        mine = [crew_lib.usable(d["ids"], text, cat) for d in demands if d["facet"] == st["facet"]]
+        mine = [ids for ids in mine if ids]
+        if len(mine) > 1:
+            both = sorted(set(mine[0]).intersection(*mine[1:]))
+            must += rng.sample(both, min(2, len(both)))
+        for ids in mine:
+            must += rng.sample(ids, min(2, len(ids)))
+        prefer, wild, focus = st.get("prefer"), 0.25, None
+        if st["facet"] == "location_set":
+            hint = place_groups(text)
+            if hint:              # 사용자가 장소를 말했으면 그 장소 묶음에서만 고른다 (예: '집 안' → 집 안의 방들)
+                prefer, wild, focus = hint, 0, hint
+        menus[st["key"]] = crew_lib.retrieve(text, st["facet"], k=size, cat=cat, rng=rng, must=must,
+                                             prefer=prefer, wild=wild, focus=focus)
+    return menus
+
+
+@lru_cache(maxsize=1)
+def _place_res() -> list:
+    return [(re.compile(word_pattern(w), re.I), g) for w, g in load_knowledge().get("place_hints", {}).items()]
+
+
+def place_groups(text: str) -> list[str]:
+    t = re.sub(r"\s+", " ", text)
+    out = []
+    for rx, groups in _place_res():
+        if rx.search(t):
+            out += [g for g in groups if g not in out]
+    return out
+
+
+def menu_text(menus: dict, cat: str) -> str:
     lines = []
-    for st in load_knowledge()["categories"][cat]["steps"]:
-        opts = "; ".join(f"{o['id']} = {o['ko']} ({o['en']})" for o in st["options"])
-        lines.append(f"- {st['key']} ({st['title']}): {opts}")
+    for st in steps_of(cat):
+        opts = "; ".join(f"{e['id']} = {e['ko']} ({e['en']})" for e in menus[st["key"]])
+        pick = "choose 1 to 3 ids" if st.get("multi") else "choose exactly one id"
+        lines.append(f"- {st['key']} ({st['title']}, {pick}): {opts}")
     return "\n".join(lines)
 
 
@@ -129,25 +155,41 @@ CREW_SYSTEM = """You are a small production crew of experts preparing one still 
 Rules:
 {rules}
 Field rule: {field_rule}
-{purpose}EXPERT MENU for this field. For every step choose exactly one option id that best fits the request, and build the notes around those choices. Never invent an id outside the menu.
+{purpose}MENU for this request (picked from a large library; each line shows id = Korean name (look)). Use only ids from the menu and build the notes around those choices.
 {menu}
 Return JSON only:
-- "choices": the chosen id for every step.
+- "choices": for every step the chosen id (genre: a list of 1 to 3 ids).
 - "ko": four short Korean sentences, one each for plan, direction, camera_lighting, details, explaining the choices to the user.
 - "notes_en": {lo} to {hi} short positive English phrases (at most {words} words each) that state the choices as things to be seen: subject and its arrangement, setting, light, composition, materials and one atmosphere detail."""
 
 
-def build_messages(text: str, rt: dict, style: str = "", notes: str = "") -> list[dict]:
+def demand_lines(text: str) -> list[str]:
+    """사용자 요구를 지시문으로 (최우선)."""
+    out = []
+    for d in crew_lib.query(text).demands:
+        out.append(f"- The user wrote '{d['tag']}' ({d['facet']}). This comes first: the image must clearly show it, "
+                   f"using words such as: {', '.join(d['terms'][:6])}.")
+    return out
+
+
+def build_messages(text: str, rt: dict, style: str = "", notes: str = "", menus: dict | None = None) -> list[dict]:
     kn = load_knowledge()
-    spec = kn["categories"][rt["category"]]
+    cat = rt["category"]
+    spec = kn["categories"][cat]
+    menus = menus or build_menus(f"{text} {notes}", rt)
     purpose = ""
     if rt.get("purposes"):
         purpose = ("PURPOSE named in the request (it decides composition and brightness, no menu choice may contradict it): "
                    + " | ".join(rt["purposes"].values()) + "\n")
     system = CREW_SYSTEM.format(rules="\n".join(f"- {r}" for r in kn["global_rules"]), field_rule=spec["rule"],
-                                purpose=purpose, menu=menu_text(rt["category"]), lo=MIN_NOTES, hi=MAX_NOTES,
+                                purpose=purpose, menu=menu_text(menus, cat), lo=MIN_NOTES, hi=MAX_NOTES,
                                 words=MAX_NOTE_WORDS)
     parts = [f"Request (Korean): {text}", "Output: one still image."]
+    dl = demand_lines(f"{text} {notes}")
+    if dl:
+        parts.append("USER WORDS (top priority, choose the matching menu ids and show them all in the notes; when one step "
+                     "has two of them, pick an id that fits both or the closest one and show both in the notes):\n"
+                     + "\n".join(dl))
     if notes:
         parts.append(f"Must-keep details from the user (do not contradict them): {notes}")
     if style:
@@ -155,33 +197,56 @@ def build_messages(text: str, rt: dict, style: str = "", notes: str = "") -> lis
     return [{"role": "system", "content": system}, {"role": "user", "content": "\n".join(parts)}]
 
 
-def build_schema(cat: str) -> dict:
+def build_schema(cat: str, menus: dict) -> dict:
     s = {"type": "string"}
-    steps = load_knowledge()["categories"][cat]["steps"]
+    props, req = {}, []
+    for st in steps_of(cat):
+        enum = [e["id"] for e in menus[st["key"]]]
+        if st.get("multi"):
+            props[st["key"]] = {"type": "array", "items": {"type": "string", "enum": enum}, "minItems": 1, "maxItems": 3}
+        else:
+            props[st["key"]] = {"type": "string", "enum": enum}
+        req.append(st["key"])
     return {"type": "object", "properties": {
-        "choices": {"type": "object", "properties": {st["key"]: {"type": "string", "enum": [o["id"] for o in st["options"]]}
-                                                     for st in steps}, "required": [st["key"] for st in steps]},
+        "choices": {"type": "object", "properties": props, "required": req},
         "ko": {"type": "object", "properties": {k: s for k in ("plan", "direction", "camera_lighting", "details")},
                "required": ["plan", "direction", "camera_lighting", "details"]},
         "notes_en": {"type": "array", "items": s, "minItems": MIN_NOTES, "maxItems": MAX_NOTES}},
         "required": ["choices", "ko", "notes_en"]}
 
 
-def check_crew(result, cat: str, user_text: str = "") -> list[str]:
+def _chosen(v) -> list[str]:
+    if isinstance(v, str):
+        return [v]
+    if isinstance(v, list):
+        return [x for x in v if isinstance(x, str)]
+    return []
+
+
+def check_crew(result, cat: str, user_text: str = "", request_text: str | None = None,
+               menus: dict | None = None) -> list[str]:
     """제작진 초안 검사. 어긋난 점을 영문 문장 목록으로 돌려준다 (그대로 고쳐 쓰기 지시에 넣는다).
 
+    user_text 는 요청+특징(사람·손 규칙용), request_text 는 사용자 요구를 뽑을 글(없으면 user_text).
+    menus 를 주면 고른 id 가 그 요청의 메뉴 안에 있는지까지 본다.
     모델이 스키마를 어겨 엉뚱한 형식(리스트, 숫자 등)을 줘도 예외 없이 위반으로 돌려준다.
     """
     if not isinstance(result, dict):
         return ["Return a JSON object with choices, ko and notes_en."]
     problems: list[str] = []
-    steps = load_knowledge()["categories"][cat]["steps"]
     choices = result.get("choices") if isinstance(result.get("choices"), dict) else {}
-    for st in steps:
-        ids = {o["id"] for o in st["options"]}
-        v = choices.get(st["key"])
-        if not isinstance(v, str) or v not in ids:
-            problems.append(f'Step "{st["key"]}" needs one id from: {", ".join(sorted(ids))}.')
+    picked_by_facet = {}
+    for st in steps_of(cat):
+        ids = _chosen(choices.get(st["key"]))
+        if not st.get("multi") and len(ids) != 1 or st.get("multi") and not 1 <= len(ids) <= 3:
+            problems.append(f'Step "{st["key"]}" needs {"1 to 3 ids" if st.get("multi") else "one id"} from the menu.')
+            continue
+        offered = {e["id"] for e in menus[st["key"]]} if menus and st["key"] in menus else None
+        for i in ids:
+            e = crew_lib.entry(i)
+            if not e or e["facet"] != st["facet"] or (offered is not None and i not in offered):
+                problems.append(f'Step "{st["key"]}" has an id that is not in the menu: {i}.')
+        picked_by_facet.setdefault(st["facet"], set()).update(ids)
     ko = result.get("ko") if isinstance(result.get("ko"), dict) else {}
     for k in ("plan", "direction", "camera_lighting", "details"):
         if not HANGUL_RE.search(str(ko.get(k) or "")):
@@ -191,6 +256,13 @@ def check_crew(result, cat: str, user_text: str = "") -> list[str]:
     if not MIN_NOTES <= len(notes) <= MAX_NOTES:
         problems.append(f'"notes_en" must be a list of {MIN_NOTES} to {MAX_NOTES} lines; it has {len(notes)}.')
     blob = " ".join(notes)
+    # 사용자 말이 최우선: 요구마다 메뉴 선택과 글 둘 다에서 지켜졌는지 본다
+    demands = crew_lib.query(request_text if request_text is not None else user_text).demands
+    problems += _demand_choice_problems(demands, picked_by_facet, cat, menus)
+    for d in demands:
+        if not crew_lib.has_term(blob, d["terms"]):
+            problems.append(f"The user wrote '{d['tag']}'; notes_en must clearly show it with words such as: "
+                            + ", ".join(d["terms"][:6]) + ".")
     if HANGUL_RE.search(blob):
         problems.append('"notes_en" must be English only.')
     if len(blob.split()) > MAX_TOTAL_WORDS or any(len(n.split()) > MAX_NOTE_WORDS for n in notes):
@@ -212,13 +284,46 @@ def check_crew(result, cat: str, user_text: str = "") -> list[str]:
     return problems
 
 
+def _demand_choice_problems(demands: list[dict], picked_by_facet: dict, cat: str, menus: dict | None) -> list[str]:
+    """요구가 있는 단계에서 그 요구와 맞는 id 를 골랐는지.
+
+    하나만 고르는 단계에 요구가 둘이면(예: '눈 오는 밤' 의 눈과 밤) 둘 다 맞는 항목이 드물어, 어느 하나와 맞으면 된다
+    (나머지는 영문 메모의 확인어로 지킨다). 장르처럼 여러 개를 고르는 단계는 요구마다 맞아야 한다(3개까지).
+    메뉴에 그 요구와 맞는 항목이 없으면(사람이 나오는 항목뿐이라 거른 경우 등) 선택은 묻지 않는다.
+    """
+    out = []
+    for st in steps_of(cat):
+        if st["facet"] not in picked_by_facet:
+            continue
+        offered = {e["id"] for e in menus[st["key"]]} if menus and st["key"] in menus else None
+        mine = []
+        for d in demands:
+            if d["facet"] != st["facet"]:
+                continue
+            ids = set(d["ids"]) & offered if offered is not None else set(d["ids"])
+            if ids:
+                mine.append((d, ids))
+        if not mine:
+            continue
+        picked = picked_by_facet[st["facet"]]
+        if st.get("multi") and len(mine) <= 3:
+            for d, ids in mine:
+                if not picked & ids:
+                    out.append(f"The user wrote '{d['tag']}', so step \"{st['key']}\" must include a matching id.")
+        elif not any(picked & ids for _, ids in mine):
+            tags = "', '".join(d["tag"] for d, _ in mine)
+            out.append(f"The user wrote '{tags}', so step \"{st['key']}\" must use an id that matches one of them.")
+    return out
+
+
 def describe(result: dict, cat: str) -> dict:
     """패널에 보여 줄 한국어 지시서와 선택한 항목 (한국어 이름). 검사를 통과한 초안에만 쓴다."""
-    steps = load_knowledge()["categories"][cat]["steps"]
-    by_id = {st["key"]: {o["id"]: o["ko"] for o in st["options"]} for st in steps}
     choices = result.get("choices") or {}
-    picked = [{"step": st["title"], "id": choices.get(st["key"]), "ko": by_id[st["key"]].get(choices.get(st["key"]), "")}
-              for st in steps]
+    picked = []
+    for st in steps_of(cat):
+        ids = _chosen(choices.get(st["key"]))
+        names = [crew_lib.entry(i)["ko"] for i in ids if crew_lib.entry(i)]
+        picked.append({"step": st["title"], "id": ids[0] if len(ids) == 1 else ids, "ko": ", ".join(names)})
     ko = result.get("ko") or {}
     return {"picked": picked, "ko": {k: str(ko.get(k) or "") for k in ("plan", "direction", "camera_lighting", "details")}}
 
@@ -231,25 +336,28 @@ def merge_notes(user_notes: str, result: dict) -> str:
     return f"{user_notes.rstrip('.')}. {crew}" if user_notes and crew else (user_notes or crew)
 
 
-async def draft(call, text: str, rt: dict, style: str = "", notes: str = "", repair_rounds: int | None = None):
+async def draft(call, text: str, rt: dict, style: str = "", notes: str = "", repair_rounds: int | None = None,
+                rng: random.Random | None = None):
     """한 GPU 차례(llm_turn) 안에서 제작진 초안을 받는다. (결과, 회차, 남은 위반) 을 돌려준다.
 
     회차는 처음 시도를 포함한다(repair_rounds=1 이면 최대 2회). 위반이 남으면 호출한 쪽이 이 모드를 버린다.
-    도우미가 같은 차례에서 이어 받으므로 모델을 다시 올리지 않는다.
     """
     rounds_max = settings.crew_repair_rounds if repair_rounds is None else repair_rounds
-    messages = build_messages(text, rt, style, notes)
-    schema = build_schema(rt["category"])
+    said = f"{text} {notes}".strip()   # 사용자가 쓴 말 전부 (요청 + 특징 칸)
+    # 라이브러리 검색은 CPU 를 0.1~1초 쓰므로 스레드에서 돌린다 (허브는 포털·중계·ComfyUI 화면을 한 프로세스로 처리한다)
+    menus = await asyncio.to_thread(build_menus, said, rt, rng)
+    messages = build_messages(text, rt, style, notes, menus)
+    schema = build_schema(rt["category"], menus)
     result, problems = {}, ["no answer"]
     for rnd in range(1, rounds_max + 2):
-        data = await call({"messages": messages, "format": schema, "think": False, "options": {"temperature": 0.4}})
+        data = await call({"messages": messages, "format": schema, "think": False, "options": {"temperature": 0.6}})
         content = (data.get("message") or {}).get("content", "")
         try:
             result = parse_json_reply(content)
         except PromptxError as e:
             result, problems = {}, [str(e)]
         else:
-            problems = check_crew(result, rt["category"], f"{text} {notes}")
+            problems = check_crew(result, rt["category"], said, said, menus)
         if not problems:
             return result, rnd, []
         messages = messages + [{"role": "assistant", "content": content}, repair_message(problems)]

@@ -1,0 +1,1859 @@
+{
+ "version": "intent-1",
+ "note": "사용자 의도 사전: 요청에 이 말이 있으면 최종 글과 제작진 선택이 반드시 그것을 보여야 한다(crew_lib.user_demands). 대상 이름(향수, 신발, 우산 등)은 넣지 않는다. 주제 유지 규칙이 따로 지키고, 넣으면 '향수(perfume)'가 '향수(nostalgia)'로 잡히는 식의 오인이 생긴다.",
+ "intents": [
+  {
+   "facet": "genre_style",
+   "words": [
+    "SF",
+    "에스에프",
+    "공상과학",
+    "사이파이",
+    "sci-fi",
+    "scifi",
+    "미래적",
+    "미래 도시",
+    "미래풍"
+   ],
+   "check": [
+    "sci-fi",
+    "science fiction",
+    "futuristic"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "사이버펑크",
+    "cyberpunk"
+   ],
+   "check": [
+    "cyberpunk"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "스팀펑크",
+    "steampunk"
+   ],
+   "check": [
+    "steampunk"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "디젤펑크",
+    "dieselpunk"
+   ],
+   "check": [
+    "dieselpunk"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "솔라펑크",
+    "solarpunk"
+   ],
+   "check": [
+    "solarpunk"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "레트로",
+    "retro",
+    "복고",
+    "복고풍"
+   ],
+   "check": [
+    "retro",
+    "vintage",
+    "nostalgic"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "빈티지",
+    "vintage",
+    "앤티크",
+    "antique"
+   ],
+   "check": [
+    "vintage",
+    "antique",
+    "aged"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "미니멀",
+    "미니멀리즘",
+    "minimal",
+    "minimalist"
+   ],
+   "check": [
+    "minimal",
+    "minimalist"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "느와르",
+    "누아르",
+    "noir"
+   ],
+   "check": [
+    "noir"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "판타지",
+    "fantasy",
+    "마법 세계"
+   ],
+   "check": [
+    "fantasy",
+    "magical",
+    "enchanted"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "다크 판타지",
+    "dark fantasy"
+   ],
+   "check": [
+    "dark fantasy",
+    "gothic",
+    "ominous"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "동화",
+    "동화풍",
+    "fairy tale",
+    "storybook"
+   ],
+   "check": [
+    "fairy tale",
+    "storybook",
+    "whimsical"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "호러",
+    "공포 영화",
+    "horror"
+   ],
+   "check": [
+    "horror",
+    "eerie",
+    "dread"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "고딕",
+    "gothic"
+   ],
+   "check": [
+    "gothic"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "스릴러",
+    "thriller"
+   ],
+   "check": [
+    "thriller",
+    "tense",
+    "suspense"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "서부극",
+    "웨스턴",
+    "western"
+   ],
+   "check": [
+    "western",
+    "frontier",
+    "dusty"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "무협",
+    "wuxia"
+   ],
+   "check": [
+    "wuxia",
+    "martial arts"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "사극",
+    "조선 시대",
+    "한국 전통",
+    "전통 한국"
+   ],
+   "check": [
+    "joseon",
+    "traditional korean",
+    "hanok",
+    "hanbok"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "동양화",
+    "수묵화",
+    "수묵",
+    "먹그림",
+    "ink wash"
+   ],
+   "check": [
+    "ink wash",
+    "ink painting",
+    "brush ink"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "수채화",
+    "watercolor",
+    "watercolour"
+   ],
+   "check": [
+    "watercolor",
+    "watercolour"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "유화",
+    "oil painting"
+   ],
+   "check": [
+    "oil painting",
+    "impasto",
+    "oil paint"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "파스텔화",
+    "크레파스",
+    "pastel drawing"
+   ],
+   "check": [
+    "pastel drawing",
+    "chalk pastel",
+    "crayon"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "연필화",
+    "연필 스케치",
+    "스케치",
+    "sketch",
+    "드로잉"
+   ],
+   "check": [
+    "sketch",
+    "pencil",
+    "drawing"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "판화",
+    "목판화",
+    "linocut",
+    "woodblock"
+   ],
+   "check": [
+    "print",
+    "woodblock",
+    "linocut"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "팝아트",
+    "pop art"
+   ],
+   "check": [
+    "pop art",
+    "halftone",
+    "bold comic"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "아르데코",
+    "art deco"
+   ],
+   "check": [
+    "art deco"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "아르누보",
+    "art nouveau"
+   ],
+   "check": [
+    "art nouveau"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "바로크",
+    "baroque"
+   ],
+   "check": [
+    "baroque"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "인상주의",
+    "인상파",
+    "impressionist",
+    "impressionism"
+   ],
+   "check": [
+    "impressionist",
+    "impressionism",
+    "loose brushstrokes"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "초현실",
+    "초현실적",
+    "초현실주의",
+    "surreal",
+    "surrealism"
+   ],
+   "check": [
+    "surreal",
+    "dreamlike",
+    "impossible"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "추상",
+    "추상화",
+    "abstract"
+   ],
+   "check": [
+    "abstract"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "애니",
+    "애니메이션",
+    "아니메",
+    "anime"
+   ],
+   "check": [
+    "anime",
+    "animation",
+    "cel"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "만화",
+    "카툰",
+    "cartoon",
+    "코믹스"
+   ],
+   "check": [
+    "cartoon",
+    "comic"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "웹툰",
+    "webtoon"
+   ],
+   "check": [
+    "webtoon"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "픽셀아트",
+    "픽셀 아트",
+    "도트 그래픽",
+    "pixel art"
+   ],
+   "check": [
+    "pixel art",
+    "pixel"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "3D",
+    "쓰리디",
+    "3D 렌더",
+    "3d render"
+   ],
+   "check": [
+    "3d",
+    "render"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "클레이",
+    "클레이 애니메이션",
+    "점토",
+    "claymation"
+   ],
+   "check": [
+    "clay",
+    "claymation"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "스톱모션",
+    "stop motion"
+   ],
+   "check": [
+    "stop motion",
+    "stop-motion"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "로우폴리",
+    "low poly"
+   ],
+   "check": [
+    "low poly",
+    "low-poly"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "아이소메트릭",
+    "isometric"
+   ],
+   "check": [
+    "isometric"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "실사",
+    "실사풍",
+    "사진처럼",
+    "포토리얼",
+    "photorealistic"
+   ],
+   "check": [
+    "photorealistic",
+    "realistic",
+    "photograph"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "다큐",
+    "다큐멘터리",
+    "documentary"
+   ],
+   "check": [
+    "documentary"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "필름 카메라",
+    "필름 사진",
+    "아날로그 필름",
+    "film grain"
+   ],
+   "check": [
+    "film",
+    "grain",
+    "analog"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "폴라로이드",
+    "polaroid"
+   ],
+   "check": [
+    "instant photo",
+    "instant film",
+    "polaroid"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "흑백",
+    "흑백 사진",
+    "모노크롬",
+    "black and white"
+   ],
+   "check": [
+    "black and white",
+    "monochrome",
+    "grayscale"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "Y2K"
+   ],
+   "check": [
+    "y2k"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "베이퍼웨이브",
+    "vaporwave"
+   ],
+   "check": [
+    "vaporwave"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "신스웨이브",
+    "synthwave"
+   ],
+   "check": [
+    "synthwave"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "글리치",
+    "glitch"
+   ],
+   "check": [
+    "glitch"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "홀로그램",
+    "홀로그래픽",
+    "holographic"
+   ],
+   "check": [
+    "holographic",
+    "hologram",
+    "iridescent"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "코티지코어",
+    "cottagecore"
+   ],
+   "check": [
+    "cottagecore",
+    "cottage"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "다크 아카데미아",
+    "dark academia"
+   ],
+   "check": [
+    "dark academia"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "키치",
+    "kitsch"
+   ],
+   "check": [
+    "kitsch"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "아포칼립스",
+    "포스트 아포칼립스",
+    "post-apocalyptic"
+   ],
+   "check": [
+    "post-apocalyptic",
+    "apocalyptic",
+    "ruins"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "디스토피아",
+    "dystopian",
+    "dystopia"
+   ],
+   "check": [
+    "dystopian",
+    "dystopia"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "우주 공간",
+    "스페이스 오페라",
+    "space opera"
+   ],
+   "check": [
+    "space",
+    "cosmic",
+    "starfield",
+    "galaxy"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "중세",
+    "medieval"
+   ],
+   "check": [
+    "medieval"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "르네상스",
+    "renaissance"
+   ],
+   "check": [
+    "renaissance"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "빅토리아풍",
+    "빅토리안",
+    "victorian"
+   ],
+   "check": [
+    "victorian"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "50년대",
+    "1950년대"
+   ],
+   "check": [
+    "1950s",
+    "fifties",
+    "mid-century"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "60년대",
+    "1960년대"
+   ],
+   "check": [
+    "1960s",
+    "sixties"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "70년대",
+    "1970년대"
+   ],
+   "check": [
+    "1970s",
+    "seventies"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "80년대",
+    "1980년대"
+   ],
+   "check": [
+    "1980s",
+    "eighties"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "90년대",
+    "1990년대"
+   ],
+   "check": [
+    "1990s",
+    "nineties"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "시네마틱",
+    "영화 같은",
+    "영화처럼",
+    "cinematic"
+   ],
+   "check": [
+    "cinematic",
+    "film still",
+    "widescreen"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "뮤직비디오",
+    "뮤비",
+    "music video"
+   ],
+   "check": [
+    "music video"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "북유럽풍",
+    "스칸디나비아",
+    "scandinavian"
+   ],
+   "check": [
+    "scandinavian",
+    "nordic"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "일본풍"
+   ],
+   "check": [
+    "japanese"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "동양풍",
+    "오리엔탈"
+   ],
+   "check": [
+    "east asian",
+    "oriental",
+    "asian"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "지중해풍",
+    "mediterranean"
+   ],
+   "check": [
+    "mediterranean"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "트로피컬",
+    "열대풍",
+    "tropical"
+   ],
+   "check": [
+    "tropical"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "여행 포스터",
+    "travel poster"
+   ],
+   "check": [
+    "travel poster",
+    "poster"
+   ]
+  },
+  {
+   "facet": "genre_style",
+   "words": [
+    "포스터",
+    "poster"
+   ],
+   "check": [
+    "poster"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "비 오는",
+    "비 내리는",
+    "빗속",
+    "빗길",
+    "장마",
+    "rainy"
+   ],
+   "check": [
+    "rain",
+    "rainy",
+    "raindrops",
+    "drizzle",
+    "wet"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "눈 오는",
+    "눈 내리는",
+    "눈이 오는",
+    "눈이 내리는",
+    "눈 덮인",
+    "설경",
+    "함박눈",
+    "눈송이",
+    "snowy",
+    "snowfall"
+   ],
+   "check": [
+    "snow",
+    "snowy",
+    "snowfall",
+    "snowflakes"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "안개",
+    "안개 낀",
+    "물안개",
+    "foggy",
+    "misty"
+   ],
+   "check": [
+    "fog",
+    "foggy",
+    "mist",
+    "misty",
+    "haze"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "노을",
+    "석양",
+    "일몰",
+    "저녁노을",
+    "sunset"
+   ],
+   "check": [
+    "sunset",
+    "golden hour",
+    "dusk"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "일출",
+    "해돋이",
+    "sunrise"
+   ],
+   "check": [
+    "sunrise",
+    "dawn"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "새벽"
+   ],
+   "check": [
+    "dawn",
+    "early morning",
+    "first light"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "한낮",
+    "정오",
+    "대낮"
+   ],
+   "check": [
+    "midday",
+    "noon",
+    "harsh sun",
+    "bright daylight"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "황혼",
+    "해질녘",
+    "땅거미",
+    "twilight"
+   ],
+   "check": [
+    "twilight",
+    "dusk",
+    "blue hour"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "밤",
+    "한밤",
+    "야경",
+    "밤하늘",
+    "night",
+    "midnight"
+   ],
+   "check": [
+    "night",
+    "nighttime",
+    "moonlit",
+    "midnight"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "폭풍",
+    "폭풍우",
+    "태풍",
+    "천둥",
+    "번개",
+    "storm",
+    "thunderstorm"
+   ],
+   "check": [
+    "storm",
+    "stormy",
+    "thunder",
+    "lightning"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "무지개",
+    "rainbow"
+   ],
+   "check": [
+    "rainbow"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "벚꽃",
+    "cherry blossom"
+   ],
+   "check": [
+    "cherry blossom",
+    "sakura"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "봄날",
+    "봄 풍경",
+    "봄철"
+   ],
+   "check": [
+    "spring"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "여름",
+    "한여름",
+    "summer"
+   ],
+   "check": [
+    "summer"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "가을",
+    "단풍",
+    "autumn"
+   ],
+   "check": [
+    "autumn",
+    "fall",
+    "foliage"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "겨울",
+    "한겨울",
+    "winter"
+   ],
+   "check": [
+    "winter",
+    "snow",
+    "frost"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "맑은 날",
+    "화창한",
+    "sunny"
+   ],
+   "check": [
+    "sunny",
+    "clear sky",
+    "bright sun"
+   ]
+  },
+  {
+   "facet": "time_weather",
+   "words": [
+    "흐린 날",
+    "cloudy",
+    "overcast"
+   ],
+   "check": [
+    "overcast",
+    "cloudy",
+    "grey sky",
+    "gray sky"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "빨간",
+    "빨강",
+    "붉은",
+    "레드"
+   ],
+   "check": [
+    "red",
+    "crimson",
+    "scarlet"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "주황",
+    "주황색"
+   ],
+   "check": [
+    "orange"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "노란",
+    "노랑",
+    "노란색",
+    "옐로"
+   ],
+   "check": [
+    "yellow",
+    "golden"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "초록",
+    "초록색",
+    "녹색"
+   ],
+   "check": [
+    "green",
+    "emerald"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "파란",
+    "파랑",
+    "파란색",
+    "블루"
+   ],
+   "check": [
+    "blue",
+    "azure",
+    "cobalt"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "남색",
+    "네이비"
+   ],
+   "check": [
+    "navy",
+    "indigo",
+    "deep blue"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "보라",
+    "보라색",
+    "퍼플"
+   ],
+   "check": [
+    "purple",
+    "violet",
+    "lavender"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "분홍",
+    "분홍색",
+    "핑크"
+   ],
+   "check": [
+    "pink",
+    "rose",
+    "blush"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "흰색",
+    "하얀",
+    "화이트"
+   ],
+   "check": [
+    "white",
+    "ivory"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "검은",
+    "검정",
+    "블랙"
+   ],
+   "check": [
+    "black",
+    "ebony",
+    "charcoal"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "회색",
+    "그레이"
+   ],
+   "check": [
+    "gray",
+    "grey",
+    "silver"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "갈색",
+    "브라운"
+   ],
+   "check": [
+    "brown",
+    "chocolate",
+    "umber"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "금색",
+    "골드",
+    "황금빛"
+   ],
+   "check": [
+    "gold",
+    "golden"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "은색",
+    "실버"
+   ],
+   "check": [
+    "silver",
+    "chrome"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "파스텔",
+    "파스텔톤",
+    "pastel"
+   ],
+   "check": [
+    "pastel"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "원색",
+    "비비드",
+    "vivid"
+   ],
+   "check": [
+    "vivid",
+    "saturated",
+    "primary"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "무채색",
+    "모노톤"
+   ],
+   "check": [
+    "neutral",
+    "monochrome",
+    "grayscale"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "청록",
+    "청록색",
+    "민트",
+    "teal",
+    "mint"
+   ],
+   "check": [
+    "teal",
+    "turquoise",
+    "mint",
+    "aqua"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "베이지",
+    "beige"
+   ],
+   "check": [
+    "beige",
+    "sand",
+    "cream"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "와인색",
+    "버건디",
+    "burgundy"
+   ],
+   "check": [
+    "burgundy",
+    "wine",
+    "maroon"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "오방색"
+   ],
+   "check": [
+    "obangsaek",
+    "five traditional colors"
+   ]
+  },
+  {
+   "facet": "color_palette",
+   "words": [
+    "형광색",
+    "네온 컬러"
+   ],
+   "check": [
+    "neon",
+    "fluorescent"
+   ]
+  },
+  {
+   "facet": "lighting",
+   "words": [
+    "역광",
+    "backlight",
+    "backlit"
+   ],
+   "check": [
+    "backlight",
+    "backlit"
+   ]
+  },
+  {
+   "facet": "lighting",
+   "words": [
+    "림라이트",
+    "림 라이트",
+    "rim light"
+   ],
+   "check": [
+    "rim light",
+    "rim"
+   ]
+  },
+  {
+   "facet": "lighting",
+   "words": [
+    "네온 조명",
+    "네온사인",
+    "네온",
+    "neon"
+   ],
+   "check": [
+    "neon"
+   ]
+  },
+  {
+   "facet": "lighting",
+   "words": [
+    "촛불",
+    "캔들라이트",
+    "candlelight"
+   ],
+   "check": [
+    "candle",
+    "candlelight"
+   ]
+  },
+  {
+   "facet": "lighting",
+   "words": [
+    "스포트라이트",
+    "핀 조명",
+    "spotlight"
+   ],
+   "check": [
+    "spotlight",
+    "spot light"
+   ]
+  },
+  {
+   "facet": "lighting",
+   "words": [
+    "자연광",
+    "natural light"
+   ],
+   "check": [
+    "natural light",
+    "daylight",
+    "window light"
+   ]
+  },
+  {
+   "facet": "lighting",
+   "words": [
+    "햇살",
+    "햇빛",
+    "sunlight"
+   ],
+   "check": [
+    "sunlight",
+    "sunbeam",
+    "sun rays",
+    "sunlit"
+   ]
+  },
+  {
+   "facet": "lighting",
+   "words": [
+    "달빛",
+    "moonlight"
+   ],
+   "check": [
+    "moonlight",
+    "moonlit"
+   ]
+  },
+  {
+   "facet": "lighting",
+   "words": [
+    "로우키",
+    "low key"
+   ],
+   "check": [
+    "low-key",
+    "low key",
+    "deep shadows"
+   ]
+  },
+  {
+   "facet": "lighting",
+   "words": [
+    "하이키",
+    "high key"
+   ],
+   "check": [
+    "high-key",
+    "high key",
+    "bright even"
+   ]
+  },
+  {
+   "facet": "lighting",
+   "words": [
+    "빛내림",
+    "빛줄기",
+    "god rays"
+   ],
+   "check": [
+    "god rays",
+    "light rays",
+    "light beams",
+    "sunbeams"
+   ]
+  },
+  {
+   "facet": "lighting",
+   "words": [
+    "형광등",
+    "fluorescent"
+   ],
+   "check": [
+    "fluorescent"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "몽환적",
+    "몽환",
+    "꿈같은",
+    "dreamy"
+   ],
+   "check": [
+    "dreamy",
+    "dreamlike",
+    "ethereal",
+    "hazy"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "신비로운",
+    "신비한",
+    "미스터리",
+    "mysterious"
+   ],
+   "check": [
+    "mysterious",
+    "mystical",
+    "enigmatic"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "따뜻한",
+    "포근한"
+   ],
+   "check": [
+    "warm",
+    "cozy",
+    "golden"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "아늑한",
+    "cozy"
+   ],
+   "check": [
+    "cozy",
+    "snug",
+    "warm"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "차가운",
+    "냉랭한"
+   ],
+   "check": [
+    "cold",
+    "icy",
+    "cool"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "청량한",
+    "청량감",
+    "시원한"
+   ],
+   "check": [
+    "refreshing",
+    "fresh",
+    "crisp",
+    "cool"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "고급",
+    "고급스러운",
+    "고급스럽게",
+    "럭셔리",
+    "프리미엄",
+    "luxurious",
+    "luxury",
+    "premium"
+   ],
+   "check": [
+    "luxury",
+    "luxurious",
+    "premium",
+    "elegant",
+    "high-end",
+    "opulent"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "우아한",
+    "elegant"
+   ],
+   "check": [
+    "elegant",
+    "graceful",
+    "refined"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "귀여운",
+    "깜찍한",
+    "cute"
+   ],
+   "check": [
+    "cute",
+    "adorable",
+    "playful"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "발랄한",
+    "경쾌한",
+    "playful"
+   ],
+   "check": [
+    "playful",
+    "cheerful",
+    "bright"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "웅장한",
+    "장엄한",
+    "epic",
+    "majestic"
+   ],
+   "check": [
+    "epic",
+    "majestic",
+    "grand",
+    "monumental"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "쓸쓸한",
+    "외로운",
+    "lonely"
+   ],
+   "check": [
+    "lonely",
+    "solitary",
+    "melancholic",
+    "empty"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "우울한",
+    "침울한",
+    "gloomy"
+   ],
+   "check": [
+    "melancholic",
+    "gloomy",
+    "somber"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "평화로운",
+    "잔잔한",
+    "고요한",
+    "peaceful",
+    "serene"
+   ],
+   "check": [
+    "peaceful",
+    "serene",
+    "calm",
+    "tranquil",
+    "quiet"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "긴장감",
+    "긴박한"
+   ],
+   "check": [
+    "tense",
+    "suspense",
+    "tension"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "무서운",
+    "으스스한",
+    "섬뜩한",
+    "creepy",
+    "eerie"
+   ],
+   "check": [
+    "eerie",
+    "creepy",
+    "ominous",
+    "dread"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "낭만적",
+    "로맨틱",
+    "romantic"
+   ],
+   "check": [
+    "romantic",
+    "tender",
+    "dreamy"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "활기찬",
+    "역동적",
+    "energetic",
+    "dynamic"
+   ],
+   "check": [
+    "energetic",
+    "dynamic",
+    "vibrant",
+    "lively"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "감성적"
+   ],
+   "check": [
+    "emotional",
+    "sentimental",
+    "nostalgic",
+    "soft"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "시크한",
+    "chic"
+   ],
+   "check": [
+    "chic",
+    "sleek",
+    "stylish"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "힙한"
+   ],
+   "check": [
+    "hip",
+    "trendy",
+    "street"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "축제",
+    "페스티벌",
+    "festive"
+   ],
+   "check": [
+    "festive",
+    "celebration",
+    "festival"
+   ]
+  },
+  {
+   "facet": "mood_emotion",
+   "words": [
+    "신성한",
+    "성스러운",
+    "sacred"
+   ],
+   "check": [
+    "sacred",
+    "holy",
+    "divine"
+   ]
+  }
+ ]
+}
