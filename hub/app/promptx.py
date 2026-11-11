@@ -398,17 +398,24 @@ def clean_expect(raw) -> list[str]:
     return out[:8]
 
 
-def result_image_path(username: str, filename: str, subfolder: str = "") -> str:
-    """결과 폴더 안의 이미지 경로 (폴더 밖으로 나가는 경로는 거부)."""
+def image_in(base: str, filename: str, subfolder: str = "", where: str = "결과 폴더") -> str:
+    """base 폴더 안의 이미지 경로 (폴더 밖으로 나가는 경로는 거부)."""
     if not filename or "/" in filename or "\\" in filename or ".." in filename:
         raise PromptxError("파일 이름이 올바르지 않습니다.")
+    if len(filename) > 255 or len(subfolder or "") > 1024 or "\0" in filename or "\0" in (subfolder or ""):
+        raise PromptxError("파일 이름이 올바르지 않습니다.")   # 아주 긴 경로·NUL 문자는 경로 처리 전에 거부
     if not filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
-        raise PromptxError("이미지 파일만 검사할 수 있습니다.")
-    base = os.path.realpath(os.path.join(settings.results_dir, username))
+        raise PromptxError("이미지 파일만 읽을 수 있습니다.")
+    base = os.path.realpath(base)
     path = os.path.realpath(os.path.join(base, subfolder or "", filename))
     if not path.startswith(base + os.sep) or not os.path.isfile(path):
-        raise PromptxError("결과 폴더에서 파일을 찾지 못했습니다.", 404)
+        raise PromptxError(f"{where}에서 파일을 찾지 못했습니다.", 404)
     return path
+
+
+def result_image_path(username: str, filename: str, subfolder: str = "") -> str:
+    """결과 폴더 안의 이미지 경로 (폴더 밖으로 나가는 경로는 거부)."""
+    return image_in(os.path.join(settings.results_dir, username), filename, subfolder)
 
 
 # ── GPU 를 쓰는 부분 (대기열 경유) ──────────────────────────
@@ -420,63 +427,80 @@ CREW_SKIP_ADVICE = {
 }
 
 
+def crew_route(text: str, notes: str = "", crew=None) -> tuple[dict | None, list[str]]:
+    """제작진 분야와 건너뛴 이유 안내. crew 는 None(설정을 따름) / True / False."""
+    from . import crew as crew_mod
+
+    want_crew = settings.crew_mode != "off" and crew is not False
+    rt = crew_mod.route(text, notes) if want_crew else None
+    advice = []
+    if want_crew and rt is None:
+        reason = crew_mod.skip_reason(text, notes)
+        if reason:   # 분야가 없는 요청은 조용히 도우미로 가고, 건너뛴 이유가 분명할 때만 알린다
+            advice.append(CREW_SKIP_ADVICE[reason])
+    return rt, advice
+
+
+async def expand_in_turn(call, text: str, style: str = "", notes: str = "", crew=None) -> dict:
+    """이미 받은 GPU 차례(call) 안에서 확장한다. 영상 렌더러의 T2V 도 같은 차례 안에서 장면을 만들 때 쓴다."""
+    from . import crew as crew_mod
+
+    rt, crew_advice = crew_route(text, notes, crew)
+    crew_info = None
+    rounds, result, problems = 0, {}, []
+    used_notes = notes
+    if rt is not None:
+        # 같은 차례 안에서 제작진 초안을 먼저 받는다 (모델을 다시 올리지 않는다)
+        try:
+            draft, crew_rounds, left = await crew_mod.draft(call, text, rt, style, notes)
+        except Exception:  # noqa: BLE001 - 초안이 어떻게 깨져도 기존 도우미로 돌아간다
+            draft, crew_rounds, left = {}, 0, ["crew draft failed"]
+        crew_info = {"category": rt["category"], "title": rt["title"], "rounds": crew_rounds,
+                     "used": not left, "violations": left}
+        if not left:
+            used_notes = crew_mod.merge_notes(notes, draft)
+            crew_info.update(crew_mod.describe(draft, rt["category"]))
+            crew_info["notes_en"] = [str(n) for n in draft.get("notes_en") or []]
+        else:
+            crew_advice.append("제작진 초안이 규칙을 통과하지 못해 기존 도우미로 처리했습니다.")
+    # 제작진 초안을 쓴 경우에는 이미 메뉴에서 골랐으므로 추가 아이디어를 주지 않는다.
+    # 아이디어 검색은 CPU 를 쓰므로 스레드에서 (허브는 포털·중계·ComfyUI 화면을 한 프로세스로 처리한다)
+    said = f"{text} {notes}".strip()
+    messages = await asyncio.to_thread(build_expand_messages, text, style, used_notes,
+                                       not (crew_info and crew_info.get("used")), None, said)
+    for rounds in range(1, settings.expand_repair_rounds + 2):
+        # 생각 단계를 끄면 같은 결과를 훨씬 빨리 낸다 (메인 측정: 27b 확장 한 번 약 100초)
+        data = await call({"messages": messages, "format": "json", "think": False,
+                           "options": {"temperature": 0.4}})
+        content = (data.get("message") or {}).get("content", "")
+        result = parse_json_reply(content)
+        problems = check_expansion(result, style, said, request_text=said)
+        if not problems:
+            break
+        messages = messages + [{"role": "assistant", "content": content}, repair_message(problems)]
+    return {"prompt": final_prompt(result, style), "body": str(result.get("prompt") or ""),
+            "keep": result.get("keep") or [], "categories": result.get("categories") or {},
+            "people": result.get("people"), "violations": problems, "rounds": rounds,
+            "crew": crew_info, "advice": crew_advice + expand_advice(text + " " + notes)}
+
+
 async def expand(user, ip: str, text: str, style: str = "", notes: str = "", crew=None) -> dict:
     """짧은 요청을 생성용 프롬프트로 늘린다. crew 는 제작진 모드(B2): None 이면 설정(CREW_MODE)을 따르고,
     True/False 면 그 요청에 한해 켜거나 끈다 (분야 메뉴가 없는 요청과 캐릭터 정본 요청은 켜도 건너뛴다)."""
-    from . import crew as crew_mod, llm   # llm → scheduler 를 불러오므로 순환을 피해 여기서
+    from . import llm   # llm → scheduler 를 불러오므로 순환을 피해 여기서
 
     text = clean_input(text)
     style = str(style or "").strip()[:2000]
     notes = str(notes or "").strip()[:2000]
     model = settings.expand_model
-    want_crew = settings.crew_mode != "off" and crew is not False
-    rt = crew_mod.route(text, notes) if want_crew else None
-    crew_info, crew_advice = None, []
-    if want_crew and rt is None:
-        reason = crew_mod.skip_reason(text, notes)
-        if reason:   # 분야가 없는 요청은 조용히 도우미로 가고, 건너뛴 이유가 분명할 때만 알린다
-            crew_advice.append(CREW_SKIP_ADVICE[reason])
-    rounds, result, problems = 0, {}, []
     try:
         async with llm.llm_turn(user, ip, model, "prompt_expand") as call:
-            used_notes = notes
-            if rt is not None:
-                # 같은 차례 안에서 제작진 초안을 먼저 받는다 (모델을 다시 올리지 않는다)
-                try:
-                    draft, crew_rounds, left = await crew_mod.draft(call, text, rt, style, notes)
-                except Exception:  # noqa: BLE001 - 초안이 어떻게 깨져도 기존 도우미로 돌아간다
-                    draft, crew_rounds, left = {}, 0, ["crew draft failed"]
-                crew_info = {"category": rt["category"], "title": rt["title"], "rounds": crew_rounds,
-                             "used": not left, "violations": left}
-                if not left:
-                    used_notes = crew_mod.merge_notes(notes, draft)
-                    crew_info.update(crew_mod.describe(draft, rt["category"]))
-                    crew_info["notes_en"] = [str(n) for n in draft.get("notes_en") or []]
-                else:
-                    crew_advice.append("제작진 초안이 규칙을 통과하지 못해 기존 도우미로 처리했습니다.")
-            # 제작진 초안을 쓴 경우에는 이미 메뉴에서 골랐으므로 추가 아이디어를 주지 않는다.
-            # 아이디어 검색은 CPU 를 쓰므로 스레드에서 (허브는 포털·중계·ComfyUI 화면을 한 프로세스로 처리한다)
-            said = f"{text} {notes}".strip()
-            messages = await asyncio.to_thread(build_expand_messages, text, style, used_notes,
-                                               not (crew_info and crew_info.get("used")), None, said)
-            for rounds in range(1, settings.expand_repair_rounds + 2):
-                # 생각 단계를 끄면 같은 결과를 훨씬 빨리 낸다 (메인 측정: 27b 확장 한 번 약 100초)
-                data = await call({"messages": messages, "format": "json", "think": False,
-                                   "options": {"temperature": 0.4}})
-                content = (data.get("message") or {}).get("content", "")
-                result = parse_json_reply(content)
-                problems = check_expansion(result, style, said, request_text=said)
-                if not problems:
-                    break
-                messages = messages + [{"role": "assistant", "content": content}, repair_message(problems)]
+            out = await expand_in_turn(call, text, style, notes, crew)
     except llm.HelperBusy as e:
         raise PromptxError(str(e), 503) from None
     except RuntimeError as e:
         raise PromptxError(str(e), 502) from None
-    return {"prompt": final_prompt(result, style), "body": str(result.get("prompt") or ""),
-            "keep": result.get("keep") or [], "categories": result.get("categories") or {},
-            "people": result.get("people"), "violations": problems, "rounds": rounds, "model": model,
-            "crew": crew_info, "advice": crew_advice + expand_advice(text + " " + notes)}
+    return {**out, "model": model}
 
 
 def expand_advice(user_text: str) -> list[str]:

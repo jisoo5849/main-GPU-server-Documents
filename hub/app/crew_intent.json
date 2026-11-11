@@ -1,5 +1,5 @@
 {
- "version": "intent-1",
+ "version": "intent-2",
  "note": "사용자 의도 사전: 요청에 이 말이 있으면 최종 글과 제작진 선택이 반드시 그것을 보여야 한다(crew_lib.user_demands). 대상 이름(향수, 신발, 우산 등)은 넣지 않는다. 주제 유지 규칙이 따로 지키고, 넣으면 '향수(perfume)'가 '향수(nostalgia)'로 잡히는 식의 오인이 생긴다.",
  "intents": [
   {
@@ -1853,6 +1853,290 @@
     "sacred",
     "holy",
     "divine"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "다가가는",
+    "다가가며",
+    "다가간다",
+    "다가가게",
+    "줌인",
+    "줌 인",
+    "푸시인",
+    "푸시 인",
+    "zoom in",
+    "push in",
+    "dolly in"
+   ],
+   "check": [
+    "push in",
+    "pushes in",
+    "pushing in",
+    "dolly in",
+    "dollies in",
+    "zoom in",
+    "zooms in",
+    "moves closer",
+    "closer"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "멀어지는",
+    "멀어지며",
+    "멀어진다",
+    "물러나는",
+    "물러나며",
+    "줌아웃",
+    "줌 아웃",
+    "풀백",
+    "풀 백",
+    "zoom out",
+    "pull back",
+    "pull out"
+   ],
+   "check": [
+    "pull back",
+    "pulls back",
+    "pulling back",
+    "pull out",
+    "pulls out",
+    "zoom out",
+    "zooms out",
+    "dolly out",
+    "backs away"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "드론",
+    "드론샷",
+    "드론 샷",
+    "항공 촬영",
+    "부감",
+    "버드아이",
+    "drone",
+    "aerial"
+   ],
+   "check": [
+    "drone",
+    "aerial",
+    "bird's-eye",
+    "overhead",
+    "from above"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "360도",
+    "360",
+    "오빗",
+    "궤도",
+    "주위를 도는",
+    "주위를 돌며",
+    "둘레를 도는",
+    "orbit"
+   ],
+   "check": [
+    "orbit",
+    "orbits",
+    "orbiting",
+    "circles around",
+    "arc around",
+    "arcs around",
+    "360",
+    "rotates",
+    "turntable",
+    "revolves"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "회전하는",
+    "회전하며",
+    "회전",
+    "빙글빙글",
+    "턴테이블",
+    "rotate",
+    "rotating",
+    "turntable",
+    "spin"
+   ],
+   "check": [
+    "rotate",
+    "rotates",
+    "rotating",
+    "rotation",
+    "turntable",
+    "spin",
+    "spins",
+    "spinning",
+    "turns",
+    "revolves",
+    "orbit"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "패닝",
+    "옆으로 이동",
+    "가로로 이동",
+    "pan",
+    "panning"
+   ],
+   "check": [
+    "pan",
+    "pans",
+    "panning",
+    "sweep",
+    "sweeps",
+    "slides sideways",
+    "tracks sideways"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "틸트",
+    "틸트 업",
+    "틸트 다운",
+    "위로 훑",
+    "아래로 훑",
+    "tilt"
+   ],
+   "check": [
+    "tilt",
+    "tilts",
+    "tilting"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "고정 카메라",
+    "카메라 고정",
+    "고정된 카메라",
+    "카메라는 고정",
+    "삼각대",
+    "static",
+    "locked-off"
+   ],
+   "check": [
+    "static",
+    "locked-off",
+    "fixed frame",
+    "fixed camera",
+    "still camera",
+    "stays fixed",
+    "tripod",
+    "holds still"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "핸드헬드",
+    "손으로 든",
+    "흔들리는 카메라",
+    "handheld"
+   ],
+   "check": [
+    "handheld",
+    "hand-held"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "트래킹",
+    "tracking"
+   ],
+   "check": [
+    "follow",
+    "follows",
+    "following",
+    "tracking",
+    "tracks",
+    "tracks alongside"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "천천히",
+    "느리게",
+    "느릿느릿",
+    "은은하게",
+    "slowly"
+   ],
+   "check": [
+    "slow",
+    "slowly",
+    "gentle",
+    "gently",
+    "unhurried",
+    "calm"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "슬로모션",
+    "슬로 모션",
+    "슬로우 모션",
+    "느린 동작",
+    "slow motion",
+    "slow-motion"
+   ],
+   "check": [
+    "slow motion",
+    "slow-motion"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "빠르게",
+    "역동적",
+    "다이내믹",
+    "속도감",
+    "fast",
+    "dynamic"
+   ],
+   "check": [
+    "fast",
+    "quick",
+    "quickly",
+    "rapid",
+    "dynamic",
+    "energetic",
+    "brisk",
+    "swift"
+   ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "루프",
+    "무한 반복",
+    "반복 재생",
+    "loop",
+    "seamless loop"
+   ],
+   "check": [
+    "loop",
+    "loops",
+    "seamless",
+    "returns to",
+    "cycle",
+    "repeats"
    ]
   }
  ]

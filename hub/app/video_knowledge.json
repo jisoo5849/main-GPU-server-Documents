@@ -1,0 +1,83 @@
+{
+  "version": "video-knowledge-1",
+  "note": "영상 렌더러(docs/video-renderer.md)의 분야별 단계와 모델 프로필. 단계 메뉴는 crew_library 의 video_motion 칸을 묶음(groups)으로 나눠 요청마다 뽑는다. 문장은 직접 작성했다.",
+  "global_rules": [
+    "The user's words come first: camera, speed, loop and weather words the user wrote must be clearly visible in the motion.",
+    "One continuous shot for the whole clip: no cuts, scene changes or transitions.",
+    "Use one main camera move and keep it steady and readable; a short settle or hold at the end is fine.",
+    "Keep the main subject's shape, proportions and surface stable while it moves; the subject must not melt, morph or change into something else.",
+    "Positive phrasing only, describe what should be seen; never write text, letters, logos or labels.",
+    "Each menu item shows a motion pattern with an example subject. Apply the pattern to the subject of this request, never to the example subject."
+  ],
+  "modes": {
+    "i2v": "The first frame is fixed and already shows the look: subject, colors, materials, lighting and background. Write motion only. Refer to things by short names (the bottle, the steam, the curtains) and do not describe their colors, materials or the lighting setup again. Animate only things the first frame shows.",
+    "t2v": "There is no first frame. A scene description is fixed and will be placed before your text. Write only the motion part that follows it: refer to the scene's things by short names and do not describe their look again."
+  },
+  "general_rule": "No field menu for this request. Choose the camera move, the subject and scene motion, the pace and the ending yourself, in the simplest way that fits the request.",
+  "idea_steps": [
+    {"key": "camera", "groups": ["camera_"]},
+    {"key": "pacing", "groups": ["pacing"]},
+    {"key": "ending", "groups": ["ending_state", "loopable"]}
+  ],
+  "categories": {
+    "product": {
+      "title": "제품 영상",
+      "rule": "Product film: the product stays the hero and fully readable; motion reveals form, gloss and detail without hiding it. Prefer slow, controlled moves.",
+      "steps": [
+        {"key": "camera", "title": "카메라", "groups": ["camera_"]},
+        {"key": "subject", "title": "대상 움직임", "groups": ["product_motion", "liquid_motion", "fabric_hair_motion"]},
+        {"key": "environment", "title": "환경 움직임", "groups": ["light_motion", "air_particle_motion", "liquid_motion", "still_background"], "still": true},
+        {"key": "pacing", "title": "속도", "groups": ["pacing"]},
+        {"key": "ending", "title": "마무리", "groups": ["ending_state", "loopable"]}
+      ]
+    },
+    "space": {
+      "title": "공간 영상",
+      "rule": "Interior or venue film: the space breathes; light, air, fabric or small details move while the room keeps its layout. Prefer slow glides and gentle reveals.",
+      "steps": [
+        {"key": "camera", "title": "카메라", "groups": ["camera_"]},
+        {"key": "subject", "title": "공간 움직임", "groups": ["light_motion", "fabric_hair_motion", "liquid_motion", "urban_motion"]},
+        {"key": "environment", "title": "공기·입자", "groups": ["air_particle_motion", "light_motion", "still_background"], "still": true},
+        {"key": "pacing", "title": "속도", "groups": ["pacing"]},
+        {"key": "ending", "title": "마무리", "groups": ["ending_state", "loopable"]}
+      ]
+    },
+    "landscape": {
+      "title": "풍경 영상",
+      "rule": "Landscape film: nature moves on its own (water, clouds, leaves, light) under one calm camera move; keep the horizon level.",
+      "steps": [
+        {"key": "camera", "title": "카메라", "groups": ["camera_"]},
+        {"key": "subject", "title": "자연 움직임", "groups": ["nature_motion", "liquid_motion"]},
+        {"key": "environment", "title": "빛·대기", "groups": ["air_particle_motion", "light_motion", "urban_motion", "still_background"], "still": true},
+        {"key": "pacing", "title": "속도", "groups": ["pacing"]},
+        {"key": "ending", "title": "마무리", "groups": ["ending_state", "loopable"]}
+      ]
+    }
+  },
+  "profiles": {
+    "wan22_i2v": {
+      "title": "Wan 2.2 I2V 14B (첫 화면 → 영상)",
+      "mode": "i2v",
+      "fps": 16,
+      "max_frames": 81,
+      "frame_step": 4,
+      "default_seconds": 5,
+      "words": [25, 90],
+      "style": "Wan image-to-video: short, concrete motion sentences in the order camera, subject motion, scene motion, ending.",
+      "models": ["wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors", "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"],
+      "tested": "2026-11 영상 시험: 4스텝 LoRA(lightx2v), cfg 1, shift 5, 640×640, 81프레임, 16fps, 한 편 약 1분 반"
+    },
+    "wan22_t2v": {
+      "title": "Wan 2.2 T2V 14B (글 → 영상)",
+      "mode": "t2v",
+      "fps": 16,
+      "max_frames": 81,
+      "frame_step": 4,
+      "default_seconds": 5,
+      "words": [20, 70],
+      "style": "Wan text-to-video: the scene description comes first, then short motion sentences in the order camera, subject motion, scene motion, ending.",
+      "models": ["wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors", "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"],
+      "tested": ""
+    }
+  }
+}

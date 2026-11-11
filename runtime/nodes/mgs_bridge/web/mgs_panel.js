@@ -30,15 +30,22 @@ const state = {
   loginUrl: null,
   // 프롬프트 도우미 (메타 규칙 확장)
   helper: { text: "", style: "", notes: "", busy: false, result: null, open: false, crew: true },
+  // 영상 렌더러: 요청(도우미 칸) + 첫 화면 → 영상 모델용 움직임 프롬프트
+  video: { open: false, profile: "", seconds: 5, readFrame: true, busy: false, result: null, profiles: null, loading: false, loadError: null },
   // 결과 자동 검사 (VLM)
   check: { on: false, expect: "", results: [], seen: new Set() },
 };
 
 // 사용자가 적어 둔 그림체·필수 특징·자동 검사 설정은 브라우저에 기억한다 (작업공간 포트마다 따로)
-const SAVED_KEYS = { style: "mgs.helper.style", expect: "mgs.check.expect", on: "mgs.check.on", crew: "mgs.helper.crew" };
+const SAVED_KEYS = {
+  style: "mgs.helper.style", expect: "mgs.check.expect", on: "mgs.check.on", crew: "mgs.helper.crew",
+  videoProfile: "mgs.video.profile", videoRead: "mgs.video.read",
+};
 try {
   state.helper.style = localStorage.getItem(SAVED_KEYS.style) || "";
   state.helper.crew = localStorage.getItem(SAVED_KEYS.crew) !== "0";
+  state.video.profile = localStorage.getItem(SAVED_KEYS.videoProfile) || "";
+  state.video.readFrame = localStorage.getItem(SAVED_KEYS.videoRead) !== "0";
   state.check.expect = localStorage.getItem(SAVED_KEYS.expect) || "";
   state.check.on = localStorage.getItem(SAVED_KEYS.on) === "1";
 } catch { /* 저장소를 못 쓰는 브라우저 */ }
@@ -236,7 +243,7 @@ function draw() {
     root.replaceChildren(titleRow(), h("div", { class: "mgs-empty", text: "불러오는 중…" }));
     return;
   }
-  root.replaceChildren(...[header(), queueCard(), helperCard(), checkCard(), tabs(), search(), list(), keyBox(),
+  root.replaceChildren(...[header(), queueCard(), helperCard(), videoCard(), checkCard(), tabs(), search(), list(), keyBox(),
     footer()].filter(Boolean));
 }
 
@@ -353,7 +360,9 @@ async function runExpand() {
   hp.busy = true;
   redrawHelper();
   try {
+    const key = helperKey();
     hp.result = await postJSON("/mgs/api/expand", { text: hp.text, notes: hp.notes, style: hp.style, crew: hp.crew });
+    hp.resultFor = key;
   } catch (e) {
     if (e instanceof LoginError) { state.error = "login"; draw(); return; }
     toast("error", "프롬프트를 확장하지 못했습니다", e.message, 8000);
@@ -377,6 +386,171 @@ function putIntoSelectedNode(text) {
     return;
   }
   toast("info", "글 입력칸이 있는 노드를 먼저 선택하세요", "예: CLIP Text Encode (Prompt)", 6000);
+}
+
+// ── 영상 프롬프트 (렌더러) ─────────────────────────────────
+// 요청·특징·그림체는 프롬프트 도우미 칸의 글을 그대로 쓴다. 첫 화면은 화면의 LoadImage 노드에서 찾는다.
+
+const helperKey = () => JSON.stringify([state.helper.text, state.helper.notes, state.helper.style]);
+// 지금 도우미 칸의 요청으로 만든 확장 결과만 장면으로 쓴다
+const freshScene = () => (state.helper.result?.body && state.helper.resultFor === helperKey() ? state.helper.result.body : "");
+
+function findFirstFrame() {
+  const isLoad = (n) => (n.comfyClass || n.type) === "LoadImage";
+  const live = (n) => n.mode !== 2 && n.mode !== 4;   // 꺼 둔(mute)·건너뛰는(bypass) 노드는 첫 화면이 아니다
+  const sel = Object.values(app.canvas?.selected_nodes || {});
+  const graph = currentGraph();
+  const nodes = (graph?._nodes || graph?.nodes || []).filter((n) => isLoad(n) && live(n));
+  // 선택한 노드 → 영상 노드의 start_image 에 연결된 노드 → 첫 LoadImage 순으로 고른다
+  const wired = nodes.find((n) => (n.outputs?.[0]?.links || []).some((id) => {
+    const link = graph?.links?.[id] ?? graph?.links?.get?.(id);
+    const target = link && graph.getNodeById?.(link.target_id);
+    return target?.inputs?.[link.target_slot]?.name === "start_image";
+  }));
+  const node = sel.find(isLoad) || wired || nodes[0];
+  const w = node?.widgets?.find((x) => x.name === "image");
+  let v = String(w?.value || "").trim();
+  if (!v) return null;
+  let type = "input";
+  const m = v.match(/^(.*) \[(input|output|temp)\]$/);
+  if (m) { v = m[1]; type = m[2]; }
+  // 서버가 읽을 수 있는 것만 보낸다 (입력·결과 폴더의 png/jpg/webp). 그 밖은 글만 보고 쓴다
+  if (type === "temp" || !/\.(png|jpe?g|webp)$/i.test(v)) return null;
+  const i = v.lastIndexOf("/");
+  return { filename: i >= 0 ? v.slice(i + 1) : v, subfolder: i >= 0 ? v.slice(0, i) : "", type, label: v };
+}
+
+function videoCard() {
+  const vd = state.video;
+  const card = h("div", { class: "mgs-card mgs-video" });
+  card.append(h("div", { class: "mgs-row" },
+    h("b", { text: "영상 프롬프트" }),
+    h("button", { class: "mgs-link", onclick: () => { vd.open = !vd.open; if (vd.open) loadVideoProfiles(); redrawVideo(); } },
+      vd.open ? "접기" : "펼치기")));
+  if (!vd.open) {
+    card.append(h("div", { class: "mgs-sub", text: "첫 화면과 요청을 보고 영상 모델용 움직임 프롬프트(카메라·움직임·속도·마무리)를 씁니다." }));
+    return card;
+  }
+  const profs = vd.profiles || [];
+  const cur = profs.find((p) => p.id === vd.profile) || profs[0];
+  card.append(h("div", { class: "mgs-sub", text: "요청·꼭 지킬 특징·그림체는 위 프롬프트 도우미 칸의 글을 씁니다. 제작진 모드 체크도 그대로 따릅니다." }));
+  if (!profs.length) {
+    if (vd.loadError) {
+      card.append(h("div", { class: "mgs-warn", text: `영상 모델 목록을 불러오지 못했습니다: ${vd.loadError}` }),
+        h("button", { class: "mgs-btn", onclick: () => { vd.loadError = null; loadVideoProfiles(); } }, "다시 시도"));
+    } else {
+      card.append(h("div", { class: "mgs-sub", text: "영상 모델 목록을 불러오는 중…" }));
+      if (!vd.loading) loadVideoProfiles();   // 패널을 다시 그렸을 때도 목록을 채운다
+    }
+    return card;
+  }
+  card.append(h("select", {
+    class: "mgs-select",
+    onchange: (ev) => { vd.profile = ev.target.value; save("videoProfile", vd.profile); redrawVideo(); },
+  }, profs.map((p) => h("option", { value: p.id, selected: p.id === cur.id, text: p.title }))));
+  card.append(h("label", { class: "mgs-row" },
+    h("span", { class: "mgs-sub", text: `길이(초, 최대 ${cur.max_seconds})` }),
+    h("input", {
+      class: "mgs-input", type: "number", min: "1", max: String(cur.max_seconds), step: "0.5", value: String(vd.seconds),
+      style: "width:90px",
+      oninput: (ev) => { vd.seconds = Math.min(cur.max_seconds, Math.max(1, Number(ev.target.value) || cur.default_seconds)); },
+    })));
+  if (cur.mode === "i2v") {
+    const ff = findFirstFrame();
+    card.append(h("div", { class: "mgs-sub", text: ff ? `첫 화면: ${ff.label}` : "첫 화면: LoadImage 노드를 찾지 못했습니다 (요청 글만 보고 씁니다)" }));
+    card.append(h("label", { class: "mgs-row" },
+      h("input", { type: "checkbox", checked: vd.readFrame, onchange: (ev) => { vd.readFrame = ev.target.checked; save("videoRead", vd.readFrame ? "1" : "0"); } }),
+      h("span", { class: "mgs-sub", text: "첫 화면을 시각 모델로 읽어 실제 그림에 있는 것만 움직이게 (GPU 차례 한 번 더)" })));
+  } else {
+    card.append(h("div", { class: "mgs-sub", text: freshScene()
+      ? "장면: 위 도우미의 확장 결과를 쓰고 그 뒤에 움직임을 붙입니다"
+      : "장면: 도우미 확장 결과가 없어 같은 GPU 차례 안에서 장면부터 씁니다" }));
+  }
+  card.append(h("div", { class: "mgs-row" },
+    h("button", { class: "mgs-btn primary", disabled: vd.busy, onclick: runVideo }, vd.busy ? "메인 GPU에서 작성 중…" : "영상 프롬프트 만들기"),
+    h("span", { class: "mgs-sub", text: "GPU 대기열을 거칩니다" })));
+  const r = vd.result;
+  if (r) {
+    if (r.crew?.used) {
+      const box = h("div", { class: "mgs-item" });
+      box.append(h("div", { class: "mgs-name", text: `영상 제작진 · ${r.crew.title}` }));
+      box.append(h("div", { class: "mgs-sub", text: r.crew.picked.map((p) => `${p.step}: ${p.ko}`).join(" / ") }));
+      card.append(box);
+    }
+    const plan = [["카메라", r.ko?.camera], ["움직임", r.ko?.motion], ["시간", r.ko?.timing]];
+    for (const [name, text] of plan) if (text) card.append(h("div", { class: "mgs-sub", text: `[${name}] ${text}` }));
+    if (r.frame) {
+      const f = r.frame;
+      card.append(h("div", { class: "mgs-sub", text: `첫 화면 읽기: ${f.subject}${f.setting ? ` · ${f.setting}` : ""}${f.movable?.length ? ` · 움직일 수 있는 것: ${f.movable.join(", ")}` : ""}` }));
+    }
+    card.append(h("div", { class: "mgs-code", text: r.prompt }));
+    const s = r.settings || {};
+    card.append(h("div", { class: "mgs-sub", text: `권장 설정: ${s.frames}프레임 · ${s.fps}fps (약 ${s.seconds}초) · ${r.profile_title} · 규칙 검사 ${r.rounds}회` }));
+    if (r.violations?.length) {
+      card.append(h("div", { class: "mgs-warn", text: "아직 규칙에 어긋나는 점이 있습니다 (그대로 써도 되지만 확인하세요):" }));
+      for (const v of r.violations) card.append(h("div", { class: "mgs-sub", text: `· ${v}` }));
+    } else {
+      card.append(h("div", { class: "mgs-ok", text: "규칙 검사 통과: 사용자 말 · 한 컷 · 카메라 이동 하나 · 외형 반복 없음 · 부정어 없음" }));
+    }
+    if (r.scene_violations?.length) {
+      card.append(h("div", { class: "mgs-warn", text: "장면(도우미 확장)에 남은 점:" }));
+      for (const v of r.scene_violations) card.append(h("div", { class: "mgs-sub", text: `· ${v}` }));
+    }
+    for (const a of r.advice || []) card.append(h("div", { class: "mgs-sub", text: `참고: ${a}` }));
+    if (r.prompt) {   // 빈 결과를 노드에 넣어 사용자의 글을 지우지 않게
+      card.append(h("div", { class: "mgs-row" },
+        h("button", { class: "mgs-btn", onclick: () => copyText(r.prompt, "영상 프롬프트를 복사했습니다") }, "복사"),
+        h("button", { class: "mgs-btn", onclick: () => putIntoSelectedNode(r.prompt) }, "선택한 노드에 넣기")));
+    }
+  }
+  return card;
+}
+
+function redrawVideo() {
+  const old = state.root?.querySelector(".mgs-video");
+  if (old) old.replaceWith(videoCard());
+}
+
+async function loadVideoProfiles() {
+  const vd = state.video;
+  if (vd.profiles?.length || vd.loading) return;
+  vd.loading = true;
+  try {
+    vd.profiles = (await getJSON("/mgs/api/video_profiles")).profiles || [];
+    const cur = vd.profiles.find((p) => p.id === vd.profile) || vd.profiles[0];
+    if (cur) { vd.profile = cur.id; vd.seconds = Math.min(vd.seconds, cur.max_seconds) || cur.default_seconds; }
+    else vd.loadError = "프로필이 없습니다";
+  } catch (e) {
+    if (e instanceof LoginError) { vd.loading = false; state.error = "login"; draw(); return; }
+    vd.loadError = e.message;   // 다시 그릴 때마다 다시 부르지 않게 오류를 남기고 '다시 시도' 를 보여 준다
+  } finally {
+    vd.loading = false;
+  }
+  redrawVideo();
+}
+
+async function runVideo() {
+  const vd = state.video;
+  const hp = state.helper;
+  if (vd.busy) return;
+  if (!hp.text.trim()) { toast("info", "프롬프트 도우미 칸에 요청을 먼저 적어 주세요"); hp.open = true; redrawHelper(); return; }
+  const cur = (vd.profiles || []).find((p) => p.id === vd.profile);
+  const ff = cur?.mode === "i2v" ? findFirstFrame() : null;
+  vd.busy = true;
+  redrawVideo();
+  try {
+    vd.result = await postJSON("/mgs/api/expand_video", {
+      text: hp.text, notes: hp.notes, style: hp.style, crew: hp.crew, profile: vd.profile, seconds: vd.seconds,
+      image: ff ? { filename: ff.filename, subfolder: ff.subfolder, type: ff.type } : null,
+      image_prompt: freshScene(), read_frame: vd.readFrame,
+    });
+  } catch (e) {
+    if (e instanceof LoginError) { state.error = "login"; draw(); return; }
+    toast("error", "영상 프롬프트를 만들지 못했습니다", e.message, 8000);
+  } finally {
+    vd.busy = false;
+    redrawVideo();
+  }
 }
 
 // ── 결과 자동 검사 ──────────────────────────────────────

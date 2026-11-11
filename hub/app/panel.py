@@ -10,6 +10,8 @@ ComfyUI 페이지와 같은 주소(origin)에서 불리므로 로그인 쿠키�
   POST /mgs/api/keys      API 키 발급 (작업공간 주인만)
   POST /mgs/api/expand    짧은 요청 → 메타 규칙으로 검사한 생성용 프롬프트 (promptx.expand, GPU 대기열 경유)
   POST /mgs/api/inspect   결과 이미지의 해부학 오류·필수 특징 자동 검사 (promptx.inspect, GPU 대기열 경유)
+  GET  /mgs/api/video_profiles  영상 렌더러 모델 프로필 목록 (video_knowledge.json)
+  POST /mgs/api/expand_video    요청 + 첫 화면 → 영상 모델용 움직임 프롬프트와 설정 제안 (video.render, GPU 대기열 경유)
 """
 import asyncio
 import datetime
@@ -19,7 +21,7 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from . import db, jobs, models_index, promptx, security, templates_index
+from . import db, jobs, models_index, promptx, security, templates_index, video
 from .config import settings
 from .scheduler import scheduler
 
@@ -240,5 +242,25 @@ async def handle(request: Request, env: dict, user, path: str):
             return JSONResponse({"error": str(e)}, status_code=e.status)
         await db.log_access(user["id"], ip, "image_inspect",
                             {"env": env["slug"], "file": result["file"], "ok": result["ok"]})
+        return JSONResponse(result)
+    if path == "/mgs/api/video_profiles" and method == "GET":
+        return JSONResponse({"profiles": video.profile_list()})
+    if path == "/mgs/api/expand_video" and method == "POST":
+        data = await _body(request)
+        crew = data.get("crew")
+        image = data.get("image")
+        try:
+            # 첫 화면은 작업공간 주인의 입력 폴더나 결과 폴더 (proxy._view 와 같은 위치)
+            result = await video.render(user, ip, env["username"], env["slug"], data.get("text"), data.get("notes", ""),
+                                        data.get("style", ""), data.get("profile"), data.get("seconds"),
+                                        image if isinstance(image, dict) else None, data.get("image_prompt", ""),
+                                        crew if isinstance(crew, bool) else None, data.get("read_frame") is not False)
+        except promptx.PromptxError as e:
+            return JSONResponse({"error": str(e)}, status_code=e.status)
+        await db.log_access(user["id"], ip, "video_expand",
+                            {"env": env["slug"], "profile": result["profile"], "rounds": result["rounds"],
+                             "left": len(result["violations"]), "frame": bool(result.get("frame")),
+                             "crew": (result.get("crew") or {}).get("category"),
+                             "crew_used": bool((result.get("crew") or {}).get("used"))})
         return JSONResponse(result)
     return JSONResponse({"error": "not found"}, status_code=404)

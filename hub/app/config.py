@@ -64,6 +64,11 @@ class Settings:
     crew_guard_names = _env("CREW_GUARD_NAMES", "니키,niki,푸토르,putor,퀼린스,quillins,제임스,james,베스,beth,타오바,taoba,"
                                                 "일리아,ilia,일로케,iloke,일루키,iluki")
 
+    # 영상 렌더러(docs/video-renderer.md): 첫 화면 이미지를 읽는 시각 모델과 움직임 초안을 고쳐 쓰게 하는 최대 횟수.
+    # 시각 모델이 확장 모델과 같으면 한 GPU 차례 안에서 처리하고, 다르면 차례를 한 번 더 쓴다.
+    video_frame_model = _env("VIDEO_FRAME_MODEL", "") or inspect_model
+    video_repair_rounds = _int("VIDEO_REPAIR_ROUNDS", 1)
+
     editor_network = "mgs-editors"
     worker_network = "mgs-workers"
     editor_subnet = _env("EDITOR_SUBNET", "172.30.0.0/24")

@@ -50,7 +50,8 @@
 | `hub/app/llm.py` | Ollama·OpenAI 형식 중계, 내부 호출 직통, API 키, 허브 내부 LLM 차례(`llm_turn`) |
 | `hub/app/promptx.py` | 프롬프트 도우미(메타 규칙 확장·검사)와 결과 자동 검사(VLM). `docs/prompt-helper.md` |
 | `hub/app/crew.py` + `crew_knowledge.json` | 제작진 모드(B2): 제품·공간·풍경 요청에 분야별 전문가 지식 초안을 도우미 앞에 붙임. `docs/crew-mode.md` |
-| `hub/app/crew_lib.py` + `crew_library/` + `crew_intent.json` | 선택지 라이브러리(12,728항목) 메뉴 뽑기, 사용자 의도(반드시 지킬 말) 추출. 제작진·도우미 공용 |
+| `hub/app/crew_lib.py` + `crew_library/` + `crew_intent.json` | 선택지 라이브러리(12,744항목) 메뉴 뽑기, 사용자 의도(반드시 지킬 말) 추출. 제작진·도우미·영상 렌더러 공용 |
+| `hub/app/video.py` + `video_knowledge.json` | 영상 렌더러: 요청 + 첫 화면(시각 모델) → 영상 모델용 움직임 프롬프트와 프레임 제안 (Wan 2.2 I2V·T2V). `docs/video-renderer.md` |
 | `hub/app/envs.py` | 작업공간 생성·복제·되돌리기, 스냅샷 버전, Manager 설치 중 감지, 오래된 버전 정리 |
 | `hub/app/dockerctl.py` | 편집 공간(GPU 없음)·실행 공간(GPU, 최대 1개) 컨테이너, 네트워크(icc=false) |
 | `hub/app/gpu.py` | NVML 측정, PID → 컨테이너 매핑 |
@@ -69,5 +70,5 @@
 ## 테스트
 
 ```bash
-cd hub && python -I tests/test_promptops.py && python tests/test_templates_index.py && python tests/test_promptx.py && python tests/test_crew.py
+cd hub && python -I tests/test_promptops.py && python tests/test_templates_index.py && python tests/test_promptx.py && python tests/test_crew.py && python tests/test_video.py
 ```

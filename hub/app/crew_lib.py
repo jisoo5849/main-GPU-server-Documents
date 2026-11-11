@@ -23,6 +23,8 @@ FACETS = ("genre_style", "location_set", "lighting", "time_weather", "camera", "
           "material_texture", "atmosphere", "props", "mood_emotion", "product_presentation", "video_motion")
 # 사용자가 이 분야의 말을 쓰면 반드시 지킨다 (장소·소품은 주제 유지 규칙이 이미 지킨다)
 ENFORCED_FACETS = ("genre_style", "time_weather", "color_palette", "lighting", "mood_emotion")
+# 영상 렌더러가 지키는 말 (카메라 움직임·속도·루프). 이미지 확장에는 쓰지 않는다 (docs/video-renderer.md)
+VIDEO_FACETS = ("video_motion",)
 NONE_GENRE = "genre_style.none"
 
 # 한글 낱말은 앞뒤가 한글이면 다른 낱말의 일부다 ("아이스크림" 속 "아이", "우산" 속 "산"). 조사만 허용한다.
@@ -231,6 +233,10 @@ def user_demands(text: str, facets=ENFORCED_FACETS) -> list[dict]:
         ids = set()
         for word in it["words"] + it["check"]:
             ids |= {i for i in lib["tags"].get(_norm(word).lower(), ()) if lib["entries"][i]["facet"] == it["facet"]}
+        if it["facet"] in VIDEO_FACETS:
+            # 영상 항목은 태그가 '드론 비행', '드론 전진' 처럼 구절이라 낱말 태그로는 거의 안 잡힌다. 영문 문장의 확인어로도 찾는다
+            rx = terms_re(tuple(it["check"]))
+            ids |= {i for i in lib["by_facet"][it["facet"]] if rx.search(lib["entries"][i]["en"])}
         out.append({"facet": it["facet"], "tag": w.lower(), "ids": sorted(ids), "terms": list(it["check"])})
     return out
 
@@ -320,7 +326,10 @@ class Query:
         self.subjects = frozenset(_subjects_in(self.text))
         self.mentions = mentions(self.text)
         self.tokens = tokens(self.text)
-        self.demands = user_demands(self.text)
+        # 이미지 쪽 요구(장르·날씨·색·조명·분위기)와 영상 쪽 요구(카메라·속도·루프)를 한 번에 뽑아 겹침을 함께 정리한다
+        both = user_demands(self.text, ENFORCED_FACETS + VIDEO_FACETS)
+        self.demands = [d for d in both if d["facet"] in ENFORCED_FACETS]
+        self.video_demands = [d for d in both if d["facet"] in VIDEO_FACETS]
         terms = tuple(t for d in self.demands for t in d["terms"])
         self.boost_re = terms_re(terms) if terms else None
         # 어두운 항목(호러·전쟁·범죄·재난 …)은 사용자가 그런 말을 썼을 때만 나온다 ('바다' 태그로 '심해 괴물 호러' 가 끼지 않게)
@@ -362,17 +371,21 @@ def usable(ids, text: str, cat: str | None) -> list[str]:
 
 def retrieve(text: str, facet: str, k: int = 8, cat: str | None = None, rng: random.Random | None = None,
              must: list[str] | None = None, prefer: list[str] | None = None, wild: float = 0.25,
-             focus: list[str] | None = None) -> list[dict]:
+             focus: list[str] | None = None, only: list[str] | None = None) -> list[dict]:
     """한 단계의 메뉴. ① 사용자 요구 항목 ② 요청 말과 맞는 항목 ③ 핵심 그룹(prefer)에서 고르게 ④ 나머지 그룹에서 일부(wild)
-    순으로 채우고 순서를 섞는다. 요청에 없는 사람·다른 제품·어두운 항목은 뺀다(allowed)."""
+    순으로 채우고 순서를 섞는다. 요청에 없는 사람·다른 제품·어두운 항목은 뺀다(allowed).
+
+    only 를 주면 그 묶음(앞부분 일치)의 항목만 쓴다. 영상 단계들은 같은 칸(video_motion)을 묶음으로 나눠 쓰기 때문이다.
+    """
     rng = rng or random.Random()
     lib = load_library()
     ents = lib["entries"]
     q = query(text)
     picked: list[str] = []
+    only_t = tuple(only) if only else None
 
     def ok(i):
-        return allowed(i, facet, cat, q)
+        return allowed(i, facet, cat, q) and (only_t is None or ents[i]["group"].startswith(only_t))
 
     def add(i):
         if i not in picked and i in ents and ents[i]["facet"] == facet:
