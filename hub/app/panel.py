@@ -255,7 +255,8 @@ async def handle(request: Request, env: dict, user, path: str):
             result = await video.render(user, ip, env["username"], env["slug"], data.get("text"), data.get("notes", ""),
                                         data.get("style", ""), data.get("profile"), data.get("seconds"),
                                         image if isinstance(image, dict) else None, data.get("image_prompt", ""),
-                                        crew if isinstance(crew, bool) else None, data.get("read_frame") is not False)
+                                        crew if isinstance(crew, bool) else None, data.get("read_frame") is not False,
+                                        auto_length=data.get("auto_length") is True)
         except promptx.PromptxError as e:
             return JSONResponse({"error": str(e)}, status_code=e.status)
         await db.log_access(user["id"], ip, "video_expand",

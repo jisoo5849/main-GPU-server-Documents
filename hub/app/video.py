@@ -144,6 +144,11 @@ def is_long(profile: dict) -> bool:
     return bool(profile.get("long"))
 
 
+def part_min(profile: dict) -> int:
+    """단락 최소 낱말 수. 보통 프로필은 단락이 짧아 더 작게 둔다."""
+    return int(profile.get("part_min_words") or long_spec()["part_min_words"])
+
+
 def owns_look(profile: dict) -> bool:
     """T2V 장문은 장면 글을 앞에 붙이지 않으므로 이 글이 외형의 전부다 (사용자의 장르·색·조명·분위기 말도 이 글에 있어야 한다)."""
     return is_long(profile) and profile["mode"] == "t2v"
@@ -169,6 +174,56 @@ def unsign(text: str) -> str:
     return SIGN_RE.sub(swap, text or "")
 
 
+LENGTH_SYSTEM = """You decide how detailed the video prompt for one short clip should be. Return JSON only:
+{{"tier": "long" or "mid", "reason": "one short Korean sentence that tells the user why"}}
+- long: four paragraphs of about 100 words. Choose it when the request is rich in specifics (several subjects, camera or mood details, a setting or a small story), has people or a first-person view, or is a complex scene, or when it says little and the whole look has to be invented.
+- mid: four compact paragraphs of about 45 words. Choose it when the request is one simple, clear idea that is easy to picture and a focused prompt will do.
+{mode_note}In doubt choose long."""
+LENGTH_MODE_NOTE = {
+    "i2v": "The first frame already fixes the look, so a simple request needs only a compact prompt.\n",
+    "t2v": "There is no first frame, so even a short request needs a rich invented look; choose mid only for a truly trivial one-object idea.\n",
+}
+LENGTH_REASON = {"long": "요청에 맞춰 자세히(장문) 쓰기로 했습니다.", "mid": "요청이 단순해 보통 길이로 쓰기로 했습니다."}
+
+
+def request_is_detailed(text: str, notes: str = "") -> bool:
+    """3줄 이상이거나 공백을 뺀 글자가 120자 이상이거나 '꼭 지킬 특징' 이 있으면 자세한 요청이다."""
+    t = str(text or "")
+    lines = [ln for ln in t.split("\n") if ln.strip()]
+    return len(lines) >= 3 or len(re.sub(r"\s+", "", t)) >= 120 or bool(str(notes or "").strip())
+
+
+async def decide_length(call, text: str, notes: str, mode: str, frame: dict | None = None, scene: str = "") -> dict:
+    """장문(long)으로 쓸지 보통(mid)으로 쓸지 정한다. {tier, reason(한국어), by: rule|llm}.
+
+    자세한 요청은 규칙으로 바로 장문이다(모델을 부르지 않는다). 짧은 요청만 같은 GPU 차례 안에서 LLM 에게 묻고,
+    못 정하면 요청 길이 규칙(짧으면 보통)을 따른다. 판단이 애매하면 long 이 기본이다.
+    """
+    if request_is_detailed(text, notes):
+        return {"tier": "long", "reason": "요청이 자세해서 자세히(장문)로 쓰기로 했습니다.", "by": "rule"}
+    lines = [f"Mode: {'image to video' if mode == 'i2v' else 'text to video'}", f"Request: {text}"]
+    if notes:
+        lines.append(f"Must keep: {notes}")
+    if frame_known(frame):
+        lines.append(f"First frame: {frame.get('subject') or ''}; {frame.get('setting') or ''}")
+    elif scene:
+        lines.append(f"Look reference: {scene[:300]}")
+    schema = {"type": "object", "required": ["tier", "reason"], "additionalProperties": False,
+              "properties": {"tier": {"type": "string", "enum": ["long", "mid"]}, "reason": {"type": "string"}}}
+    try:
+        data = await call({"messages": [{"role": "system", "content": LENGTH_SYSTEM.format(mode_note=LENGTH_MODE_NOTE[mode])},
+                                        {"role": "user", "content": "\n".join(lines)}],
+                           "format": schema, "think": False, "options": {"temperature": 0.2}})
+        got = parse_json_reply((data.get("message") or {}).get("content", ""))
+        tier = got.get("tier") if isinstance(got, dict) else None
+        if tier in ("long", "mid"):
+            reason = str(got.get("reason") or "").strip()[:200]
+            return {"tier": tier, "reason": reason if HANGUL_RE.search(reason) else LENGTH_REASON[tier], "by": "llm"}
+    except (PromptxError, RuntimeError, ValueError, KeyError, AttributeError):
+        pass
+    return {"tier": "mid", "reason": "자동 판단을 못 해 요청 길이로 보통 길이를 골랐습니다.", "by": "rule"}
+
+
 def frame_known(frame: dict | None) -> bool:
     """첫 화면을 실제로 읽었는지 (스키마와 다른 시각 응답의 빈 값 dict 도 '모름' 으로 본다)."""
     return bool(frame and (frame.get("subject") or frame.get("setting")))
@@ -186,7 +241,7 @@ def profile_of(pid: str | None) -> tuple[str, dict]:
 
 def profile_list() -> list[dict]:
     """패널의 선택 목록 (모델 이름은 파일에만 있다)."""
-    return [{"id": k, "title": p["title"], "mode": p["mode"], "long": is_long(p), "default_seconds": p["default_seconds"],
+    return [{"id": k, "title": p["title"], "mode": p["mode"], "long": is_long(p), "mid": bool(p.get("mid")), "default_seconds": p["default_seconds"],
              "max_seconds": round((p["max_frames"] - 1) / p["fps"], 2)}
             for k, p in load_knowledge()["profiles"].items()]
 
@@ -431,7 +486,7 @@ def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: 
     if long:
         spec = long_spec()
         # 밀도 예시는 T2V 에만 준다 (I2V 는 외형을 첫 화면에서만 가져와야 해서 예시의 빛·색을 따라 쓰면 안 된다)
-        ex = spec.get("example") if mode == "t2v" else None
+        ex = spec.get("example") if mode == "t2v" and not profile.get("mid") else None
         example = ("\n\nEXAMPLE of the length, density and kind of detail wanted (a different, live-action request: never "
                    "copy its subject, objects, setting, sentences or film finish; take the medium and finish from the "
                    "request, the LOOK REFERENCE and the STYLE line):\n"
@@ -442,7 +497,7 @@ def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: 
             rules="\n".join(f"- {r}" for r in kn["global_rules"] + spec["rules"]), field=field,
             choices_line=choices_line, parts="\n".join(f'- "{p["key"]}": one English paragraph: {part_spec(p, mode)}.'
                                                        for p in spec["parts"]),
-            lo=lo, hi=hi, target=target, part_target=target // len(spec["parts"]), part_min=spec["part_min_words"],
+            lo=lo, hi=hi, target=target, part_target=target // len(spec["parts"]), part_min=part_min(profile),
             style=profile.get("style", ""), example=example)
     else:
         system = SYSTEM.format(model=model_name(profile), seconds=seconds, mode_rule=kn["modes"][mode],
@@ -581,7 +636,7 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
             problems.append(f'"ko.{k}" must be a Korean sentence.')
     if long:
         spec = long_spec()
-        need = int(spec["part_min_words"])
+        need = part_min(profile)
         for p in spec["parts"]:
             n = len(str(result.get(p["key"]) or "").split())
             if n < need:
@@ -773,8 +828,10 @@ async def draft(call, text: str, notes: str, profile: dict, seconds: float, fram
 
 async def render(user, ip: str, username: str, slug: str, text: str, notes: str = "", style: str = "",
                  profile_id: str | None = None, seconds=None, image: dict | None = None, image_prompt: str = "",
-                 crew=None, read_frame_on: bool = True, rng=None) -> dict:
-    """요청 → (첫 화면 읽기) → (T2V 장면) → 움직임 초안 → 최종 영상 프롬프트와 설정 제안."""
+                 crew=None, read_frame_on: bool = True, rng=None, auto_length: bool = False) -> dict:
+    """요청 → (첫 화면 읽기) → (T2V 장면) → 움직임 초안 → 최종 영상 프롬프트와 설정 제안.
+
+    auto_length 이면 장문 프로필을 받아도 요청에 맞춰 장문·보통 중 하나로 정한다(decide_length). 사용자가 고르지 않는다."""
     from . import llm   # llm → scheduler 를 불러오므로 순환을 피해 여기서
 
     text = clean_input(text)
@@ -802,6 +859,7 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
     cat = rt["category"] if rt else None
     model, frame_model = settings.expand_model, settings.video_frame_model
     frame, scene_info, crew_info, menus = None, None, None, None
+    length = None
     result, rounds, left = {}, 0, []
     try:
         if b64 is not None and frame_model != model:
@@ -816,6 +874,10 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
                 pid, profile = profile_of(profile["fallback"])
                 advice.append("첫 화면 정보와 도우미 확장 결과가 없어 장문 대신 움직임만 썼습니다. "
                               "장문은 첫 화면을 읽거나 도우미 결과가 있을 때 씁니다.")
+            if auto_length and is_long(profile) and not profile.get("mid") and profile.get("mid_id"):
+                length = await decide_length(call, text, notes, mode, frame, scene)
+                if length["tier"] == "mid":
+                    pid, profile = profile_of(profile["mid_id"])
             if mode == "t2v" and not scene:
                 # T2V 는 첫 화면이 없으므로 같은 차례 안에서 이미지 확장(제작진·도우미)으로 장면부터 쓴다
                 scene_info = await promptx.expand_in_turn(call, text, style, notes, crew)
@@ -848,7 +910,7 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
             "settings": suggested, "frame": frame, "ko": {k: str(ko.get(k) or "") for k in KO_KEYS},
             "crew": crew_info, "scene_crew": (scene_info or {}).get("crew"),
             "scene_violations": (scene_info or {}).get("violations") or [],
-            "violations": left, "violations_ko": explain_ko(left), "rounds": rounds, "model": model,
+            "length_choice": length, "violations": left, "violations_ko": explain_ko(left), "rounds": rounds, "model": model,
             "frame_model": frame_model if frame else None, "advice": advice}
 
 

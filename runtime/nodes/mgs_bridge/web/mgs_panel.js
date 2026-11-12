@@ -33,7 +33,7 @@ const state = {
   helper: { text: "", style: "", notes: "", busy: false, result: null, open: false, crew: true },
   // 영상 렌더러: 요청(도우미 칸) + 첫 화면 → 영상 모델용 움직임 프롬프트
   video: { open: false, profile: "", seconds: 5, readFrame: true, busy: false, result: null, profiles: null, loading: false, loadError: null,
-           detail: "long", manual: false, advOpen: false, fixing: false, fixNote: null, ctx: null, inserted: "", wkKey: "" },
+           manual: false, advOpen: false, fixing: false, fixNote: null, ctx: null, inserted: "", wkKey: "" },
   // 결과 자동 검사 (VLM)
   check: { on: false, expect: "", results: [], seen: new Set() },
 };
@@ -41,14 +41,13 @@ const state = {
 // 사용자가 적어 둔 그림체·필수 특징·자동 검사 설정은 브라우저에 기억한다 (작업공간 포트마다 따로)
 const SAVED_KEYS = {
   style: "mgs.helper.style", expect: "mgs.check.expect", on: "mgs.check.on", crew: "mgs.helper.crew",
-  videoProfile: "mgs.video.profile", videoRead: "mgs.video.read", videoDetail: "mgs.video.detail", videoManual: "mgs.video.manual",
+  videoProfile: "mgs.video.profile", videoRead: "mgs.video.read", videoManual: "mgs.video.manual",
 };
 try {
   state.helper.style = localStorage.getItem(SAVED_KEYS.style) || "";
   state.helper.crew = localStorage.getItem(SAVED_KEYS.crew) !== "0";
   state.video.profile = localStorage.getItem(SAVED_KEYS.videoProfile) || "";
   state.video.readFrame = localStorage.getItem(SAVED_KEYS.videoRead) !== "0";
-  state.video.detail = localStorage.getItem(SAVED_KEYS.videoDetail) === "short" ? "short" : "long";
   state.video.manual = localStorage.getItem(SAVED_KEYS.videoManual) === "1";   // 고급에서 직접 고른 경우만 그 모델을 쓴다
   state.check.expect = localStorage.getItem(SAVED_KEYS.expect) || "";
   state.check.on = localStorage.getItem(SAVED_KEYS.on) === "1";
@@ -489,13 +488,14 @@ function autoVideoMode(wk) {
 }
 
 // 사용자는 '자세히 / 간단히' 만 고른다. 이미지→영상·글→영상은 워크플로우가 정한다 (고급에서 직접 고를 수도 있다)
+// 길이(자세히·보통)는 사용자가 고르지 않는다. 패널은 워크플로우에 맞는 장문 프로필을 보내고 auto_length 를 켜면
+// 허브가 요청을 보고 장문·보통 중 하나로 정해 결과에 이유와 함께 돌려준다. 고급에서 직접 고른 모델만 그대로 쓴다
 function pickVideoProfile(profs, wk = videoWorkflow()) {
   const vd = state.video;
   const manual = vd.manual && profs.find((p) => p.id === vd.profile);
   if (manual) return manual;
   const mode = autoVideoMode(wk);
-  return profs.find((p) => p.mode === mode && Boolean(p.long) === (vd.detail === "long"))
-    || profs.find((p) => p.mode === mode) || profs[0];
+  return profs.find((p) => p.mode === mode && p.long && !p.mid) || profs.find((p) => p.mode === mode) || profs[0];
 }
 
 function workflowLine(wk, cur, manual) {
@@ -544,14 +544,9 @@ function videoCard() {
   const manual = Boolean(vd.manual && profs.find((p) => p.id === vd.profile));
   const cur = pickVideoProfile(profs, wk);
   card.append(workflowLine(wk, cur, manual));
-  // 자세히(장문) / 간단히(짧게) — 직접 고른 모델이 있으면 그 모델의 종류를 따른다
-  const detail = manual ? (cur.long ? "long" : "short") : vd.detail;
-  card.append(h("div", { class: "mgs-row" },
-    ...[["long", "자세히 (권장)"], ["short", "간단히"]].map(([v, label]) => h("label", { class: "mgs-row" },
-      h("input", { type: "radio", name: "mgs-video-detail", checked: detail === v, disabled: manual,
-        onchange: () => { vd.detail = v; save("videoDetail", v); redrawVideo(); } }),
-      h("span", { class: "mgs-sub", text: label })))));
-  card.append(h("div", { class: "mgs-sub", text: `사용 모델: ${cur.title}` }));
+  card.append(h("div", { class: "mgs-sub", text: manual
+    ? `사용 모델: ${cur.title}`
+    : `사용 모델: ${cur.title.split(" · ")[0]} · 글 길이는 요청을 보고 자동으로 정합니다` }));
   card.append(h("details", { open: vd.advOpen, ontoggle: (ev) => { vd.advOpen = ev.target.open; } },
     h("summary", { class: "mgs-sub", text: "고급: 모델 직접 고르기" }),
     h("select", {
@@ -599,6 +594,10 @@ function videoCard() {
       card.append(h("div", { class: "mgs-sub", text: `첫 화면 읽기: ${f.subject}${f.setting ? ` · ${f.setting}` : ""}${f.movable?.length ? ` · 움직일 수 있는 것: ${f.movable.join(", ")}` : ""}` }));
     }
     card.append(h("div", { class: "mgs-code", text: r.prompt }));
+    if (r.length_choice) {
+      const label = r.length_choice.tier === "mid" ? "보통" : "자세히";
+      card.append(h("div", { class: "mgs-sub", text: `글 길이 자동 선택: ${label}${r.length_choice.by === "llm" ? " (AI 판단)" : ""} — ${r.length_choice.reason}` }));
+    }
     const s = r.settings || {};
     card.append(h("div", { class: "mgs-sub", text: `권장 설정: ${s.frames}프레임 · ${s.fps}fps (약 ${s.seconds}초) · ${r.profile_title} · 규칙 검사 ${r.rounds}회` }));
     if (r.violations?.length) {
@@ -709,7 +708,7 @@ async function runVideo() {
     vd.result = await postJSON("/mgs/api/expand_video", {
       text: hp.text, notes: hp.notes, style: hp.style, crew: hp.crew, profile: cur.id, seconds: vd.seconds,
       image: ff ? { filename: ff.filename, subfolder: ff.subfolder, type: ff.type } : null,
-      image_prompt: freshScene(), read_frame: vd.readFrame,
+      image_prompt: freshScene(), read_frame: vd.readFrame, auto_length: !(vd.manual && vd.profiles.some((p) => p.id === vd.profile)),
     });
     // 자동으로 고칠 때 이 결과를 만든 요청 그대로 쓴다 (그 사이 도우미 칸을 고쳐도 달라지지 않게)
     vd.ctx = { text: hp.text, notes: hp.notes, style: hp.style, seconds: vd.seconds, image_prompt: freshScene() };

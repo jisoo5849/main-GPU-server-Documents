@@ -920,6 +920,67 @@ def test_fix_distrusts_the_panel_and_handles_short_profiles_and_garbage():
     assert result["prompt"].endswith("STYLE X") and result["motion"] == MOTION
 
 
+def test_mid_profiles_are_compact_versions_of_the_long_one():
+    ids = [p["id"] for p in video.profile_list()]
+    assert ids[:4] == ["wan22_i2v_long", "wan22_t2v_long", "wan22_i2v_mid", "wan22_t2v_mid"]   # 프로필을 안 고르면 장문 I2V
+    assert [p["mid"] for p in video.profile_list()[:4]] == [False, False, True, True]
+    t2v_mid, i2v_mid = video.profile_of("wan22_t2v_mid")[1], video.profile_of("wan22_i2v_mid")[1]
+    assert video.is_long(t2v_mid) and video.part_min(t2v_mid) == 30 and video.part_min(T2V_LONG) == 50
+    sys_mid = video.build_messages("향수 광고 영상", "", t2v_mid, 5.0, scene=SCENE)[0]["content"]
+    assert "170 to 260 words" in sys_mid and "at least 30 words" in sys_mid and "EXAMPLE of the length" not in sys_mid
+    assert "EXAMPLE of the length" in video.build_messages("향수 광고 영상", "", T2V_LONG, 5.0, scene=SCENE)[0]["content"]
+    mid = {"ko": KO, **{k: ". ".join(LONG[k].split(". ")[:2]).rstrip(".") + "." for k in PARTS}}
+    n = len(video.assemble(mid).split())
+    assert 170 <= n <= 260, n
+    assert video.check_video(mid, t2v_mid, "향수 광고 영상", None, SCENE) == []
+    assert any("words; write 320 to 500" in p for p in video.check_video(mid, T2V_LONG, "향수 광고 영상", None, SCENE))
+    # 첫 화면도 참고 글도 모르면 보통 I2V 도 움직임만으로 바뀐다
+    result, _, _ = run_render([{"ko": KO, "prompt": MOTION}], username="alice", slug="alice-main",
+                              text="고양이가 창가에서 하품하는 영상", profile_id="wan22_i2v_mid", crew=False)
+    assert result["profile"] == "wan22_i2v" and result["long"] is False
+
+
+def test_auto_length_is_decided_by_rule_then_llm_and_shown_to_the_user():
+    assert video.request_is_detailed("가" * 130) and video.request_is_detailed("비 오는 밤\n네온 거리\n걷는 소녀")
+    assert video.request_is_detailed("짧은 요청", "손은 항상 소매 속에") and not video.request_is_detailed("한 줄 요청\n\n  \n두 줄")
+    # 자세한 요청은 모델을 부르지 않고 장문이다
+    call = Call([])
+    got = asyncio.run(video.decide_length(call, "비 오는 밤\n네온 거리\n소녀가 걷는다", "", "t2v"))
+    assert got["tier"] == "long" and got["by"] == "rule" and call.calls == []
+    # 짧은 요청은 같은 차례 안에서 LLM 에게 묻고, 한국어 이유를 화면에 쓴다
+    call = Call([{"tier": "mid", "reason": "단순한 한 장면이라 보통 길이로 충분합니다."}])
+    got = asyncio.run(video.decide_length(call, "찻잔에서 김이 오른다", "", "i2v", FRAME))
+    assert got == {"tier": "mid", "reason": "단순한 한 장면이라 보통 길이로 충분합니다.", "by": "llm"}
+    sent = call.calls[0]
+    assert sent["format"]["properties"]["tier"]["enum"] == ["long", "mid"]
+    assert "first frame already fixes the look" in sent["messages"][0]["content"] and "찻잔" in sent["messages"][1]["content"]
+    t2v = Call([{"tier": "long", "reason": "처음부터 모습을 만들어야 해서 자세히 씁니다."}])
+    asyncio.run(video.decide_length(t2v, "고양이", "", "t2v"))
+    assert "no first frame" in t2v.calls[0]["messages"][0]["content"]
+    # 한국어가 아닌 이유는 기본 문구로, 이상한 답·오류는 요청 길이 규칙(짧으면 보통)으로 정한다
+    odd = asyncio.run(video.decide_length(Call([{"tier": "long", "reason": "because"}]), "고양이", "", "t2v"))
+    assert odd["tier"] == "long" and "자세히" in odd["reason"] and odd["by"] == "llm"
+    bad = asyncio.run(video.decide_length(Call([{"tier": "huge", "reason": "x"}]), "고양이", "", "t2v"))
+    assert bad["tier"] == "mid" and bad["by"] == "rule"
+
+    class Broken:
+        async def __call__(self, payload):
+            raise RuntimeError("ollama down")
+    assert asyncio.run(video.decide_length(Broken(), "고양이", "", "t2v"))["by"] == "rule"
+    # render: auto_length 이면 보통 프로필로 바꿔 쓰고 결과에 이유를 돌려준다. 끄면 그대로 장문
+    mid_i2v = {"ko": KO, **{k: " ".join(LONG_I2V[k].split()[:45]).rstrip(".,;") + "." for k in PARTS}}   # 단락마다 약 45낱말
+    assert 140 <= len(video.assemble(mid_i2v).split()) <= 230
+    reply = {"tier": "mid", "reason": "단순한 요청이라 보통 길이로 씁니다."}
+    result, calls, turns = run_render([reply, mid_i2v], username="alice", slug="alice-main", text="찻잔에서 김이 오른다",
+                                      profile_id="wan22_i2v_long", image_prompt=SCENE, crew=False, auto_length=True)
+    assert result["profile"] == "wan22_i2v_mid" and result["long"] and result["violations"] == []
+    assert result["length_choice"]["tier"] == "mid" and turns == [(settings.expand_model, "video_expand")]
+    assert "tier" in calls[0]["format"]["properties"] and set(PARTS) <= set(calls[1]["format"]["properties"])
+    result, calls, _ = run_render([LONG_I2V], username="alice", slug="alice-main", text="찻잔에서 김이 오른다",
+                                  profile_id="wan22_i2v_long", image_prompt=SCENE, crew=False)
+    assert result["profile"] == "wan22_i2v_long" and result["length_choice"] is None and len(calls) == 1
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
