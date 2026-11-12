@@ -99,7 +99,7 @@
       "max_frames": 81,
       "frame_step": 4,
       "default_seconds": 5,
-      "words": [220, 380],
+      "words": [250, 450],
       "style": "Wan image-to-video: long, detailed cinematic prose that stays true to the first frame and gives most words to the camera, the action over time and the ending.",
       "models": ["wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors", "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"],
       "tested": ""
@@ -112,7 +112,7 @@
       "max_frames": 81,
       "frame_step": 4,
       "default_seconds": 5,
-      "words": [300, 450],
+      "words": [320, 500],
       "style": "Wan text-to-video: long, detailed cinematic prose with the look and the motion in one prompt, about as dense as the example.",
       "models": ["wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors", "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"],
       "tested": ""

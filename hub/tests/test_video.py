@@ -553,7 +553,7 @@ def test_long_messages_carry_the_four_part_plan():
     sys_msg, user_msg = video.build_messages("향수 광고 영상", "", T2V_LONG, 5.0, scene=SCENE, style="STYLE X")
     for key in PARTS:
         assert f'"{key}"' in sys_msg["content"]
-    assert "300 to 450 words" in sys_msg["content"] and "quality buzzwords" in sys_msg["content"]
+    assert "320 to 500 words" in sys_msg["content"] and "quality buzzwords" in sys_msg["content"]
     assert "EXAMPLE of the length" in sys_msg["content"] and "ceramic teacup" in sys_msg["content"]   # 러다이트 밀도 예시
     assert "Model: Wan 2.2 T2V 14B." in sys_msg["content"] and "러다이트" not in sys_msg["content"]  # Luddite 로 읽히지 않게
     assert "LOOK REFERENCE" in user_msg["content"] and "do not restate" not in user_msg["content"]
@@ -561,7 +561,7 @@ def test_long_messages_carry_the_four_part_plan():
     sys_i2v, user_msg = video.build_messages("향수 광고 영상", "", I2V_LONG, 5.0, FRAME, SCENE, style="STYLE X")
     assert "never contradict" in user_msg["content"] and "FIRST FRAME" in user_msg["content"]
     assert "EXAMPLE of the length" not in sys_i2v["content"] and "STYLE (" not in user_msg["content"]
-    assert "FIRST FRAME notes" in sys_i2v["content"] and "220 to 380 words" in sys_i2v["content"]
+    assert "FIRST FRAME notes" in sys_i2v["content"] and "250 to 450 words" in sys_i2v["content"]
     # 예전 프로필의 지시문 구조는 그대로다
     sys_old, user_old = video.build_messages("향수 광고 영상", "", I2V, 5.0, FRAME, SCENE)
     assert '"prompt": one English paragraph of 25 to 90 words' in sys_old["content"] and "do not restate" in user_old["content"]
@@ -589,8 +589,10 @@ def test_long_check_rules():
                for p in probs(action=LONG["action"] + " Then the camera orbits around the bottle in a wide arc."))
     assert any("Negative wording" in p for p in probs(ending=LONG["ending"] + " The glass stays clean without any smudge."))
     assert any("text, letters" in p for p in probs(shot=LONG["shot"] + " A small label faces the camera."))
-    assert any("words; write 220 to 380" in p
-               for p in video.check_video(LONG, I2V_LONG, "향수 광고 영상", FRAME, SCENE))   # I2V 장문은 조금 짧게
+    long_ish = dict(LONG, action=LONG["action"] + " " + LONG["action"])                 # 450낱말을 넘기면 줄이라고 한다
+    over = [p for p in video.check_video(long_ish, I2V_LONG, "향수 광고 영상", FRAME, SCENE) if "words; write 250 to 450" in p]
+    assert over and "Cut it to about 350 words in total, about 87 words per part" in over[0] and '"action" ' in over[0]
+    assert not any("words; write" in p for p in video.check_video(LONG, I2V_LONG, "향수 광고 영상", FRAME, SCENE))   # 410낱말은 통과
     missing = video.check_video({"ko": KO, "prompt": MOTION}, T2V_LONG, "향수 광고 영상", None, SCENE)
     assert sum('has 0 words' in p for p in missing) == 4 and missing[-1] == '"prompt" is empty.'
     assert video.check_video([], T2V_LONG, "x") == ["Return a JSON object with ko and the four parts."]

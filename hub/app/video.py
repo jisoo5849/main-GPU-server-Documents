@@ -600,7 +600,14 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
     lo, hi = profile["words"]
     n = len(prompt.split())
     if not lo <= n <= hi:
-        problems.append(f"The prompt has {n} words; write {lo} to {hi} words.")
+        msg = f"The prompt has {n} words; write {lo} to {hi} words."
+        if long:
+            # 모델은 낱말 수를 잘 세지 못해 '줄여라' 만으로는 못 줄인다. 단락마다 지금과 목표를 알려 준다
+            aim = (lo + hi) // 2
+            now = ", ".join(f'"{p["key"]}" {len(str(result.get(p["key"]) or "").split())}' for p in long_spec()["parts"])
+            msg += (f" {'Cut' if n > hi else 'Expand'} it to about {aim} words in total, about {aim // 4} words per part "
+                    f"(now: {now}); keep every part's key details and drop only repetition and filler.")
+        problems.append(msg)
     # 장문은 장면까지 스스로 쓰므로 프롬프트 하나가 전부다
     full = f"{scene} {prompt}" if profile["mode"] == "t2v" and not long else prompt
     for d in demands:
