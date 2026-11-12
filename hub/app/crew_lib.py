@@ -247,7 +247,8 @@ _TERM_SUFFIX = r"(?:s|es|y|ier|iest|ing|ed|ly|ish|en|er|est)?"
 
 @lru_cache(maxsize=1024)
 def terms_re(terms: tuple) -> re.Pattern:
-    alts = "|".join(re.escape(t.lower()) for t in sorted(terms, key=len, reverse=True))
+    # 띄어 쓴 확인어는 하이픈으로 이은 글('pull-back', 'cherry-blossom')도 맞는 것으로 본다
+    alts = "|".join(re.escape(t.lower()).replace(r"\ ", r"[\s-]") for t in sorted(terms, key=len, reverse=True))
     return re.compile(rf"(?<![a-z0-9])(?:{alts}){_TERM_SUFFIX}(?![a-z0-9])", re.I)
 
 

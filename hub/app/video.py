@@ -1,11 +1,13 @@
-"""영상 렌더러: 요청과 첫 화면을 보고 영상 모델용 움직임 프롬프트를 쓴다 (docs/video-renderer.md).
+"""영상 렌더러: 요청과 첫 화면을 보고 영상 모델용 프롬프트를 쓴다 (docs/video-renderer.md).
 
 - 이미지 프롬프트는 정지 장면의 외형을 길게 설명하는 글이라 I2V 에 그대로 넣으면 움직임 지시가 약하다.
-  렌더러는 외형을 다시 쓰지 않고 카메라·대상 움직임·환경 움직임·속도·마무리만 쓴다.
+  움직임만 프로필은 외형을 다시 쓰지 않고 카메라·대상 움직임·환경 움직임·속도·마무리만 쓴다.
 - 사용자 말이 최우선이다. '천천히', '드론', '루프' 같은 영상 말과 '눈 오는' 같은 날씨 말은 선택과 글 모두에서 지킨다.
 - 제품·공간·풍경 요청은 제작진처럼 단계 메뉴(crew_library 의 video_motion 칸)에서 고르고, 그 밖의 요청은 규칙만으로 쓴다.
 - 첫 화면이 있으면(I2V) 시각 모델이 먼저 읽어 실제 그림에 있는 것만 움직이게 한다.
 - T2V 는 첫 화면이 없으므로 이미지 확장(도우미·제작진)으로 장면을 먼저 쓰고 그 뒤에 움직임을 붙인다.
+- 장문 프로필(러다이트식, `"long": true`)은 한 줄 요청을 구도 → 카메라와 빛 → 시간 순서의 움직임 → 마무리 네 단락의
+  영어 상세 프롬프트로 쓴다. 외형도 함께 쓰므로 '외형 반복 금지' 검사는 하지 않는다 (docs/video-renderer.md 13절).
 
 순수 함수는 hub/tests/test_video.py 가 GPU·DB 없이 검증한다.
 """
@@ -23,7 +25,7 @@ from . import crew_lib, promptx
 from .config import settings
 from .crew import PERSON_NOTE_RE, PERSON_REQ_RE, TEXT_NOTE_RE, skip_reason
 from .promptx import (HAND_WORDS_RE, NEGATION_RE, PromptxError, clean_input, hides_hands, image_in,
-                      parse_json_reply, repair_message)
+                      parse_json_reply, repair_message, user_allows)
 
 KNOWLEDGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "video_knowledge.json")
 FACET = "video_motion"
@@ -35,12 +37,27 @@ FRAME_MAX_BYTES = 40 * 1024 * 1024   # 이보다 큰 파일은 읽지 않는다 
 RESTATE_WORDS = 6        # 첫 화면 프롬프트와 이만큼 연달아 같은 낱말이 나오면 외형을 다시 쓴 것으로 본다
 HANGUL_RE = re.compile(r"[가-힣]")
 
-# 한 클립 안에서 장면을 바꾸라는 말 (컷 구성은 v2 에서 클립을 나눠 처리한다)
-CUT_RE = re.compile(r"\b(?:cuts? to|jump cuts?|hard cut|smash cut|scene changes?|transitions? (?:to|into)|next scene|new scene)\b",
-                    re.I)
+# 한 클립 안에서 장면을 바꾸라는 말 (컷 구성은 v2 에서 클립을 나눠 처리한다).
+# 'transitions to' 는 화면·장면이 주어이거나(사이에 부사가 껴도) 뒤 세 낱말 안에 구도 말(close-up, view, shot)이 올 때 센다.
+# 장문의 빛 변화('the cool light slowly transitions to warm gold')는 컷이 아니다. 'it' 은 빛 문장에도 흔해 주어로 보지 않는다
+CUT_RE = re.compile(r"\b(?:cuts? to|jump cuts?|hard cut|smash cut|scene changes?|next scene|new scene"
+                    r"|(?:(?:scene|shot|clip|view|image|picture|camera|frame|video|footage)(?: (?:\w+ly|then))*|then)"
+                    r" transitions? (?:to|into)"
+                    r"|transitions? (?:to|into) (?:[\w-]+ ){0,3}?(?:close[- ]?ups?|view|shot|interior|exterior))\b", re.I)
 # 카메라 이동 종류. 둘 이상이면 짧은 클립에서 하나도 제대로 안 된다고 본다 [추정, A/B 로 조정].
 # 크레인과 틸트는 함께 쓰는 한 동작이 많아 한 종류로 센다.
-_CAM = r"\b(?:camera|drone|shot|lens)\b[^.;]{0,30}?\b"
+# camera·drone 뒤 30자 안의 동사를 센다. 쉼표·and·as·while·when·until 에서 멈추되(", thin mist lifts", "as steam rises"),
+# 바로 뒤가 카메라 자신의 다음 이동이면 계속 본다(", then tilts up", ", as it rises", ", the view rising"). 다른 주어는 관사가
+# 없을 때가 많아(steam, thin mist) 주어를 가려내지 않는다. 'camera left/right'(빛 방향)는 빼며, shot·lens 는 바로 뒤
+# (then·-ly 부사는 건너뜀)의 동사만 본다 ('a wide shot of rising mist' 는 이동이 아니다)
+_VERB = (r"(?:push(?:es|ing)?|doll(?:y|ies|ying)|zoom(?:s|ing)?|mov(?:es?|ing)|glid(?:es?|ing)|drift(?:s|ing)?|fl(?:ies|ying)"
+         r"|pull(?:s|ing)?|backs?|pan(?:s|ning)?|orbit(?:s|ing)?|arc(?:s|ing)?|circl(?:es|ing)|track(?:s|ing)?|truck(?:s|ing)?"
+         r"|follow(?:s|ing)?|slid(?:es|ing)|cran(?:es|ing)|ris(?:es|ing)|lift(?:s|ing)?|descend(?:s|ing)?|lower(?:s|ing)?"
+         r"|climb(?:s|ing)?|tilt(?:s|ing)?)\b")
+_OWN = (r"(?:\s*(?:,|\b(?:and|then|also|now|it|as|while|when|until|(?:the|its) (?:view|frame|framing|height|path|angle))\b"
+        r"|\b\w+ly\b))*\s*" + _VERB)
+_GAP = r"(?:(?!(?:,|\b(?:and|as|while|when|until)\b)(?!" + _OWN + r"))[^.;]){0,30}?"
+_CAM = r"(?:\b(?:camera(?![- ](?:left|right)\b)|drone)\b" + _GAP + r"|\b(?:shot|lens)\s+(?:(?:then|also|now|\w+ly)\s+)*)\b"
 CAMERA_MOVES = {
     "push": re.compile(_CAM + r"(?:push(?:es|ing)?|doll(?:y|ies|ying)|zoom(?:s|ing)?|moves?|glides?|drifts?|flies) (?:\w+ ){0,2}?"
                        r"(?:in|forward|closer)\b(?! (?:a|an|the) )|\b(?:push|dolly|zoom)[- ]in\b", re.I),
@@ -53,9 +70,38 @@ CAMERA_MOVES = {
                         r"|\bcrane (?:shot|move)\b", re.I),
 }
 
+# 장문 프로필에서 막는 품질 유행어. Wan 은 자연 문장 설명으로 배웠고, 이런 말은 화면에 보이는 것을 하나도 정하지 않는다 [추정].
+# 사용자가 직접 쓴 말(예: 4K)은 막지 않는다 (promptx.user_allows)
+BUZZ_RE = re.compile(r"\b(?:8k|4k|uhd|ultra[- ]hd|masterpieces?|best[- ]quality|high[- ]quality|(?:ultra|hyper|highly)[- ]detailed|"
+                     r"award[- ]winning|trending on artstation)\b", re.I)
+# 1인칭 요청인데 보는 사람 자신이 화면에 나오는 구도. 러다이트 파일럿 영상은 프롬프트가 1인칭이었는데 어깨너머 샷이 나왔다.
+# his/her/their·him/her/them·man/woman 은 화면 속 다른 사람(her hair)이나 배경(peaks behind them)에도 쓰여서 보지 않는다
+_ROLE = r"(?:pilot|driver|rider|player|viewer|operator|captain|runner|skier|cyclist)"
+SELF_BODY_RE = re.compile(
+    r"\bover[- ]the[- ]shoulders?\b|\bover-shoulder\b"
+    r"|\b(?:behind|rear view of) the (?:pilot|driver|viewer|operator|captain)\b"
+    rf"|\bthe {_ROLE}['’]s (?:head|hair|face|neck|shoulders?|back|headset|helmet)\b"
+    # 'a view of the pilot's own hands'(자기 손), 'a clear view of the rider ahead'(앞사람)는 위반이 아니다
+    rf"|\bview of (?:a|an|the) (?:seated )?{_ROLE}\b(?!['’]s| (?:ahead|in front)\b)"
+    # 러다이트 실패 글의 'a seated pilot in a headset' (앉아 있는 사람을 화면 속 인물로 그린다)
+    rf"|\b(?:a|the) seated {_ROLE}\b(?!['’]s)"
+    r"|\bfrom (?:just |directly |right )?behind them\b|\bcamera(?: \w+){0,2}? behind them\b", re.I)
+POV_TERM = "first-person"   # crew_intent.json 의 1인칭 의도 확인어 (이 말이 있으면 1인칭 요구로 본다)
+# 사전 낱말 맞추기는 '1인칭뷰', '1인칭으로만', '조종사 시점' 을 놓쳐서 1인칭 말은 따로 넓게 본다 (부정 '1인칭 말고' 는 다른 말과 같이 보지 않는다).
+# '영상 내 시점 변화 없이' 의 '내' 는 '안' 이라서 영상·화면·장면 같은 말 뒤의 '내 시점' 은 1인칭으로 보지 않는다
+POV_RE = re.compile(r"(?<![0-9가-힣])(?:1|일) ?인칭"
+                    r"|(?<![가-힣])(?:운전자|운전석|조종사|조종석|파일럿|라이더|주인공|승객|나의)(?:의)? ?시점"
+                    r"|(?<![가-힣])(?<!영상 )(?<!화면 )(?<!장면 )(?<!프레임 )(?<!클립 )(?<!컷 )(?<!샷 )(?<!씬 )내 ?시점"
+                    r"|(?<![a-z])(?:point[- ]of[- ]view|pov|first[- ]person)(?![a-z])", re.I)
+# 장문은 참고 글을 다시 쓸 수 있어 '네온 간판' 이 그대로 옮겨지고 영상 모델은 가짜 글자를 그린다. 모델이 보는 참고 글에서만 바꾼다.
+# 물건은 그대로 둔다: 'street signs' 를 'street lights'(가로등)로 바꾸면 첫 화면 메모가 그림에 없는 빛을 말하게 된다
+SIGN_RE = re.compile(r"\b(neon|shop|store|storefront|street|lit|glowing|hanging|illuminated) sign(s|age)?\b|\bsignage\b", re.I)
+_SIGN_SWAP = {"neon": "neon light", "shop": "shopfront board", "store": "shopfront board", "storefront": "shopfront board",
+              "street": "plain street panel", "hanging": "hanging board"}
+
 FRAME_RULES = """You look at one still image that will be the first frame of a short video. Report only what you actually see.
 Return only JSON:
-{"subject": "the main subject in a few words", "where": "where the main subject sits in the frame", "setting": "the place and background in a few words", "people": 0, "movable": ["things in the image that could move naturally, such as liquid, steam, smoke, fabric, hair, leaves, water, clouds, light, particles"], "shot": "shot size and camera angle", "text_visible": false}
+{"subject": "the main subject in a few words", "where": "where the main subject sits in the frame", "setting": "the place and background in a few words", "people": 0, "movable": ["things in the image that could move naturally, such as liquid, steam, smoke, fabric, hair, leaves, water, clouds, light, particles"], "shot": "shot size and camera angle", "light": "the main light source, its direction and quality, and the time of day if it is visible", "colours": "the main colours and the overall colour tone", "text_visible": false}
 "people" is the number of people visible; count a visible human hand or arm as one person."""
 
 SYSTEM = """You are a small video crew, a director of photography and a motion designer, writing the motion for one short clip.
@@ -67,6 +113,17 @@ Rules:
 {choices_line}- "ko": three short Korean sentences, one each for camera, motion and timing, explaining the plan to the user.
 - "prompt": one English paragraph of {lo} to {hi} words. {style}"""
 
+# 장문(러다이트 감독 agent 식): 한 줄 요청 → 네 단락의 길고 자세한 영어 프롬프트. 단락을 칸으로 나눠 받아 순서와 빠짐을 코드가 지킨다
+SYSTEM_LONG = """You are the director of a small film crew. You turn a short request into one long, detailed, cinematic description of a single shot for a video model, written as flowing prose the way a director briefs a cinematographer.
+Model: {model}. Clip: about {seconds} seconds, one continuous shot, silent.
+{mode_rule}
+Rules:
+{rules}
+{field}Return JSON only:
+{choices_line}- "ko": three short Korean sentences, one each for camera, motion and timing, explaining the plan to the user.
+{parts}
+The four parts are joined in this order into one English prompt of {lo} to {hi} words in total (aim for about {target}, roughly {part_target} words per part); each part has at least {part_min} words. {style}{example}"""
+
 
 @lru_cache(maxsize=1)
 def load_knowledge() -> dict:
@@ -76,6 +133,45 @@ def load_knowledge() -> dict:
 
 def steps_of(cat: str) -> list[dict]:
     return load_knowledge()["categories"][cat]["steps"]
+
+
+def long_spec() -> dict:
+    """장문 프로필의 규칙·단락 정의 (video_knowledge.json 의 long)."""
+    return load_knowledge()["long"]
+
+
+def is_long(profile: dict) -> bool:
+    return bool(profile.get("long"))
+
+
+def owns_look(profile: dict) -> bool:
+    """T2V 장문은 장면 글을 앞에 붙이지 않으므로 이 글이 외형의 전부다 (사용자의 장르·색·조명·분위기 말도 이 글에 있어야 한다)."""
+    return is_long(profile) and profile["mode"] == "t2v"
+
+
+def part_spec(part: dict, mode: str) -> str:
+    """단락 설명. I2V 는 첫 화면이 외형을 정하므로 첫 화면 메모·참고 글에 있는 말로만 쓰게 하는 설명을 따로 둔다."""
+    return part.get(f"spec_{mode}") or part["spec"]
+
+
+def model_name(profile: dict) -> str:
+    # 지시문에는 모델 이름만 넣는다 ('러다이트식' 은 영어로 Luddite 로 읽힐 수 있다)
+    return profile["title"].split(" · ")[0]
+
+
+def unsign(text: str) -> str:
+    def swap(m: re.Match) -> str:
+        lead = m.group(1)
+        if not lead:
+            return "panels"                                                  # signage
+        new = _SIGN_SWAP.get(lead.lower(), f"{lead.lower()} panel") + ("s" if m.group(2) else "")   # lit·glowing → panel
+        return new[0].upper() + new[1:] if lead[0].isupper() else new
+    return SIGN_RE.sub(swap, text or "")
+
+
+def frame_known(frame: dict | None) -> bool:
+    """첫 화면을 실제로 읽었는지 (스키마와 다른 시각 응답의 빈 값 dict 도 '모름' 으로 본다)."""
+    return bool(frame and (frame.get("subject") or frame.get("setting")))
 
 
 # ── 모델 프로필 ─────────────────────────────────────────────
@@ -90,7 +186,7 @@ def profile_of(pid: str | None) -> tuple[str, dict]:
 
 def profile_list() -> list[dict]:
     """패널의 선택 목록 (모델 이름은 파일에만 있다)."""
-    return [{"id": k, "title": p["title"], "mode": p["mode"], "default_seconds": p["default_seconds"],
+    return [{"id": k, "title": p["title"], "mode": p["mode"], "long": is_long(p), "default_seconds": p["default_seconds"],
              "max_seconds": round((p["max_frames"] - 1) / p["fps"], 2)}
             for k, p in load_knowledge()["profiles"].items()]
 
@@ -112,15 +208,18 @@ def suggest_settings(profile: dict, seconds=None) -> dict:
 
 # ── 사용자 요구 ─────────────────────────────────────────────
 
-def checked_demands(said: str) -> list[dict]:
-    """영상 글에서 반드시 보여야 할 사용자 말: 카메라·속도·루프(영상 말)와 날씨·시간(눈·비·안개는 움직이는 것)."""
+def checked_demands(said: str, look: bool = False) -> list[dict]:
+    """영상 글에서 반드시 보여야 할 사용자 말: 카메라·속도·루프(영상 말)와 날씨·시간(눈·비·안개는 움직이는 것).
+
+    look 이 True 면(T2V 장문: 이 글이 외형의 전부) 장르·색·조명·분위기 말도 넣는다.
+    """
     q = crew_lib.query(said)
-    return list(q.video_demands) + [d for d in q.demands if d["facet"] == "time_weather"]
+    return list(q.video_demands) + [d for d in q.demands if look or d["facet"] == "time_weather"]
 
 
-def demand_lines(said: str) -> list[str]:
+def demand_lines(said: str, look: bool = False) -> list[str]:
     return [f"- The user wrote '{d['tag']}'. The clip must clearly show it, using words such as: {', '.join(d['terms'][:6])}."
-            for d in checked_demands(said)]
+            for d in checked_demands(said, look)]
 
 
 def context_lines(said: str) -> list[str]:
@@ -129,12 +228,27 @@ def context_lines(said: str) -> list[str]:
     return [f"- The look already follows the user's words '{t}'; keep the motion consistent with them." for t in tags]
 
 
+def pov_wanted(said: str) -> bool:
+    """사용자가 1인칭(POV) 시점을 원하는지 ('파일럿의 1인칭시점', '1인칭뷰', '조종사 시점', 'POV')."""
+    return bool(POV_RE.search(said or "")) or any(POV_TERM in d["terms"] for d in crew_lib.query(said).video_demands)
+
+
+def pov_line() -> str:
+    return ("The user asked for a first-person view: the camera is the viewer's eyes and the viewer never appears as a "
+            "figure. Open \"shot\" with \"First-person POV from\" and the position, show only what lies ahead, and show the "
+            "viewer's body only as their own hands or forearms at the bottom or side edge of the frame. Never write that "
+            "the viewer sits, wears or looks, never describe the viewer's clothing, headset, helmet, head, hair, face, "
+            "shoulders or back, and never frame the shot over a shoulder or from behind the viewer. Other people in the "
+            "scene are described normally.")
+
+
 def people_ok(said: str, frame: dict | None = None, scene: str = "", known: bool = True) -> bool:
     """사람을 써도 되는지. 요청·첫 화면·장면 어디든 사람이 있으면 된다.
 
     known 이 False 면(I2V 인데 첫 화면을 읽지 않았거나 못 읽음) 그림에 사람이 있는지 모르므로 막지 않는다.
+    1인칭 요청은 보는 사람이 있는 것이다 (자기 손·팔뚝이 화면 가장자리에 나올 수 있다. '파일럿' 은 사람 말 사전에 없다).
     """
-    if PERSON_REQ_RE.search(said) or skip_reason(said) in ("person", "character"):
+    if PERSON_REQ_RE.search(said) or skip_reason(said) in ("person", "character") or pov_wanted(said):
         return True
     if frame and frame.get("people"):
         return True
@@ -273,7 +387,8 @@ def parse_frame(data) -> dict:
     except (TypeError, ValueError):
         people = 0
     return {"subject": s("subject"), "where": s("where"), "setting": s("setting"), "people": people,
-            "movable": movable, "shot": s("shot"), "text_visible": data.get("text_visible") is True}
+            "movable": movable, "shot": s("shot"), "light": s("light"), "colours": s("colours"),
+            "text_visible": data.get("text_visible") is True}
 
 
 def frame_text(frame: dict) -> str:
@@ -283,6 +398,11 @@ def frame_text(frame: dict) -> str:
         lines.append("- things that can move: " + ", ".join(frame["movable"]))
     if frame.get("shot"):
         lines.append(f"- shot: {frame['shot']}")
+    # 장문 I2V 가 빛·색을 지어내지 않고 실제 그림의 것을 쓰게 한다
+    if frame.get("light"):
+        lines.append(f"- light: {frame['light']}")
+    if frame.get("colours"):
+        lines.append(f"- colours: {frame['colours']}")
     return "\n".join(lines)
 
 
@@ -294,7 +414,7 @@ async def read_frame(call, b64: str) -> dict:
 # ── 지시문·스키마·검사 ────────────────────────────────────────
 
 def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: dict | None = None, scene: str = "",
-                   cat: str | None = None, menus: dict | None = None, rng=None) -> list[dict]:
+                   cat: str | None = None, menus: dict | None = None, rng=None, style: str = "") -> list[dict]:
     kn = load_knowledge()
     said = f"{text} {notes}".strip()
     if cat and menus:
@@ -307,23 +427,57 @@ def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: 
         field = kn["general_rule"] + "\n"
         choices_line = ""
     lo, hi = profile["words"]
-    system = SYSTEM.format(model=profile["title"], seconds=seconds, mode_rule=kn["modes"][profile["mode"]],
-                           rules="\n".join(f"- {r}" for r in kn["global_rules"]), field=field,
-                           choices_line=choices_line, lo=lo, hi=hi, style=profile.get("style", ""))
+    long, mode, pov = is_long(profile), profile["mode"], pov_wanted(said)
+    if long:
+        spec = long_spec()
+        # 밀도 예시는 T2V 에만 준다 (I2V 는 외형을 첫 화면에서만 가져와야 해서 예시의 빛·색을 따라 쓰면 안 된다)
+        ex = spec.get("example") if mode == "t2v" else None
+        example = ("\n\nEXAMPLE of the length, density and kind of detail wanted (a different, live-action request: never "
+                   "copy its subject, objects, setting, sentences or film finish; take the medium and finish from the "
+                   "request, the LOOK REFERENCE and the STYLE line):\n"
+                   + "\n".join(f'- "{p["key"]}": {ex[p["key"]]}' for p in spec["parts"])) if ex else ""
+        target = (lo + hi) // 2
+        system = SYSTEM_LONG.format(
+            model=model_name(profile), seconds=seconds, mode_rule=spec["modes"][mode],
+            rules="\n".join(f"- {r}" for r in kn["global_rules"] + spec["rules"]), field=field,
+            choices_line=choices_line, parts="\n".join(f'- "{p["key"]}": one English paragraph: {part_spec(p, mode)}.'
+                                                       for p in spec["parts"]),
+            lo=lo, hi=hi, target=target, part_target=target // len(spec["parts"]), part_min=spec["part_min_words"],
+            style=profile.get("style", ""), example=example)
+    else:
+        system = SYSTEM.format(model=model_name(profile), seconds=seconds, mode_rule=kn["modes"][mode],
+                               rules="\n".join(f"- {r}" for r in kn["global_rules"]), field=field,
+                               choices_line=choices_line, lo=lo, hi=hi, style=profile.get("style", ""))
+    see = unsign if long else (lambda t: t)   # 장문은 참고 글을 다시 쓰므로 '네온 간판' 을 '네온 불빛' 으로 보여 준다
     parts = [f"Request (Korean): {text}"]
     if notes:
         parts.append(f"Must-keep details from the user: {notes}")
     if frame:
-        parts.append("FIRST FRAME (what the image actually shows, read by a vision model):\n" + frame_text(frame))
+        parts.append("FIRST FRAME (what the image actually shows, read by a vision model):\n" + see(frame_text(frame)))
     if scene:
-        label = ("Prompt the first frame was made from (reference only; do not restate it)" if profile["mode"] == "i2v"
-                 else "SCENE (fixed, placed before your text; do not restate it)")
-        parts.append(f"{label}: {scene}")
-    dl = demand_lines(said)
+        if long and mode == "i2v":   # 장문은 외형까지 쓰므로 참고 글을 다시 써도 된다. 대신 어긋나지 않게 한다
+            label = "Prompt the first frame was made from (reference: stay consistent with it and never contradict it)"
+        elif long and pov:   # 이미지 도우미는 1인칭을 몰라 장면 속 사람을 밖에서 그렸을 수 있다
+            label = ("LOOK REFERENCE (an image prompt for this shot: keep its setting, colours, materials, lighting and "
+                     "style; the user asked for a first-person view, so the person it shows is the viewer: describe only "
+                     "what they see and at most their own hands or forearms, never how that person looks from outside)")
+        elif long:
+            label = ("LOOK REFERENCE (an image prompt for this shot: keep its subject, setting, colours, materials, "
+                     "lighting and style; you may reuse its words)")
+        else:
+            label = ("Prompt the first frame was made from (reference only; do not restate it)" if mode == "i2v"
+                     else "SCENE (fixed, placed before your text; do not restate it)")
+        parts.append(f"{label}: {see(scene)}")
+    if long and mode == "t2v" and style.strip():   # compose() 가 T2V 끝에 그림체 문장을 붙인다
+        parts.append("STYLE (appended after your text by the system; open \"shot\" by naming this medium in a few words, "
+                     "describe light, colour and texture the way this medium shows them, and write no live-action, "
+                     f"film-look, film-grain or other photographic words that contradict it): {style.strip()}")
+    look = owns_look(profile)
+    dl = demand_lines(said, look)
     if dl:
         parts.append("USER WORDS (top priority, choose matching menu ids and show each one clearly in the prompt):\n"
                      + "\n".join(dl))
-    cl = context_lines(said)
+    cl = [] if look else context_lines(said)   # T2V 장문에는 첫 화면이 없어 '외형은 이미 따른다' 가 거짓이다
     if cl:
         parts.append("\n".join(cl))
     if not (cat and menus):
@@ -331,6 +485,8 @@ def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: 
         if il:
             parts.append("Optional ideas from our library (use one only if it fits the request and the first frame):\n"
                          + "\n".join(il))
+    if pov:
+        parts.append(pov_line())
     if not people_ok(said, frame, scene, frame is not None or profile["mode"] == "t2v"):
         parts.append("No person appears in the request, the scene or the first frame; keep every human out of the clip.")
     if hides_hands(said):
@@ -338,7 +494,7 @@ def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: 
     return [{"role": "system", "content": system}, {"role": "user", "content": "\n".join(parts)}]
 
 
-def build_schema(cat: str | None = None, menus: dict | None = None) -> dict:
+def build_schema(cat: str | None = None, menus: dict | None = None, long: bool = False) -> dict:
     s = {"type": "string"}
     props, req = {}, []
     if cat and menus:   # 고른 항목을 먼저 쓰게 한다 (글을 쓴 뒤에 끼워 맞추지 않게)
@@ -346,8 +502,20 @@ def build_schema(cat: str | None = None, menus: dict | None = None) -> dict:
         props["choices"] = {"type": "object", "properties": cp, "required": list(cp)}
         req.append("choices")
     props["ko"] = {"type": "object", "properties": {k: s for k in KO_KEYS}, "required": list(KO_KEYS)}
+    if long:   # 장문은 네 단락을 칸으로 받는다 (순서를 바꾸거나 단락을 빼먹지 않게)
+        keys = [p["key"] for p in long_spec()["parts"]]
+        props.update({k: s for k in keys})
+        return {"type": "object", "properties": props, "required": req + ["ko"] + keys}
     props["prompt"] = s
     return {"type": "object", "properties": props, "required": req + ["ko", "prompt"]}
+
+
+def assemble(result) -> str:
+    """장문 프로필의 네 단락을 정해진 순서로 잇는다. 단락 안의 줄바꿈은 한 칸으로 줄인다."""
+    if not isinstance(result, dict):
+        return ""
+    paras = [re.sub(r"\s+", " ", str(result.get(p["key"]) or "")).strip() for p in long_spec()["parts"]]
+    return "\n\n".join(p for p in paras if p)
 
 
 def _words(text: str) -> list[str]:
@@ -390,10 +558,11 @@ def demand_choice_problems(demands: list[dict], picked: dict, cat: str, menus: d
 def check_video(result, profile: dict, said: str, frame: dict | None = None, scene: str = "",
                 cat: str | None = None, menus: dict | None = None) -> list[str]:
     """움직임 초안 검사. 어긋난 점을 영문 문장 목록으로 돌려준다 (그대로 고쳐 쓰기 지시에 넣는다)."""
+    long = is_long(profile)
     if not isinstance(result, dict):
-        return ["Return a JSON object with ko and prompt."]
+        return ["Return a JSON object with ko and the four parts." if long else "Return a JSON object with ko and prompt."]
     problems: list[str] = []
-    demands = checked_demands(said)
+    demands = checked_demands(said, owns_look(profile))
     if cat and menus:
         choices = result.get("choices") if isinstance(result.get("choices"), dict) else {}
         picked = {}
@@ -410,16 +579,30 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
     for k in KO_KEYS:
         if not HANGUL_RE.search(str(ko.get(k) or "")):
             problems.append(f'"ko.{k}" must be a Korean sentence.')
-    prompt = str(result.get("prompt") or "").strip()
+    if long:
+        spec = long_spec()
+        need = int(spec["part_min_words"])
+        for p in spec["parts"]:
+            n = len(str(result.get(p["key"]) or "").split())
+            if n < need:
+                problems.append(f'"{p["key"]}" has {n} words; write at least {need} words: '
+                                f'{part_spec(p, profile["mode"])}.')
+        prompt = assemble(result)
+    else:
+        prompt = str(result.get("prompt") or "").strip()
     if not prompt:
         return problems + ['"prompt" is empty.']
     if HANGUL_RE.search(prompt):
-        problems.append('"prompt" must be English only.')
+        # 장문에는 prompt 칸이 없으므로 고칠 단락 이름을 알려 준다
+        bad = ([p["key"] for p in long_spec()["parts"] if HANGUL_RE.search(str(result.get(p["key"]) or ""))]
+               if long else []) or ["prompt"]
+        problems.append(" and ".join(f'"{k}"' for k in bad) + " must be English only.")
     lo, hi = profile["words"]
     n = len(prompt.split())
     if not lo <= n <= hi:
         problems.append(f"The prompt has {n} words; write {lo} to {hi} words.")
-    full = f"{scene} {prompt}" if profile["mode"] == "t2v" else prompt
+    # 장문은 장면까지 스스로 쓰므로 프롬프트 하나가 전부다
+    full = f"{scene} {prompt}" if profile["mode"] == "t2v" and not long else prompt
     for d in demands:
         # 카메라·속도 말은 움직임 글에 있어야 한다 (장면 글의 'slow shutter' 로 통과하지 않게). 날씨는 장면에 있어도 된다
         if not crew_lib.has_term(prompt if d["facet"] == FACET else full, d["terms"]):
@@ -443,8 +626,22 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
         problems.append("Keep one continuous shot: do not write cuts, scene changes or transitions.")
     moves = camera_moves(prompt)
     if len(moves) > allowed_moves(said):
-        problems.append(f"Use one main camera move for the whole clip; the prompt combines: {', '.join(moves)}.")
-    if scene:
+        # 걸린 구절을 함께 보여 줘야 긴 글에서 어느 절을 고칠지 안다
+        seen_moves = "; ".join(f'{k} ("{CAMERA_MOVES[k].search(prompt).group(0)}")' for k in moves)
+        problems.append(f"Use one main camera move for the whole clip; the prompt combines: {seen_moves}.")
+    if pov_wanted(said):
+        m = SELF_BODY_RE.search(prompt)
+        if m:
+            problems.append(f'The user asked for a first-person view, so the camera is the viewer\'s eyes ("{m.group(0)}"): '
+                            "show only what lies ahead and at most the viewer's own hands or forearms at the frame edge; "
+                            "the viewer never appears as a figure, is never framed over a shoulder or from behind, and "
+                            "other people in the scene stay as they are.")
+    if long:
+        buzz = [t for t in sorted({m.group(0).lower() for m in BUZZ_RE.finditer(prompt)}) if not user_allows(t, said)]
+        if buzz:
+            problems.append("Replace quality buzzwords with visible details (light, lens, colour, texture): "
+                            + ", ".join(buzz) + ".")
+    elif scene:   # 장문은 외형까지 쓰므로 장면 글을 다시 써도 된다
         same = restated(prompt, scene)
         if same:
             problems.append(f'Do not restate the look already fixed by the first frame or scene ("{same}"); describe motion only.')
@@ -462,8 +659,14 @@ def describe(result: dict, cat: str) -> dict:
     return {"picked": picked}
 
 
-def compose(mode: str, scene: str, motion: str, style: str = "") -> str:
-    """최종 프롬프트. I2V 는 움직임만(외형과 그림체는 첫 화면이 정한다), T2V 는 장면 + 움직임 + 그림체 고정 문장."""
+def compose(mode: str, scene: str, motion: str, style: str = "", long: bool = False) -> str:
+    """최종 프롬프트. I2V 는 움직임만(외형과 그림체는 첫 화면이 정한다), T2V 는 장면 + 움직임 + 그림체 고정 문장.
+
+    장문은 네 단락이 전부다(장면을 이미 담았다). T2V 면 그림체 고정 문장만 마지막 단락으로 붙인다.
+    """
+    if long:
+        body = motion.strip()
+        return f"{body}\n\n{style.strip()}" if mode == "t2v" and body and style.strip() else body
     motion = motion.strip().rstrip(".")
     if mode != "t2v":
         return f"{motion}." if motion else ""
@@ -473,12 +676,14 @@ def compose(mode: str, scene: str, motion: str, style: str = "") -> str:
 
 async def draft(call, text: str, notes: str, profile: dict, seconds: float, frame: dict | None = None,
                 scene: str = "", cat: str | None = None, menus: dict | None = None, repair_rounds: int | None = None,
-                rng=None):
+                rng=None, style: str = ""):
     """한 GPU 차례(llm_turn) 안에서 움직임 초안을 받는다. (결과, 회차, 남은 위반) 을 돌려준다."""
     rounds_max = settings.video_repair_rounds if repair_rounds is None else repair_rounds
     said = f"{text} {notes}".strip()
-    messages = await asyncio.to_thread(build_messages, text, notes, profile, seconds, frame, scene, cat, menus, rng)
-    schema = build_schema(cat, menus)
+    long = is_long(profile)
+    messages = await asyncio.to_thread(build_messages, text, notes, profile, seconds, frame, scene, cat, menus, rng,
+                                       style)
+    schema = build_schema(cat, menus, long=long)
     result, problems = {}, ["no answer"]
     best = None   # 고쳐 쓴 답이 더 나빠지면(깨진 JSON 등) 앞의 답을 돌려준다
     for rnd in range(1, rounds_max + 2):
@@ -489,6 +694,8 @@ async def draft(call, text: str, notes: str, profile: dict, seconds: float, fram
         except PromptxError as e:
             result, problems = {}, [str(e)]
         else:
+            if long and isinstance(result, dict):
+                result["prompt"] = assemble(result)   # 네 단락을 이어 아래(검사·가장 나은 답 고르기·결과)에서 한 글로 쓴다
             problems = check_video(result, profile, said, frame, scene, cat, menus)
         if not problems:
             return result, rnd, []
@@ -542,6 +749,11 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
         async with llm.llm_turn(user, ip, model, "video_expand") as call:
             if b64 is not None and frame_model == model:
                 frame = await _safe_read(call, b64, advice)
+            if is_long(profile) and mode == "i2v" and not frame_known(frame) and not scene and profile.get("fallback"):
+                # 첫 화면도 참고 글도 모르면 장문은 빛·색·위치를 지어 쓰게 된다. 이번 요청만 움직임만 프로필로 쓴다
+                pid, profile = profile_of(profile["fallback"])
+                advice.append("첫 화면 정보와 도우미 확장 결과가 없어 장문 대신 움직임만 썼습니다. "
+                              "장문은 첫 화면을 읽거나 도우미 결과가 있을 때 씁니다.")
             if mode == "t2v" and not scene:
                 # T2V 는 첫 화면이 없으므로 같은 차례 안에서 이미지 확장(제작진·도우미)으로 장면부터 쓴다
                 scene_info = await promptx.expand_in_turn(call, text, style, notes, crew)
@@ -550,7 +762,7 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
             if cat:
                 menus = await asyncio.to_thread(build_menus, said, cat, rng)
                 result, rounds, left = await draft(call, text, notes, profile, suggested["seconds"], frame, scene,
-                                                   cat, menus, rng=rng)
+                                                   cat, menus, rng=rng, style=style)
                 crew_info = {"category": cat, "title": load_knowledge()["categories"][cat]["title"], "rounds": rounds,
                              "used": not left, "violations": left}
                 if left:
@@ -558,15 +770,18 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
                 else:
                     crew_info.update(describe(result, cat))
             if not cat or left:
-                result, more, left = await draft(call, text, notes, profile, suggested["seconds"], frame, scene, rng=rng)
+                result, more, left = await draft(call, text, notes, profile, suggested["seconds"], frame, scene, rng=rng,
+                                                 style=style)
                 rounds += more
     except llm.HelperBusy as e:
         raise PromptxError(str(e), 503) from None
     except RuntimeError as e:
         raise PromptxError(str(e), 502) from None
+    long = is_long(profile)
     motion = str(result.get("prompt") or "").strip()
     ko = result.get("ko") if isinstance(result.get("ko"), dict) else {}
-    return {"prompt": compose(mode, scene, motion, style), "motion": motion,
+    parts = {p["key"]: str(result.get(p["key"]) or "").strip() for p in long_spec()["parts"]} if long else None
+    return {"prompt": compose(mode, scene, motion, style, long), "motion": motion, "long": long, "parts": parts,
             "scene": scene if mode == "t2v" else "", "profile": pid, "profile_title": profile["title"], "mode": mode,
             "settings": suggested, "frame": frame, "ko": {k: str(ko.get(k) or "") for k in KO_KEYS},
             "crew": crew_info, "scene_crew": (scene_info or {}).get("crew"),

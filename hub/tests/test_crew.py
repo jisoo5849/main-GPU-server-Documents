@@ -219,6 +219,17 @@ def test_person_text_negation_rules():
     assert any("words" in p for p in probs)
 
 
+def test_text_and_person_notes_keep_real_signs_and_skip_idioms():
+    # of 가 붙은 진짜 간판은 계속 잡고, 'signs of wear'·'man-made' 같은 관용 표현은 넘긴다 (영상 장문 2차 검토, 11-11)
+    signs = copy.deepcopy(GOOD)
+    signs["notes_en"].append("The glowing neon signs of nearby bars reflect on the wet asphalt")
+    assert any("logos" in p for p in crew.check_crew(signs, "product", "향수 광고"))
+    ok = copy.deepcopy(GOOD)
+    ok["notes_en"] += ["The metal cap shows faint signs of wear, the bottle resting on a man-made stone ledge",
+                       "The slender figure of the bottle reads at human eye level"]          # 메모는 3~6줄
+    assert crew.check_crew(ok, "product", "향수 광고") == [], crew.check_crew(ok, "product", "향수 광고")
+
+
 def test_malformed_model_output_never_raises():
     for broken in ({"choices": {"presentation": ["x"]}, "ko": {}, "notes_en": 3},
                    {"choices": "x", "ko": [], "notes_en": None},

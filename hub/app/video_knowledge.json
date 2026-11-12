@@ -4,9 +4,9 @@
   "global_rules": [
     "The user's words come first: camera, speed, loop and weather words the user wrote must be clearly visible in the motion.",
     "One continuous shot for the whole clip: no cuts, scene changes or transitions.",
-    "Use one main camera move and keep it steady and readable; a short settle or hold at the end is fine.",
-    "Keep the main subject's shape, proportions and surface stable while it moves; the subject must not melt, morph or change into something else.",
-    "Positive phrasing only, describe what should be seen; never write text, letters, logos or labels.",
+    "Use one main camera move and keep it steady and readable; a short settle or hold at the end is fine, except in a loop.",
+    "Keep the main subject's shape, proportions and surface stable while it moves, so it stays the same object from the first frame to the last; write stability only in positive words (keeps its exact shape, stays in place) and never name a failure such as morphing, warping, distortion or flicker.",
+    "Positive phrasing only, describe what should be seen; never write text, letters, numbers, signs, logos, labels, emblems or screen readouts (call neon or shop signs neon lights or lit shop windows, and show screens, gauges and packaging as plain, softly lit surfaces).",
     "Each menu item shows a motion pattern with an example subject. Apply the pattern to the subject of this request, never to the example subject."
   ],
   "modes": {
@@ -54,9 +54,71 @@
       ]
     }
   },
+  "long": {
+    "note": "장문(러다이트 감독 agent 식) 프로필: 한 줄 요청을 구도, 카메라와 빛, 시간 순서의 움직임, 마무리 네 단락의 길고 자세한 영어 프롬프트로 쓴다 (docs/video-renderer.md 13절). 러다이트 원문은 단락마다 약 100낱말이었다. 단락은 코드가 이 순서로 잇는다. spec_i2v 는 첫 화면이 외형을 정하는 I2V 용 설명이다. example 은 T2V 지시문에만 넣는 밀도 예시다(직접 썼다).",
+    "rules": [
+      "Write like a director briefing a cinematographer on one shot: long, rich, concrete prose in which every sentence names something the camera can see, with specific nouns, materials and physical verbs instead of empty adjectives.",
+      "Fill only what the request leaves open, with the simplest choices that fit it; never replace or drop the user's idea.",
+      "Look: name the light source, its direction, quality and colour and how it falls on the materials (highlights, shadows, reflections), the shot size, the lens and camera angle, and the colour tone in plain cinematic terms; when there is a first frame, name only the ones the FIRST FRAME notes or the reference prompt state. When a STYLE line, the reference or the first frame fixes the image style, keep every look word consistent with it and add no other medium or style words. Never use quality buzzwords such as 8k, 4k, masterpiece, best quality, ultra detailed or award-winning.",
+      "Composition: say what fills the foreground, the midground and the background (when there is a first frame, only with things the FIRST FRAME notes or the reference prompt name), and the visual hierarchy: what the eye reads first, second and third.",
+      "Time: a clip this short holds exactly one main action, told in three beats: the opening moment, that one action unfolding, and how it ends (it comes to rest on a calm final frame, or, for a loop, it keeps its speed and flows straight back into its opening state, with the camera locked off or back at its starting position and the light unchanged). Background motion such as dust, mist, water or drifting light stays small and continuous. Spend extra words on how that one action looks (its path, its speed and how light and surfaces respond), never on extra events. Use plain time words (at first, then, as, finally), never timestamps.",
+      "Viewpoint: when the user asks for a first-person or point-of-view shot, the camera is that person's eyes and that person never appears as a figure. Open \"shot\" with \"First-person POV from\" and the position. Describe only what lies ahead of the eyes; the body appears only as the viewer's own hands or forearms at the bottom or side edge of the frame. Never write that the viewer sits, wears or looks, never describe the viewer's clothing, headset, helmet, head, hair, face, shoulders or back, and never frame the shot over a shoulder or from behind the viewer. Other people in the scene are described normally.",
+      "Name equipment, vehicles, devices and products generically (a generic control yoke, a generic sports car, a plain unmarked bottle); never real brand or model names."
+    ],
+    "modes": {
+      "i2v": "The first frame is fixed and already shows the subject, colours, materials, lighting, style and background. Describe the look only with what the FIRST FRAME notes or the reference prompt state (when they disagree, the FIRST FRAME notes win); never guess a time of day, lens, colour grade or film look they do not state, never add objects, people or places, and never change colours, materials or the setting. Spend most of the words on the camera move, how the action unfolds over time, how the light and surfaces respond, and the ending.",
+      "t2v": "There is no first frame: the four paragraphs are the whole prompt. Open with the medium and look (live-action cinematic unless the request, the reference or the STYLE line says otherwise). If a LOOK REFERENCE is given, keep its subject, setting, colours, materials, lighting and style; you may reuse its words. In a first-person view, the person the reference shows is the viewer, not a subject to describe."
+    },
+    "parts": [
+      {"key": "shot",
+       "spec": "open with the medium and look, the shot size, the viewpoint or eye position and the words \"one continuous shot\"; then the framing and composition (what fills the foreground, midground and background), the main subject with its shape, materials and pose, the setting, the lens perspective and depth of field, and the visual hierarchy: what reads first, second and third",
+       "spec_i2v": "the shot size, viewpoint and framing as the FIRST FRAME notes give them and the words \"one continuous shot\"; then the main subject, its position and the setting, named with the words of the FIRST FRAME notes or the reference prompt, and what reads first, second and third"},
+      {"key": "camera_light",
+       "spec": "the one camera move (or a locked-off camera) with its direction, speed and the distance it keeps; then the light source, its direction, quality and colour and exactly how it falls on the materials (highlights, shadows, reflections), the atmosphere (haze, particles, weather), the colour tone and tonal separation, and the finish of the medium (a film look for live action; for any other medium, the texture of that medium such as paper and soft washes, brushstrokes or clean cel shading, with no film-look or film-grain words)",
+       "spec_i2v": "the one camera move (or a locked-off camera) with its direction, speed and what it keeps in frame; then how the light already in the first frame plays over the surfaces during the clip (highlights, shadows, reflections), naming light, colour or texture only in words the FIRST FRAME notes or the reference prompt give"},
+      {"key": "action",
+       "spec": "the opening moment, then the one main action as it unfolds: its path, its speed, and how light, surfaces and the surroundings respond to it, described physically; this paragraph follows that one action only"},
+      {"key": "ending",
+       "spec": "how that same action ends (it comes to rest on a calm final frame, or, for a loop, it keeps the same speed and flows straight back into its opening state), the final framing (for a loop, the opening framing and light again, with no settle or hold), what keeps living quietly in the background, then what stays the same, in positive words: shapes, proportions, materials, positions and reflections"}
+    ],
+    "part_min_words": 50,
+    "example": {
+      "shot": "Live-action, cinematic close-up at table height, composed as one continuous shot. A plain white ceramic teacup sits slightly right of centre on a weathered oak windowsill, filled with dark amber tea, and a thin curl of steam rises from its surface. Behind it, a frosted window glows with pale dawn light and the soft, out-of-focus shapes of bare branches. A 50mm perspective keeps the near rim of the cup and the grain of the wood crisp while the window falls into a gentle blur, so the cup reads first, the steam second and the window third.",
+      "camera_light": "The camera eases forward in one slow, steady push toward the cup, keeping the same height and a level horizon. Cool blue dawn light enters from the window behind and to the left, drawing a bright rim along the edge of the cup and laying a long, soft shadow across the sill, while a faint warm bounce from the room lifts the front of the glaze. A restrained film look with soft highlight roll-off, fine grain and a cool-to-warm neutral grade keeps detail in both the bright glass and the dark tea.",
+      "action": "At first the scene is almost still: the steam rises in a slow, thin ribbon and the surface of the tea holds a small reflection of the window. Then a light draft from the window bends the ribbon to the right; it thickens for a moment, curls over the rim and catches the backlight as a pale, glowing veil. As the push continues, the steam drifts across the bright window and thins into faint wisps, and the small reflection on the tea trembles once and steadies.",
+      "ending": "Finally the draft fades, the steam returns to a slow vertical ribbon and the camera comes to rest on a calm, closer framing of the cup against the glowing window, with the branches still swaying faintly beyond the glass. The cup keeps its exact shape, glaze and position on the sill, the wood grain and the window frame stay fixed, and the reflection stays on the surface of the tea. The final frame holds the same quiet, early-morning feeling, the light a touch warmer than at the start."
+    }
+  },
   "profiles": {
+    "wan22_i2v_long": {
+      "title": "Wan 2.2 I2V 14B · 장문 (러다이트식, 첫 화면 → 영상)",
+      "mode": "i2v",
+      "long": true,
+      "fallback": "wan22_i2v",
+      "fps": 16,
+      "max_frames": 81,
+      "frame_step": 4,
+      "default_seconds": 5,
+      "words": [220, 380],
+      "style": "Wan image-to-video: long, detailed cinematic prose that stays true to the first frame and gives most words to the camera, the action over time and the ending.",
+      "models": ["wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors", "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"],
+      "tested": ""
+    },
+    "wan22_t2v_long": {
+      "title": "Wan 2.2 T2V 14B · 장문 (러다이트식, 글 → 영상)",
+      "mode": "t2v",
+      "long": true,
+      "fps": 16,
+      "max_frames": 81,
+      "frame_step": 4,
+      "default_seconds": 5,
+      "words": [300, 450],
+      "style": "Wan text-to-video: long, detailed cinematic prose with the look and the motion in one prompt, about as dense as the example.",
+      "models": ["wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors", "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"],
+      "tested": ""
+    },
     "wan22_i2v": {
-      "title": "Wan 2.2 I2V 14B (첫 화면 → 영상)",
+      "title": "Wan 2.2 I2V 14B · 움직임만 (첫 화면 → 영상)",
       "mode": "i2v",
       "fps": 16,
       "max_frames": 81,
@@ -68,7 +130,7 @@
       "tested": "2026-11 영상 시험: 4스텝 LoRA(lightx2v), cfg 1, shift 5, 640×640, 81프레임, 16fps, 한 편 약 1분 반"
     },
     "wan22_t2v": {
-      "title": "Wan 2.2 T2V 14B (글 → 영상)",
+      "title": "Wan 2.2 T2V 14B · 장면 + 움직임 (글 → 영상)",
       "mode": "t2v",
       "fps": 16,
       "max_frames": 81,

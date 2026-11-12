@@ -450,6 +450,382 @@ def test_schema_puts_choices_first():
     assert list(video.build_schema("product", menus)["properties"]) == ["choices", "ko", "prompt"]
 
 
+# ── 장문 프로필 (러다이트식, 11-11) ─────────────────────────────────────
+# 러다이트 Agent 는 한 줄 요청을 구도 → 카메라·빛 → 시간 순서 → 마무리 네 단락의 영어 상세 프롬프트로 바꿨다.
+# 그런데 '1인칭' 프롬프트로 만든 영상이 어깨너머 샷으로 나왔다 (Directing_follow_for_comfyUI 02번 문서 E1-c).
+I2V_LONG = video.profile_of("wan22_i2v_long")[1]
+T2V_LONG = video.profile_of("wan22_t2v_long")[1]
+PARTS = ("shot", "camera_light", "action", "ending")
+LONG = {"ko": KO,
+        "shot": ("Live-action, cinematic close-up product shot at eye level, composed as one continuous shot. A single glass "
+                 "perfume bottle with a faceted body and a brushed gold cap stands slightly left of centre on a smooth white "
+                 "marble table, its clear liquid holding a pale amber tint. Behind it, a pale cream backdrop falls softly out "
+                 "of focus, and a thin beam of window light crosses the table from the left. A 100mm macro perspective keeps "
+                 "the bottle and the veining of the marble crisp while the background melts into creamy tones, so the bottle "
+                 "reads first, the beam of light second and the backdrop third."),
+        "camera_light": ("The camera pushes in slowly and steadily toward the bottle for the whole clip, keeping the same "
+                         "height and a level horizon. Soft morning daylight enters from a tall window on the left, wrapping the "
+                         "faceted glass in a clean highlight, drawing a bright rim along the gold cap and laying a long, soft "
+                         "shadow to the right across the marble. A faint warm bounce from the right lifts the shadow side of the "
+                         "bottle. A restrained film look with gentle highlight roll-off, fine grain, soft tonal separation and a "
+                         "warm, neutral colour grade keeps detail in both the bright glass and the deep amber liquid."),
+        "action": ("At first the bottle sits perfectly still while fine dust motes drift slowly through the beam of light and "
+                   "the liquid holds a small, steady reflection of the window. Then a faint mist rises from the base of the "
+                   "bottle, curls gently upward along the glass and catches the backlight as a pale, glowing veil, moving "
+                   "slowly enough that each curl stays readable. As the camera comes closer, a soft band of reflected light "
+                   "glides across the facets from left to right, lighting each edge in turn, and the amber liquid glows a "
+                   "little warmer where the light passes through it."),
+        "ending": ("Finally the mist thins into a faint veil around the base, the band of light comes to rest on the gold cap, "
+                   "and the camera settles into a calm, closer framing of the bottle against the softly glowing backdrop. The "
+                   "dust keeps drifting quietly through the beam. The bottle keeps its exact shape, proportions, facets and "
+                   "polished glass surface throughout, the gold cap and the marble veining stay fixed in place, and every "
+                   "reflection stays attached to the glass. The final frame holds the same calm, premium feeling, with the "
+                   "light a touch warmer than at the start.")}
+LONG_I2V = {"ko": KO,
+            "shot": ("A close-up shot at eye level, composed as one continuous shot, holds the glass perfume bottle at the "
+                     "centre of the frame on the marble table exactly as the first frame shows it. The softly blurred backdrop "
+                     "sits behind it, the bottle reads first and the gentle beam of light second, and the same lens "
+                     "perspective and depth of field stay in place for the whole clip."),
+            "camera_light": ("The camera pushes in slowly and steadily toward the bottle for the whole clip, keeping the same "
+                             "height and a level horizon. The soft light from the left stays steady, holding the clean "
+                             "highlight on the glass, the bright rim along the cap and the long, soft shadow on the table, "
+                             "with the calm, warm colour and the fine texture of the first frame."),
+            "action": ("At first the bottle sits perfectly still while fine mist hangs in the air around it and a small "
+                       "reflection rests on the glass. Then the mist drifts slowly upward along the glass, curls once near the "
+                       "shoulder of the bottle and catches the light as a pale veil. As the push continues, a soft band of "
+                       "reflected light glides across the curved glass from left to right, lighting each edge in turn."),
+            "ending": ("Finally the mist thins into a faint veil around the base and the camera settles into a calm, closer "
+                       "framing of the bottle. The bottle keeps its exact shape, proportions and glass surface, the cap and "
+                       "the table stay fixed, every reflection stays on the glass, and the final frame holds the same calm, "
+                       "warm feeling as the first frame.")}
+PILOT = "비행기를 운항하는 파일럿의 1인칭시점을 영상으로 만들어줘"
+POV_KO = {"camera": "카메라가 조종석 눈높이에 고정됩니다.", "motion": "손이 요크를 살짝 돌려 기체가 기웁니다.",
+          "timing": "처음엔 고요하다가 마지막에 다시 수평으로 돌아옵니다."}
+POV = {"ko": POV_KO,
+       "shot": ("First-person POV from the pilot seat at the eye position of the person flying, live-action and cinematic, "
+                "composed as one continuous shot. The broad windshield of a small generic aircraft fills most of the frame "
+                "with open sky and a calm, distant horizon, while the curved windshield frame and the upper edge of a "
+                "restrained generic instrument panel define the sides and the bottom. Through the glass, a soft layer of "
+                "clouds lies far below. A natural wide perspective keeps the near cockpit and the far horizon clear together, "
+                "so the view ahead reads first, the cockpit second and the controls third."),
+       "camera_light": ("The camera stays locked at the same seated eye level for the whole clip, a static first-person "
+                        "frame that moves only with the aircraft. Soft afternoon daylight pours through the windshield from "
+                        "ahead and slightly right, laying gentle highlights along the glazing and the frame while the matte "
+                        "panel keeps a deep, even tone. A clean, restrained film look with soft highlight roll-off, gentle "
+                        "tonal separation and a cool, neutral grade keeps detail in both the bright sky and the dark cockpit, "
+                        "and a faint atmospheric haze softens the horizon."),
+       "action": ("At first the aircraft flies steady and level as the clouds drift slowly past far below and the horizon "
+                  "rests still against the windshield frame. Then the pilot's own gloved hands enter from the bottom edge of "
+                  "the frame, settle on a generic control yoke and ease it gently to the left in one small, deliberate "
+                  "correction. The yoke follows the input, the aircraft answers with a smooth, shallow bank, and the horizon "
+                  "tilts gradually across the windshield while the cockpit stays steady relative to the viewer, giving a "
+                  "clear, readable reaction to the movement of the hands."),
+       "ending": ("Finally the hands ease the yoke back toward centre in one continuous recovery, the bank fades, and the "
+                  "horizon settles level again in a slightly new direction. The clip ends on a calm first-person view of the "
+                  "open sky ahead, with the clouds still drifting quietly far below. The windshield frame, the panel and the "
+                  "hands keep their shape, size and position throughout, the reflections stay on the glass, and the final "
+                  "frame holds the same quiet, attentive feeling as the start, with the small correction complete.")}
+
+
+def test_long_profiles_come_first_and_are_flagged():
+    ps = video.profile_list()
+    assert [p["id"] for p in ps[:2]] == ["wan22_i2v_long", "wan22_t2v_long"] and all(p["long"] for p in ps[:2])
+    assert not any(p["long"] for p in ps if p["id"] in ("wan22_i2v", "wan22_t2v"))      # 예전 방식은 그대로 남는다
+    assert video.profile_of(None)[0] == "wan22_i2v_long"                                    # 프로필을 안 고르면 장문
+    spec = video.long_spec()
+    assert [p["key"] for p in spec["parts"]] == list(PARTS) and set(spec["modes"]) == {"i2v", "t2v"} and spec["rules"]
+    for p in (I2V_LONG, T2V_LONG):   # 장문 길이도 단락 최소 길이 네 개보다 길어야 한다
+        assert p["words"][0] >= 4 * spec["part_min_words"]
+
+
+def test_long_schema_takes_four_parts_in_order():
+    s = video.build_schema(long=True)
+    assert list(s["properties"]) == ["ko", *PARTS] and "prompt" not in s["properties"]
+    assert s["required"] == ["ko", *PARTS]
+    menus = video.build_menus("향수 광고 영상", "product", random.Random(0))
+    assert list(video.build_schema("product", menus, long=True)["properties"]) == ["choices", "ko", *PARTS]
+    joined = video.assemble(dict(LONG, shot="A close-up\nshot  at eye level."))
+    assert joined.split("\n\n")[0] == "A close-up shot at eye level." and joined.count("\n\n") == 3   # 단락 순서·줄바꿈 정리
+    assert video.assemble("broken") == "" and video.assemble({"ko": KO}) == ""
+
+
+def test_long_messages_carry_the_four_part_plan():
+    sys_msg, user_msg = video.build_messages("향수 광고 영상", "", T2V_LONG, 5.0, scene=SCENE, style="STYLE X")
+    for key in PARTS:
+        assert f'"{key}"' in sys_msg["content"]
+    assert "300 to 450 words" in sys_msg["content"] and "quality buzzwords" in sys_msg["content"]
+    assert "EXAMPLE of the length" in sys_msg["content"] and "ceramic teacup" in sys_msg["content"]   # 러다이트 밀도 예시
+    assert "Model: Wan 2.2 T2V 14B." in sys_msg["content"] and "러다이트" not in sys_msg["content"]  # Luddite 로 읽히지 않게
+    assert "LOOK REFERENCE" in user_msg["content"] and "do not restate" not in user_msg["content"]
+    assert "STYLE (appended after your text" in user_msg["content"] and "STYLE X" in user_msg["content"]
+    sys_i2v, user_msg = video.build_messages("향수 광고 영상", "", I2V_LONG, 5.0, FRAME, SCENE, style="STYLE X")
+    assert "never contradict" in user_msg["content"] and "FIRST FRAME" in user_msg["content"]
+    assert "EXAMPLE of the length" not in sys_i2v["content"] and "STYLE (" not in user_msg["content"]
+    assert "FIRST FRAME notes" in sys_i2v["content"] and "220 to 380 words" in sys_i2v["content"]
+    # 예전 프로필의 지시문 구조는 그대로다
+    sys_old, user_old = video.build_messages("향수 광고 영상", "", I2V, 5.0, FRAME, SCENE)
+    assert '"prompt": one English paragraph of 25 to 90 words' in sys_old["content"] and "do not restate" in user_old["content"]
+
+
+def test_long_check_passes_and_may_reuse_the_look():
+    assert video.check_video(LONG, T2V_LONG, "향수 광고 영상", None, SCENE) == []
+    reuse = dict(LONG, shot="A single elegant glass perfume bottle with a gold cap standing centered on a smooth white marble "
+                            "surface, seen in a live-action, cinematic close-up product shot at eye level and composed as one "
+                            "continuous shot, with a pale cream backdrop falling softly out of focus behind it, so the bottle "
+                            "reads first, the beam of window light second and the backdrop third.")
+    assert video.check_video(reuse, T2V_LONG, "향수 광고 영상", None, SCENE) == []          # 장문은 장면 글을 다시 써도 된다
+    assert video.check_video(LONG_I2V, I2V_LONG, "향수 광고 영상", FRAME, SCENE) == []
+    assert 300 <= len(video.assemble(LONG).split()) <= 450                                # 러다이트처럼 단락마다 약 100낱말
+
+
+def test_long_check_rules():
+    def probs(**change):
+        return video.check_video(dict(LONG, **change), T2V_LONG, "향수 광고 영상", None, SCENE)
+
+    assert any('"ending" has 4 words' in p for p in probs(ending="The clip ends calmly."))
+    assert any("quality buzzwords" in p and "8k" in p and "masterpiece" in p
+               for p in probs(camera_light=LONG["camera_light"] + " Masterpiece, 8k, ultra detailed."))
+    assert any("one main camera move" in p
+               for p in probs(action=LONG["action"] + " Then the camera orbits around the bottle in a wide arc."))
+    assert any("Negative wording" in p for p in probs(ending=LONG["ending"] + " The glass stays clean without any smudge."))
+    assert any("text, letters" in p for p in probs(shot=LONG["shot"] + " A small label faces the camera."))
+    assert any("words; write 220 to 380" in p
+               for p in video.check_video(LONG, I2V_LONG, "향수 광고 영상", FRAME, SCENE))   # I2V 장문은 조금 짧게
+    missing = video.check_video({"ko": KO, "prompt": MOTION}, T2V_LONG, "향수 광고 영상", None, SCENE)
+    assert sum('has 0 words' in p for p in missing) == 4 and missing[-1] == '"prompt" is empty.'
+    assert video.check_video([], T2V_LONG, "x") == ["Return a JSON object with ko and the four parts."]
+    # 장문에는 prompt 칸이 없으므로 고칠 단락 이름을 알려 준다
+    assert '"action" must be English only.' in probs(action=LONG["action"] + " 천천히")
+    # 사용자가 직접 쓴 4K 는 막지 않고, 하이픈 유행어는 잡는다
+    assert not any("buzzwords" in p for p in video.check_video(
+        dict(LONG, camera_light=LONG["camera_light"] + " The image stays crisp in 4K."), T2V_LONG, "향수 광고 영상 4K", None, SCENE))
+    assert any("best-quality" in p for p in probs(camera_light=LONG["camera_light"] + " A best-quality finish."))
+
+
+def test_pov_request_is_a_user_word_and_allows_own_hands():
+    pov = [d for d in crew_lib.query(PILOT).video_demands if video.POV_TERM in d["terms"]]
+    assert pov and video.pov_wanted(PILOT) and video.pov_wanted("비행기를 운항하는 파일럿의 1인칭 시점")
+    assert video.pov_wanted("자전거 POV 영상") and not video.pov_wanted("그 시점에 비가 왔다")
+    assert video.people_ok(PILOT)                     # '파일럿' 은 사람 말 사전에 없지만 1인칭이면 보는 사람이 있다
+    user = video.build_messages(PILOT, "", T2V_LONG, 5.0)[1]["content"]
+    assert "first-person view" in user and "No person appears" not in user
+    assert video.check_video(POV, T2V_LONG, PILOT, None, "") == []
+    # 예전(짧은) 프로필에서도 1인칭 말과 자기 손은 지켜진다
+    short = ("The camera stays locked at eye level in a first-person view as the pilot's hands ease the yoke left, the "
+             "horizon tilts gently across the windshield and settles level again in a calm hold.")
+    assert video.check_video({"ko": POV_KO, "prompt": short}, T2V, PILOT, None, "a cockpit seen from the pilot seat") == []
+
+
+def test_pov_blocks_over_the_shoulder_and_needs_the_word():
+    def probs(**change):
+        return video.check_video(dict(POV, **change), T2V_LONG, PILOT, None, "")
+
+    shoulder = ("An over-the-shoulder view behind the pilot shows the broad windshield of a small generic aircraft with "
+                "open sky and a distant horizon filling most of the frame above a generic instrument panel.")
+    assert any("first-person view" in p and "over-the-shoulder" in p for p in probs(shot=shoulder))
+    head = POV["shot"] + " The pilot's head and headset sit at the left edge of the frame."
+    assert any("first-person view" in p for p in probs(shot=head))
+    plain = {k: v.replace("First-person POV from", "A view from").replace("first-person ", "")
+             for k, v in POV.items() if k in PARTS}
+    assert any("clearly show" in p and "first-person" in p for p in probs(**plain))
+    # 1인칭 요청이 아니면 어깨너머 구도도 괜찮다
+    assert not any("first-person" in p
+                   for p in video.check_video(dict(POV, shot=shoulder), T2V_LONG, "비행기 조종석 영상", None, ""))
+
+
+def test_compose_long_keeps_paragraphs():
+    body = video.assemble(LONG)
+    assert video.compose("t2v", SCENE, body, "STYLE X", long=True) == body + "\n\nSTYLE X"   # 장면을 앞에 다시 붙이지 않는다
+    assert video.compose("i2v", SCENE, body, "STYLE X", long=True) == body                  # 그림체는 첫 화면이 정한다
+    assert video.compose("t2v", SCENE, "", "STYLE X", long=True) == ""                       # 빈 결과에 그림체만 남기지 않는다
+
+
+def test_draft_long_assembles_and_repairs():
+    short = dict(LONG, ending="The clip ends calmly.")
+    call = Call([short, LONG])
+    result, rounds, left = asyncio.run(video.draft(call, "향수 광고 영상", "", T2V_LONG, 5.0, None, SCENE, repair_rounds=1))
+    assert left == [] and rounds == 2 and result["prompt"] == video.assemble(LONG)
+    assert '"ending" has 4 words' in call.calls[1]["messages"][-1]["content"]
+    assert set(PARTS) <= set(call.calls[0]["format"]["properties"])
+
+
+def test_render_long_t2v_uses_the_scene_as_look_reference():
+    expanded = {"prompt": ("a single luxury perfume bottle on a white marble table, soft window light from the left, "
+                           "close-up shot at eye level with a 100mm lens, a pale cream backdrop, polished glass with crisp "
+                           "reflections and brushed metal texture, calm elegant mood, fine dust floating in the light beam"),
+                "keep": ["perfume bottle"],
+                "categories": {"lighting": "soft window light from the left",
+                               "camera": "close-up shot at eye level with a 100mm lens",
+                               "environment": "a pale cream backdrop",
+                               "texture": "polished glass with crisp reflections and brushed metal texture"}, "people": 0}
+    result, calls, turns = run_render([expanded, LONG], username="alice", slug="alice-main", text="향수 광고 영상",
+                                      style="STYLE X", profile_id="wan22_t2v_long", crew=False)
+    assert turns == [(settings.expand_model, "video_expand")] and len(calls) == 2         # 장면과 장문이 한 차례
+    assert "LOOK REFERENCE" in calls[1]["messages"][-1]["content"]
+    assert result["long"] and result["violations"] == [] and result["parts"]["shot"] == LONG["shot"]
+    assert result["prompt"] == video.assemble(LONG) + "\n\nSTYLE X"
+    assert result["prompt"].count("\n\n") == 4 and not result["prompt"].startswith(SCENE)
+
+
+def test_render_long_i2v_reads_frame_and_uses_crew_menus():
+    def go():
+        return run_render([FRAME, dict(LONG_I2V, fit_menu=True)], frame_model="vision-model", username="alice",
+                          slug="alice-main", text="향수 광고 영상", style="STYLE X", profile_id="wan22_i2v_long",
+                          image={"filename": "first.png"}, image_prompt=SCENE, crew=True, rng=random.Random(0))
+    result, calls, turns = with_frame_folder(go)
+    assert turns == [("vision-model", "video_frame"), (settings.expand_model, "video_expand")]
+    assert "FIRST FRAME" in calls[1]["messages"][-1]["content"] and "never contradict" in calls[1]["messages"][-1]["content"]
+    assert list(calls[1]["format"]["properties"]) == ["choices", "ko", *PARTS]
+    assert result["crew"]["used"] and result["violations"] == [] and result["long"]
+    assert result["prompt"] == video.assemble(LONG_I2V)                                    # 그림체 문장을 붙이지 않는다
+
+
+# ── 장문 검토에서 나온 문제 (11-11, 검토자 4명 + 검증자 16명) ─────────────────────────
+def test_t2v_long_enforces_the_users_look_words():
+    # T2V 장문은 장면 글을 앞에 붙이지 않으므로 사용자의 장르·색·조명·분위기 말이 장문 안에 있어야 한다
+    said = "네온 조명의 사이버펑크 거리, 비 오는 밤, 천천히"
+    tags = {d["tag"] for d in crew_lib.query(said).demands}
+    assert "사이버펑크" in tags
+    user = video.build_messages(said, "", T2V_LONG, 5.0, scene="a cyberpunk street")[1]["content"]
+    assert "'사이버펑크'" in user and "look already follows" not in user
+    drift = video.check_video(LONG, T2V_LONG, said, None, "a cyberpunk street at night in the rain")
+    assert any("'사이버펑크'" in p for p in drift)
+    # 예전 T2V 는 장면 글이 앞에 붙으므로 그대로 (장르 말을 움직임 글에서 묻지 않는다)
+    old = video.check_video({"ko": KO, "prompt": MOTION}, T2V, said, None, "a cyberpunk street at night in the rain")
+    assert not any("'사이버펑크'" in p for p in old)
+    assert "look already follows" in video.build_messages(said, "", I2V_LONG, 5.0, FRAME, SCENE)[1]["content"]
+
+
+def test_i2v_long_falls_back_to_motion_only_without_frame_or_reference():
+    result, calls, _ = run_render([{"ko": KO, "prompt": MOTION}], username="alice", slug="alice-main",
+                                  text="고양이가 창가에서 하품하는 영상", crew=False)   # 프로필을 안 고르면 장문 I2V
+    assert result["profile"] == "wan22_i2v" and result["long"] is False and "prompt" in calls[0]["format"]["properties"]
+    assert any("장문 대신 움직임만" in a for a in result["advice"])
+    # 도우미 결과(참고 글)가 있으면 첫 화면을 못 읽어도 장문으로 쓴다
+    result, calls, _ = run_render([LONG_I2V], username="alice", slug="alice-main", text="향수 광고 영상",
+                                  image_prompt=SCENE, crew=False)
+    assert result["profile"] == "wan22_i2v_long" and result["long"] and result["prompt"] == video.assemble(LONG_I2V)
+    # 첫 화면을 읽으면 빛·색도 메모로 넘긴다 (장문이 지어내지 않게)
+    f = video.parse_frame(dict(FRAME, light="soft window light from the left", colours="warm cream and gold"))
+    text = video.frame_text(f)
+    assert "- light: soft window light from the left" in text and "- colours: warm cream and gold" in text
+    assert video.frame_known(f) and not video.frame_known(video.parse_frame({})) and not video.frame_known(None)
+
+
+def test_pov_detection_covers_common_phrasings():
+    for said in ("1인칭뷰로 자전거 타는 영상", "조종사 시점으로 비행하는 영상", "1인칭으로만 찍어줘", "운전석 시점 드라이브",
+                 "point-of-view shot of a skier", "내 시점에서 보는 바다"):
+        assert video.pov_wanted(said), said
+    for said in ("일주일 이내 시점의 뉴스", "그 시점에 비가 왔다", "실내 시점 조명", "비행기 조종석 영상"):
+        assert not video.pov_wanted(said), said
+
+
+def test_pov_check_targets_only_the_viewer():
+    rx = video.SELF_BODY_RE
+    for bad in ("an over-the-shoulder view", "the pilot's headset", "the pilot’s head", "a view of a seated pilot",
+                "The camera follows close behind them", "framed from behind them", "seen from just behind the pilot"):
+        assert rx.search(bad), bad
+    # 화면 속 다른 사람과 배경은 1인칭 위반이 아니다
+    for ok in ("her hair drifts in the wind as she turns", "the sun sets behind her", "snow-capped peaks rising behind them",
+               "her face lights up with a smile", "the woman's face", "close behind the skier ahead", "the pilot's own gloved hands"):
+        assert not rx.search(ok), ok
+
+
+def test_camera_counter_ignores_other_subjects():
+    cm = video.camera_moves
+    assert cm("As the drone moves forward, the mist lifts from the water.") == ["push"]
+    assert cm("Soft light from camera left slides across the table as the camera pushes in.") == ["push"]
+    assert cm("A wide shot of a misty lake at dawn, rising mist drifting over the water.") == []
+    assert cm("The camera holds steady as the steam rises from the cup.") == []
+    assert cm("Through a 50mm lens, the rising sun fills the frame with a warm glow.") == []
+    # 진짜 두 이동은 계속 잡는다
+    assert sorted(cm("The camera glides forward as it rises over the ridge.")) == ["crane", "push"]
+    assert sorted(cm("The camera orbits the bottle while rising slowly.")) == ["crane", "orbit"]
+    assert cm("The shot slowly pushes in toward the cup.") == ["push"]
+    probs = video.check_video(dict(LONG, action=LONG["action"] + " Then the camera orbits around the bottle in a wide arc."),
+                              T2V_LONG, "향수 광고 영상", None, SCENE)
+    assert any('orbit ("' in p and 'push ("' in p for p in probs)                       # 고칠 구절을 보여 준다
+
+
+def test_long_reference_softens_signs_and_cut_words_are_narrow():
+    scene = "a rainy night street with glowing neon signs, shop signage and wet asphalt"
+    user = video.build_messages("비 오는 밤 거리", "", T2V_LONG, 5.0, scene=scene)[1]["content"]
+    assert "glowing neon lights" in user and "signage" not in user and "neon signs" not in user
+    old = video.build_messages("비 오는 밤 거리", "", T2V, 5.0, scene=scene)[1]["content"]
+    assert "neon signs" in old                                                           # 예전 프로필은 그대로
+    assert not video.CUT_RE.search("the cool light slowly transitions to warm gold")
+    assert video.CUT_RE.search("then transitions to a wide view of the room")
+    assert not crew.TEXT_NOTE_RE.search("faint signs of wear on a brand-new leather strap")
+    assert crew.TEXT_NOTE_RE.search("glowing neon signs")
+    assert not crew.PERSON_NOTE_RE.search("light falls on the barista counter") and crew.PERSON_NOTE_RE.search("a barista pours")
+    assert crew_lib.has_term("a slow, steady pull-back from the cup", ["pull back"])          # 하이픈 표기도 확인어로 본다
+    assert not crew_lib.has_term("fine film grain", ["rain"])
+
+
+def test_pov_look_reference_treats_the_person_as_the_viewer():
+    user = video.build_messages(PILOT, "", T2V_LONG, 5.0, scene="a pilot in a headset seated in a small cockpit")[1]["content"]
+    assert "the person it shows is the viewer" in user and "keep its subject" not in user
+
+
+def test_second_review_cut_and_camera_rules():
+    # 부사가 낀 전환·명사형 전환·video/footage 는 컷이고, 빛의 변화는 컷이 아니다 (2차 검토, 11-11)
+    for t in ("The scene seamlessly transitions to a sunset over the ocean.",
+              "A smooth transition to a close-up of the bottle ends the clip.",
+              "and transitions into an overhead shot of the dish", "The footage transitions to the same street at night."):
+        assert video.CUT_RE.search(t), t
+    for t in ("the glow gradually transitions into a deep amber", "the cool light slowly transitions to warm gold"):
+        assert not video.CUT_RE.search(t), t
+    cm = video.camera_moves
+    # 관사 없는 다른 주어의 절(thin mist, steam)은 카메라 이동이 아니다
+    for s in ("As the drone moves forward, thin mist lifts off the water.",
+              "The camera pushes in slowly as steam rises from the cup.",
+              "The camera slowly pushes in and steam rises from the cup."):
+        assert cm(s) == ["push"], s
+    # 카메라 자신의 다음 이동은 쉼표·and·as·while 뒤에서도 센다
+    for s in ("The camera glides forward, the view rising above the rooftops.",
+              "The camera pushes in toward the bottle. The shot then rises above the table.",
+              "The camera pushes in, then tilts up toward the window.", "The camera pushes in and tilts up to the ceiling.",
+              "The camera dollies in while tilting up toward the peak.",
+              "The drone glides forward, rises over the treeline and tilts down.",
+              "The drone flies forward, as it rises over the ridge.", "The camera pushes in, while it slowly rises."):
+        assert sorted(cm(s)) == ["crane", "push"], s
+
+
+def test_second_review_signs_people_and_pov_words():
+    for s in ("neon signs of nearby bars", "the signs of the old shops", "a neon sign of a ramen shop"):
+        assert crew.TEXT_NOTE_RE.search(s), s
+    for s in ("As the first signs of morning light appear", "signs of heavy wear", "faint signs of wear"):
+        assert not crew.TEXT_NOTE_RE.search(s), s
+    for s in ("a man-made stone pier", "the slender figure of the bottle", "at human eye level"):
+        assert not crew.PERSON_NOTE_RE.search(s), s
+    for s in ("a man walks past", "a lone figure walks", "a figure of a woman"):
+        assert crew.PERSON_NOTE_RE.search(s), s
+    assert not video.pov_wanted("영상 내 시점 변화 없이 고정된 카메라로 바다를 보여줘")      # 이 '내' 는 '안' 이다
+    assert video.pov_wanted("비행기를 운항하는 내 시점으로") and video.pov_wanted("승객 시점 기차 창밖")
+    rx = video.SELF_BODY_RE
+    assert rx.search("a seated pilot in a headset")
+    for ok in ("a clear view of the pilot's own hands", "a clear view of the rider ahead", "from the seated pilot's eye position"):
+        assert not rx.search(ok), ok
+    # 간판은 글자를 부르는 말만 바꾸고 물건은 그대로 둔다 (도로 표지를 가로등으로 바꾸지 않는다)
+    assert video.unsign("a street sign and a lit sign") == "a plain street panel and a lit panel"
+    assert video.unsign("Neon signs over a wooden shop sign") == "Neon lights over a wooden shopfront board"
+
+
+def test_second_review_look_rules_follow_style_and_first_frame():
+    # T2V 장문의 그림체: 첫머리에 매체를 밝히고 필름 말을 쓰지 않게 하고, 예시는 실사 예시라고 밝힌다
+    sys_msg, user_msg = video.build_messages("비 오는 밤 거리를 걷는 소녀", "", T2V_LONG, 5.0, scene=SCENE,
+                                             style="soft watercolor illustration style")
+    assert 'open "shot" by naming this medium' in user_msg["content"] and "do not repeat it" not in user_msg["content"]
+    assert "and the film look." not in sys_msg["content"] and "the finish of the medium" in sys_msg["content"]
+    assert "a different, live-action request" in sys_msg["content"]
+    # I2V 장문: 렌즈·전경·중경·배경은 첫 화면 메모나 참고 글에 있는 것만
+    sys_i2v = video.build_messages("커피잔 김", "", I2V_LONG, 5.0, FRAME, "")[0]["content"]
+    assert "when there is a first frame, name only the ones the FIRST FRAME notes" in sys_i2v
+    assert "(when there is a first frame, only with things the FIRST FRAME notes" in sys_i2v
+    # 루프: 끝에서 멈추거나 다가가지 않고 처음 구도·빛으로 돌아간다
+    assert "except in a loop" in sys_msg["content"] and "the opening framing and light again" in sys_msg["content"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

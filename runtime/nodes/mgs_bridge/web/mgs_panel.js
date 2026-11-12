@@ -144,7 +144,7 @@ function injectStyle() {
 .mgs-btn.primary{border-color:var(--fg-color)}
 .mgs-link{color:var(--fg-color);text-decoration:underline;cursor:pointer;font-size:12px;background:none;border:0;padding:0;font-family:inherit}
 .mgs-foot{display:flex;flex-wrap:wrap;gap:8px 12px;padding-top:6px;border-top:1px solid var(--border-color)}
-.mgs-code{font-family:ui-monospace,monospace;font-size:11px;word-break:break-all;background:var(--comfy-menu-bg);padding:4px 6px;border-radius:4px}
+.mgs-code{font-family:ui-monospace,monospace;font-size:11px;word-break:break-all;white-space:pre-wrap;background:var(--comfy-menu-bg);padding:4px 6px;border-radius:4px}
 .mgs-empty{color:var(--descrip-text);padding:6px 2px}
 `;
   document.head.append(h("style", { id: "mgs-panel-style" }, css));
@@ -428,7 +428,7 @@ function videoCard() {
     h("button", { class: "mgs-link", onclick: () => { vd.open = !vd.open; if (vd.open) loadVideoProfiles(); redrawVideo(); } },
       vd.open ? "접기" : "펼치기")));
   if (!vd.open) {
-    card.append(h("div", { class: "mgs-sub", text: "첫 화면과 요청을 보고 영상 모델용 움직임 프롬프트(카메라·움직임·속도·마무리)를 씁니다." }));
+    card.append(h("div", { class: "mgs-sub", text: "한 줄 요청과 첫 화면을 보고 영상 모델용 프롬프트를 씁니다. 장문 프로필은 러다이트처럼 구도 · 카메라와 빛 · 시간 순서 · 마무리 네 단락의 긴 영어 프롬프트를 씁니다." }));
     return card;
   }
   const profs = vd.profiles || [];
@@ -461,6 +461,10 @@ function videoCard() {
     card.append(h("label", { class: "mgs-row" },
       h("input", { type: "checkbox", checked: vd.readFrame, onchange: (ev) => { vd.readFrame = ev.target.checked; save("videoRead", vd.readFrame ? "1" : "0"); } }),
       h("span", { class: "mgs-sub", text: "첫 화면을 시각 모델로 읽어 실제 그림에 있는 것만 움직이게 (GPU 차례 한 번 더)" })));
+  } else if (cur.long) {
+    card.append(h("div", { class: "mgs-sub", text: freshScene()
+      ? "장면: 위 도우미의 확장 결과를 바탕으로 네 단락의 장문 프롬프트를 씁니다"
+      : "장면: 도우미 확장 결과가 없어 같은 GPU 차례 안에서 장면부터 쓰고 장문으로 풀어 씁니다" }));
   } else {
     card.append(h("div", { class: "mgs-sub", text: freshScene()
       ? "장면: 위 도우미의 확장 결과를 쓰고 그 뒤에 움직임을 붙입니다"
@@ -490,7 +494,9 @@ function videoCard() {
       card.append(h("div", { class: "mgs-warn", text: "아직 규칙에 어긋나는 점이 있습니다 (그대로 써도 되지만 확인하세요):" }));
       for (const v of r.violations) card.append(h("div", { class: "mgs-sub", text: `· ${v}` }));
     } else {
-      card.append(h("div", { class: "mgs-ok", text: "규칙 검사 통과: 사용자 말 · 한 컷 · 카메라 이동 하나 · 외형 반복 없음 · 부정어 없음" }));
+      card.append(h("div", { class: "mgs-ok", text: r.long
+        ? "규칙 검사 통과: 사용자 말 · 한 컷 · 카메라 이동 하나 · 네 단락 · 부정어 없음 · 품질 유행어 없음"
+        : "규칙 검사 통과: 사용자 말 · 한 컷 · 카메라 이동 하나 · 외형 반복 없음 · 부정어 없음" }));
     }
     if (r.scene_violations?.length) {
       card.append(h("div", { class: "mgs-warn", text: "장면(도우미 확장)에 남은 점:" }));

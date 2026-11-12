@@ -68,6 +68,10 @@ class Settings:
     # 시각 모델이 확장 모델과 같으면 한 GPU 차례 안에서 처리하고, 다르면 차례를 한 번 더 쓴다.
     video_frame_model = _env("VIDEO_FRAME_MODEL", "") or inspect_model
     video_repair_rounds = _int("VIDEO_REPAIR_ROUNDS", 1)
+    # 허브 안 LLM 호출(도우미·제작진·영상 렌더러·결과 검사)의 문맥 길이. 장문 영상 프롬프트는 지시문 + 답 + 고쳐 쓰기 1회가
+    # Ollama 기본 문맥(4096)을 넘을 수 있어 앞부분(지시문)이 잘린다. 한 차례 안의 호출은 같은 값을 써야 모델을 다시 올리지 않는다.
+    # 0 이면 Ollama 기본값을 쓴다.
+    helper_num_ctx = _int("HELPER_NUM_CTX", 12288)
 
     editor_network = "mgs-editors"
     worker_network = "mgs-workers"

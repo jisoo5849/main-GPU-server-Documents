@@ -277,6 +277,8 @@ async def llm_turn(user, ip: str, model: str, purpose: str, wait_seconds: int | 
     async def call(payload: dict, endpoint: str = "/api/chat") -> dict:
         nonlocal status
         body = {**payload, "model": model, "stream": False, "keep_alive": "2m"}
+        if settings.helper_num_ctx > 0:   # 긴 지시문이 잘리지 않게, 한 차례 안의 호출은 같은 문맥 길이로 (docs/video-renderer.md 13절)
+            body["options"] = {"num_ctx": settings.helper_num_ctx, **(payload.get("options") or {})}
         try:
             r = await _client.post(f"{settings.ollama_upstream}{endpoint}", json=body,
                                    timeout=httpx.Timeout(600, connect=10))

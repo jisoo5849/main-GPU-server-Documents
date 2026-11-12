@@ -33,12 +33,19 @@ PERSON_WORDS = ("사람", "인물", "모델", "소녀", "소년", "남자", "여
 PERSON_REQ_RE = any_word(PERSON_WORDS)
 # 제작진 메모에 사람이 들어갔는지 (G0 V04: 신발 광고가 사람 다리 컷이 됐다). 시곗바늘(watch hands)·소파 팔걸이(arm)는 사람이 아니다.
 PERSON_NOTE_RE = re.compile(
-    r"\b(?:person|people|man|men|woman|women|girl|boy|child|children|customer|barista|model|human|someone|figure)\b"
+    # 'barista counter·station' 은 카페 공간의 가구다 (장문 영상 글 검토, 11-11)
+    r"\b(?:person|people|men|woman|women|girl|boy|child|children|customer|"
+    r"barista(?!(?:'s)? (?:counter|station|bar|area|stand)\b)|model|someone)\b"
+    # 'man-made pier', 'human eye level', 'the slender figure of the bottle' 은 사람이 아니다 (영상 장문 2차 검토, 11-11)
+    r"|\bman\b(?!-made)|\bhuman\b(?![- ](?:eye|scale)\b)"
+    r"|\bfigure\b(?! of (?:the|a|an|its) (?!(?:person|man|woman|girl|boy|child)\b)\w)"
     r"|\b(?:his|her|their|human|model's|person's|woman's|man's)\s+(?:hands?|fingers?|arms?|legs?)\b"
     r"|\b(?:hands?|fingers?)\s+(?:holding|holds|gripping|grips|touching|touches|presenting|spraying|pouring)\b", re.I)
-# 요청에 없는 글자·로고 (메모가 글자를 지시하지 못하게 한다)
-TEXT_NOTE_RE = re.compile(r"\b(?:text|letters?|lettering|logos?|brand(?:ing)?|captions?|slogan|typography|inscription|"
-                          r"labels?|signage|signs?|words?|writing)\b|[\"“”]", re.I)
+# 요청에 없는 글자·로고 (메모가 글자를 지시하지 못하게 한다). 'signs of wear', 'first signs of dawn', 'brand-new' 는 글자가 아니다.
+# 'neon signs of nearby bars' 처럼 of 가 붙은 진짜 간판은 계속 잡는다
+_SIGN_IDIOM = r"(?:wear|tear|age|ageing|aging|use|usage|life|time|damage|weathering|rust|patina|dawn|daybreak|sunrise|morning|spring)"
+TEXT_NOTE_RE = re.compile(r"\b(?:text|letters?|lettering|logos?|brand(?:ing)?(?![- ]new\b)|captions?|slogan|typography|inscription|"
+                          rf"labels?|signage|signs?(?! of (?:[a-z-]+ )?{_SIGN_IDIOM}\b)|words?|writing)\b|[\"“”]", re.I)
 
 
 def steps_of(cat: str) -> list[dict]:

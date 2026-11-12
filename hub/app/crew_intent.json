@@ -2138,6 +2138,34 @@
     "cycle",
     "repeats"
    ]
+  },
+  {
+   "facet": "video_motion",
+   "words": [
+    "1인칭",
+    "1인칭시점",
+    "1인칭 시점",
+    "일인칭",
+    "일인칭시점",
+    "일인칭 시점",
+    "주관적 시점",
+    "주관 시점",
+    "시점 샷",
+    "시점샷",
+    "POV",
+    "first person",
+    "first-person",
+    "point of view",
+    "point-of-view"
+   ],
+   "check": [
+    "first-person",
+    "first person",
+    "point of view",
+    "point-of-view",
+    "pov",
+    "through the eyes"
+   ]
   }
  ]
 }
