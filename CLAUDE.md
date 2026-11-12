@@ -43,6 +43,7 @@
 | `hub/app/panel.py` | ComfyUI 안 '메인 GPU' 패널용 API (`/mgs/api/me·catalog·queue·select·starter·keys`, 환경 포트) |
 | `hub/app/templates_index.py` | 공식 워크플로우 템플릿에서 모델 파일 → 시작 워크플로우 찾기 (정확 일치 → 같은 모델 다른 양자화, 파일 이름 바꿔 넣기) |
 | `runtime/nodes/mgs_bridge/web/mgs_panel.js` | ComfyUI 프런트엔드 확장: 상단 '메인 GPU' 버튼 + 왼쪽 패널 (1.57.1 번들로 API 확인) |
+| `runtime/nodes/mgs_bridge/web/mgs_nodes.js` | 패널의 그래프 도우미: 긍정·부정 프롬프트 노드 찾기(서브그래프 포함), 부정 노드 오입력 감시, 영상 워크플로우 종류 판별 (`hub/tests/panel_nodes.test.mjs`) |
 | `install/update.sh` | 메인 업데이트: git → 런타임 복사 → compose → 편집 공간 재생성 (`.applied-commit` 로 반영 여부 기억) |
 | `hub/app/proxy.py` | 환경 포트의 ComfyUI 화면 중계. `/prompt`, `/queue`, `/history`, `/api/jobs`, `/view`, `/ws` 는 허브가 처리 |
 | `hub/app/jobs.py` | 실행 접수 (편집 공간 검증 → 스냅샷 고정 → 입력 고정 → 저장 위치 → DB 순번), 대기열·이력 조회 |
@@ -71,4 +72,5 @@
 
 ```bash
 cd hub && python -I tests/test_promptops.py && python tests/test_templates_index.py && python tests/test_promptx.py && python tests/test_crew.py && python tests/test_video.py
+node tests/panel_nodes.test.mjs   # 패널의 그래프 도우미(노드 역할·부정 노드 감시·워크플로우 종류)
 ```

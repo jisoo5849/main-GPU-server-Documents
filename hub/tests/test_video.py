@@ -826,6 +826,98 @@ def test_second_review_look_rules_follow_style_and_first_frame():
     assert "except in a loop" in sys_msg["content"] and "the opening framing and light again" in sys_msg["content"]
 
 
+def run_fix(replies, **kw):
+    """video.fix 를 가짜 LLM 으로 돌린다 (run_render 와 같은 방식). (결과, 호출 목록, 차례 목록)"""
+    calls, turns = [], []
+    fake = types.ModuleType("app.llm")
+
+    class HelperBusy(Exception):
+        pass
+
+    @contextlib.asynccontextmanager
+    async def llm_turn(user, ip, model, purpose, wait_seconds=None):
+        turns.append((model, purpose))
+
+        async def call(payload):
+            calls.append(payload)
+            return {"message": {"content": json.dumps(fit(replies.pop(0), payload))}}
+        yield call
+
+    fake.HelperBusy, fake.llm_turn = HelperBusy, llm_turn
+    saved = sys.modules.get("app.llm")
+    sys.modules["app.llm"] = fake
+    try:
+        result = asyncio.run(video.fix({"id": 1}, "127.0.0.1", "alice", "alice-main", **kw))
+    finally:
+        if saved is None:
+            sys.modules.pop("app.llm", None)
+        else:
+            sys.modules["app.llm"] = saved
+    return result, calls, turns
+
+
+def current_of(result):
+    return {"ko": result["ko"], "parts": {k: result[k] for k in PARTS}}
+
+
+def test_explain_ko_turns_check_messages_into_korean():
+    out = video.explain_ko([
+        "The prompt has 423 words; write 220 to 380 words.",
+        '"ending" has 12 words; write at least 50 words: how it ends.',
+        'Negative wording "without" in the prompt; state what should be seen instead.',
+        "Do not mention text, letters, logos, labels, signs or quotation marks in the prompt.",
+        "Keep one continuous shot: do not write cuts, scene changes or transitions.",
+        'Use one main camera move for the whole clip; the prompt combines: push ("camera pushes in"); orbit ("camera orbits").',
+        "Replace quality buzzwords with visible details (light, lens, colour, texture): masterpiece, 8k.",
+        "something the rules never listed",
+    ])
+    assert "423" in out[0] and "줄여야" in out[0] and "마무리" in out[1] and "12낱말" in out[1]
+    assert "without" in out[2] and "글자" in out[3] and "한 컷" in out[4]
+    assert "push" in out[5] and "orbit" in out[5] and "masterpiece" in out[6]
+    assert out[7] == "something the rules never listed"                      # 모르는 문구는 그대로 보여 준다
+    assert "늘려야" in video.explain_ko(["The prompt has 100 words; write 300 to 450 words."])[0]
+
+
+def test_fix_rewrites_only_what_broke_and_reports_in_korean():
+    bad = dict(LONG, action=LONG["action"] + " The scene is a masterpiece of calm.")
+    problems = video.check_video(dict(bad, prompt=video.assemble(bad)), T2V_LONG, "향수 광고 영상", None, SCENE)
+    assert any("buzzwords" in p for p in problems)
+    result, calls, turns = run_fix([LONG], text="향수 광고 영상", profile_id="wan22_t2v_long", scene=SCENE,
+                                   current=current_of(bad), style="STYLE X")
+    assert turns == [(settings.expand_model, "video_fix")] and len(calls) == 1          # 한 차례, 처음 쓰기 없이 고치기부터
+    msgs = calls[0]["messages"]
+    assert msgs[-2]["role"] == "assistant" and "masterpiece" in msgs[-2]["content"]       # 앞서 쓴 글을 보여 주고
+    assert "quality buzzwords" in msgs[-1]["content"]                                     # 위반을 알려 준다
+    assert result["fixed"] and result["changed"] and result["violations"] == [] and result["violations_ko"] == []
+    assert result["parts"]["action"] == LONG["action"] and result["prompt"] == video.assemble(LONG) + "\n\nSTYLE X"
+    assert any("masterpiece" in line and "유행어" in line for line in result["before_ko"])
+    assert result["words_before"] > result["words_after"]
+
+
+def test_fix_does_nothing_when_clean_and_keeps_the_original_when_worse():
+    result, calls, turns = run_fix([], text="향수 광고 영상", profile_id="wan22_t2v_long", scene=SCENE,
+                                   current=current_of(LONG))
+    assert calls == [] and turns == [] and not result["changed"] and not result["fixed"]    # 검사를 통과하면 모델을 부르지 않는다
+    assert result["prompt"] == video.assemble(LONG)
+    bad = dict(LONG, action=LONG["action"] + " The scene is a masterpiece of calm.")
+    worse = dict(bad, ending=LONG["ending"] + " Never use 8k.")
+    result, calls, _ = run_fix([worse, worse, worse], text="향수 광고 영상", profile_id="wan22_t2v_long", scene=SCENE,
+                               current=current_of(bad))
+    assert len(calls) == 3 and not result["changed"] and not result["fixed"]
+    assert result["parts"]["action"] == bad["action"] and result["violations_ko"]           # 더 나빠지면 원래 글을 지키고 이유를 남긴다
+
+
+def test_fix_distrusts_the_panel_and_handles_short_profiles_and_garbage():
+    # 패널이 보낸 위반은 믿지 않고 다시 검사한다 (current 만 받는다). 빈·깨진 입력도 죽지 않는다
+    result, calls, _ = run_fix([LONG], text="향수 광고 영상", profile_id="wan22_t2v_long", scene=SCENE, current="garbage")
+    assert len(calls) == 1 and result["fixed"] and result["parts"]["shot"] == LONG["shot"]
+    neg = MOTION.rstrip(".") + " without any clutter in the frame."
+    result, calls, _ = run_fix([{"ko": KO, "prompt": MOTION}], text="향수 광고 영상", profile_id="wan22_t2v", scene=SCENE,
+                               current={"ko": KO, "motion": neg}, style="STYLE X")
+    assert len(calls) == 1 and result["parts"] is None and result["long"] is False and result["fixed"]
+    assert result["prompt"].endswith("STYLE X") and result["motion"] == MOTION
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

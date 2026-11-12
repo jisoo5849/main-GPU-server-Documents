@@ -648,6 +648,57 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
     return problems
 
 
+PART_KO = {"shot": "구도", "camera_light": "카메라와 빛", "action": "움직임", "ending": "마무리"}
+# 검사 문구(영문)를 한국어 안내로 풀어 쓴다. 영문 네 단락에서 무엇을 고칠지 알기 어려운 사용자에게 보여 준다
+_KO_RULES = [
+    (re.compile(r"^The prompt has (\d+) words; write (\d+) to (\d+) words"),
+     lambda m: f"글이 {m[1]}낱말입니다. 권장 범위는 {m[2]}~{m[3]}낱말이라 "
+               f"{'줄여야' if int(m[1]) > int(m[3]) else '늘려야'} 합니다."),
+    (re.compile(r'^"(\w+)" has (\d+) words; write at least (\d+) words'),
+     lambda m: f"'{PART_KO.get(m[1], m[1])}' 단락이 {m[2]}낱말로 짧습니다. 최소 {m[3]}낱말은 써야 합니다."),
+    (re.compile(r"must be English only"), lambda m: "한글이 섞여 있습니다. 프롬프트는 영문만 써야 합니다."),
+    (re.compile(r"^The user wrote '(.+?)'; the prompt must clearly show it"),
+     lambda m: f"요청에 쓰신 '{m[1]}'이(가) 글에 뚜렷하게 나타나지 않습니다."),
+    (re.compile(r'^Negative wording "(.+?)"'),
+     lambda m: f"부정 표현('{m[1]}')이 있습니다. 영상 모델은 부정어를 잘 이해하지 못해 '무엇이 보여야 하는지'로 바꿔야 합니다."),
+    (re.compile(r"^Do not mention text, letters"),
+     lambda m: "글자·로고·간판·따옴표가 들어 있습니다. 영상에 가짜 글자가 그려질 수 있어 빼야 합니다."),
+    (re.compile(r"^No person appears"),
+     lambda m: "요청과 첫 화면에 사람이 없는데 글에 사람이나 손이 들어 있습니다."),
+    (re.compile(r"^The hands must stay hidden, so remove: (.+)\."),
+     lambda m: f"손을 숨기라고 하셨는데 손과 관련된 말이 있습니다: {m[1]}"),
+    (re.compile(r"^Keep one continuous shot"),
+     lambda m: "컷 전환이나 장면 전환 표현이 있습니다. 한 번에 이어지는 한 컷이어야 합니다."),
+    (re.compile(r"^Use one main camera move.*combines: (.+)\.$"),
+     lambda m: f"카메라 이동이 둘 이상입니다 ({m[1]}). 하나만 남겨야 합니다."),
+    (re.compile(r'^The user asked for a first-person view.*?\("(.+?)"\)'),
+     lambda m: f"1인칭 요청인데 보는 사람 자신이 화면에 나오는 표현('{m[1]}')이 있습니다."),
+    (re.compile(r"^Replace quality buzzwords.*?: (.+)\.$"),
+     lambda m: f"품질 유행어({m[1]})가 있습니다. 화면에 보이는 구체적인 묘사(빛·렌즈·색·질감)로 바꿔야 합니다."),
+    (re.compile(r"^Do not restate the look"),
+     lambda m: "첫 화면에 이미 있는 외형을 다시 설명했습니다. 움직임만 써야 합니다."),
+    (re.compile(r'^"ko\.(\w+)" must be a Korean sentence'),
+     lambda m: "한국어 설명 칸이 비어 있거나 한국어가 아닙니다."),
+    (re.compile(r"^Steps? \"|^Step "), lambda m: "제작진 단계의 선택이 규칙에 맞지 않습니다."),
+    (re.compile(r'^"prompt" is empty'), lambda m: "프롬프트가 비어 있습니다."),
+]
+
+
+def explain_ko(problems) -> list[str]:
+    """검사 위반(영문)을 한국어 안내로 바꾼다. 풀이를 모르는 문구는 영문 그대로 둔다."""
+    out = []
+    for p in problems or []:
+        p = str(p)
+        for rx, fmt in _KO_RULES:
+            m = rx.search(p)
+            if m:
+                out.append(fmt(m))
+                break
+        else:
+            out.append(p)
+    return out
+
+
 def describe(result: dict, cat: str) -> dict:
     """패널에 보여 줄 고른 항목 (한국어 이름). 검사를 통과한 초안에만 쓴다."""
     choices = result.get("choices") or {}
@@ -676,14 +727,18 @@ def compose(mode: str, scene: str, motion: str, style: str = "", long: bool = Fa
 
 async def draft(call, text: str, notes: str, profile: dict, seconds: float, frame: dict | None = None,
                 scene: str = "", cat: str | None = None, menus: dict | None = None, repair_rounds: int | None = None,
-                rng=None, style: str = ""):
-    """한 GPU 차례(llm_turn) 안에서 움직임 초안을 받는다. (결과, 회차, 남은 위반) 을 돌려준다."""
+                rng=None, style: str = "", start: tuple[str, list[str]] | None = None):
+    """한 GPU 차례(llm_turn) 안에서 움직임 초안을 받는다. (결과, 회차, 남은 위반) 을 돌려준다.
+
+    start=(앞서 쓴 답의 JSON 글, 그 위반 목록) 이면 처음 쓰기 없이 그 답을 고쳐 쓰는 것부터 시작한다(자동 수정)."""
     rounds_max = settings.video_repair_rounds if repair_rounds is None else repair_rounds
     said = f"{text} {notes}".strip()
     long = is_long(profile)
     messages = await asyncio.to_thread(build_messages, text, notes, profile, seconds, frame, scene, cat, menus, rng,
                                        style)
     schema = build_schema(cat, menus, long=long)
+    if start:
+        messages = messages + [{"role": "assistant", "content": start[0]}, repair_message(start[1])]
     result, problems = {}, ["no answer"]
     best = None   # 고쳐 쓴 답이 더 나빠지면(깨진 JSON 등) 앞의 답을 돌려준다
     for rnd in range(1, rounds_max + 2):
@@ -786,8 +841,61 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
             "settings": suggested, "frame": frame, "ko": {k: str(ko.get(k) or "") for k in KO_KEYS},
             "crew": crew_info, "scene_crew": (scene_info or {}).get("crew"),
             "scene_violations": (scene_info or {}).get("violations") or [],
-            "violations": left, "rounds": rounds, "model": model, "frame_model": frame_model if frame else None,
-            "advice": advice}
+            "violations": left, "violations_ko": explain_ko(left), "rounds": rounds, "model": model,
+            "frame_model": frame_model if frame else None, "advice": advice}
+
+
+async def fix(user, ip: str, username: str, slug: str, text: str, notes: str = "", style: str = "",
+              profile_id: str | None = None, seconds=None, current=None, frame=None, scene: str = "") -> dict:
+    """패널에 떠 있는 영상 프롬프트의 규칙 위반을 한 GPU 차례 안에서 자동으로 고쳐 쓴다.
+
+    새로 쓰지 않고 현재 글과 위반 목록을 모델에 주고 고쳐 받는다(요청의 뜻과 잘 쓴 부분을 지키려고).
+    위반은 패널이 보낸 값을 믿지 않고 다시 검사한다. 첫 화면은 다시 읽지 않고 패널이 가진 읽기 결과를 쓴다.
+    """
+    from . import llm
+
+    text = clean_input(text)
+    notes = str(notes or "").strip()[:2000]
+    style = str(style or "").strip()[:2000]
+    scene = str(scene or "").strip()[:4000]
+    pid, profile = profile_of(profile_id)
+    mode, long = profile["mode"], is_long(profile)
+    suggested = suggest_settings(profile, seconds)
+    said = f"{text} {notes}".strip()
+    cur = current if isinstance(current, dict) else {}
+    ko_in = cur.get("ko") if isinstance(cur.get("ko"), dict) else {}
+    result: dict = {"ko": {k: str(ko_in.get(k) or "")[:400] for k in KO_KEYS}}
+    if long:
+        parts_in = cur.get("parts") if isinstance(cur.get("parts"), dict) else {}
+        for p in long_spec()["parts"]:
+            result[p["key"]] = str(parts_in.get(p["key"]) or "")[:6000]
+        result["prompt"] = assemble(result)
+    else:
+        result["prompt"] = str(cur.get("motion") or "")[:4000]
+    frame = parse_frame(frame) if isinstance(frame, dict) else None
+    before = check_video(result, profile, said, frame, scene)
+    after, rounds, left = result, 0, []
+    if before:
+        model = settings.expand_model
+        start = (json.dumps({k: v for k, v in result.items() if k != "prompt"}, ensure_ascii=False), before)
+        try:
+            async with llm.llm_turn(user, ip, model, "video_fix") as call:
+                after, rounds, left = await draft(call, text, notes, profile, suggested["seconds"], frame, scene,
+                                                  repair_rounds=2, style=style, start=start)
+        except llm.HelperBusy as e:
+            raise PromptxError(str(e), 503) from None
+        except RuntimeError as e:
+            raise PromptxError(str(e), 502) from None
+        if not after.get("prompt") or len(left) >= len(before):   # 더 나아지지 않았으면 원래 글을 지킨다
+            after, left = result, before
+    motion = str(after.get("prompt") or "").strip()
+    ko = after.get("ko") if isinstance(after.get("ko"), dict) else {}
+    parts = {p["key"]: str(after.get(p["key"]) or "").strip() for p in long_spec()["parts"]} if long else None
+    return {"prompt": compose(mode, scene, motion, style, long), "motion": motion, "long": long, "parts": parts,
+            "ko": {k: str(ko.get(k) or "") for k in KO_KEYS}, "profile": pid, "mode": mode,
+            "violations": left, "violations_ko": explain_ko(left), "before_ko": explain_ko(before),
+            "words_before": len(str(result.get("prompt") or "").split()), "words_after": len(motion.split()),
+            "rounds": rounds, "changed": bool(before) and after is not result, "fixed": bool(before) and not left}
 
 
 async def _safe_read(call, b64: str, advice: list) -> dict | None:
