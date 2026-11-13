@@ -59,6 +59,11 @@ TWO_RE = re.compile(r"두\s*(?:사람|명)|둘이|커플|\btwo\b", re.I)
 TO_VIDEO = [{"id": "to_video", "label": "이걸로 영상 만들기"}]
 
 
+def first_stage(action: str | None) -> str:
+    """요청이 시작할 때의 단계. 이미지·글→영상·편집에는 첫 화면 읽기가 없으니 프롬프트 작성이 첫 단계다"""
+    return "frame" if action == "i2v" else "prompt"
+
+
 class StepError(Exception):
     def __init__(self, code: str, detail=None):
         super().__init__(code)
@@ -77,7 +82,7 @@ class Ctx:
         self.bag: list = []
         self.linked: set = set()
         self.has_fix = False
-        self.stage = "frame"
+        self.stage = first_stage(self.action)
         self.text = ""
         self.last_emit = 0.0
         self.success_signal = False
@@ -89,7 +94,33 @@ class Ctx:
         self.emit_task = None
         self.emit_again = False
         self.notes: list = []
+        self.saved_stage = None
+        self.node_log: list = []      # 노드별 걸린 시간 [{"node", "ms"}] (운영자 기록 node_timing, 12절)
+        self._node_cur: tuple | None = None
         self.req_text = ""          # 사용자가 쓴 요청 글. (text 는 진행 카드에 보이는 글이라 따로 둔다)
+
+
+def _note_node(self, node: str):
+    """executing 메시지가 올 때마다 앞 노드의 걸린 시간을 닫고 새 노드를 연다"""
+    now = time.monotonic()
+    if self._node_cur is not None:
+        prev, t0 = self._node_cur
+        if prev != node:
+            self.node_log.append({"node": prev, "ms": int((now - t0) * 1000)})
+        else:
+            return
+    self._node_cur = (node, now)
+
+
+def _close_nodes(self):
+    if self._node_cur is not None:
+        prev, t0 = self._node_cur
+        self.node_log.append({"node": prev, "ms": int((time.monotonic() - t0) * 1000)})
+        self._node_cur = None
+
+
+Ctx.note_node = _note_node
+Ctx.close_nodes = _close_nodes
 
 
 class Receiver:
@@ -112,6 +143,8 @@ class Receiver:
                 self.ctx.success_signal = True
             if typ == "progress_text" and self.ctx.stage in ("queue", "prepare"):
                 self.ctx.stage = "prepare"
+            if typ == "executing" and data.get("node") and data.get("prompt_id") in (None, self.ctx.job_id):
+                self.ctx.note_node(str(data["node"]))
             if typ == "execution_start":
                 self.ctx.stage = "generate"
             if self.ctx.tracker.feed(typ, data) or typ in ("execution_start", "progress_text"):
@@ -271,6 +304,9 @@ class Director:
                 "band": ctx.tracker.band_label() if ctx.stage == "generate" else None,
                 "chips": progress.chips(ctx.action, has_fix, CHIP_OF_STAGE.get(ctx.stage, ctx.stage))}
         await store.save_progress(ctx.tid, prog)
+        if ctx.stage != ctx.saved_stage:       # 운영자 화면이 보는 chat_turns.stage 도 단계가 바뀔 때 갱신한다
+            ctx.saved_stage = ctx.stage
+            await store.set_stage(ctx.tid, ctx.stage)
         await self.push(ctx.user["id"], {"type": "turn.progress", "thread_id": str(ctx.turn["thread_id"]),
                                          "turn_id": str(ctx.tid), "progress": prog})
 
@@ -325,7 +361,7 @@ class Director:
                         continue
                 if await store.count_active(t["user_id"]) >= settings.studio_max_active_per_user:
                     continue
-                if await store.move(t["id"], "pending", "active", stage="frame"):
+                if await store.move(t["id"], "pending", "active", stage=first_stage(t.get("action"))):
                     self.spawn(t)
 
     def spawn(self, turn: dict, resume: bool = False):
@@ -548,7 +584,7 @@ class Director:
         recipe = ctx.recipe
         with self.deps.llm_context() as bag:
             ctx.bag = bag
-            ctx.stage = "frame"
+            ctx.stage = "frame" if image is not None and reuse_frame is None else "prompt"
             await self.emit(ctx, True)
             r = await self._guard_llm(ctx, self.deps.render(
                 ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text, notes="", style="",
@@ -847,6 +883,9 @@ class Director:
         if await store.cancel_requested(turn["id"]):     # 취소 요청 뒤에 끝난 결과는 채팅에 내지 않는다 (5.9)
             await self.finish_state(turn, "cancelled")
             return
+        ctx.close_nodes()
+        if ctx.node_log:
+            await store.event(turn["id"], "node_timing", {"nodes": ctx.node_log[:200]})
         att_id, media = await self._add_result(ctx, main)
         notes = list(ctx.notes)
         if ctx.action == "i2v":

@@ -52,6 +52,7 @@ class FakeStore:
         self.turns, self.events, self.messages, self.links, self.atts, self.progress = {}, [], [], [], {}, {}
         self.jobs, self.outputs, self.by_client = {}, {}, {}
         self.results = []
+        self.stages = []
 
     def patch(self):
         fs = self
@@ -94,7 +95,7 @@ class FakeStore:
                     return jid
             return None
         async def add_attachment(att): fs.results.append(att); fs.atts[str(att["id"])] = att; return att
-        async def set_stage(*a, **k): return None
+        async def set_stage(tid, stage): fs.stages.append(stage)
 
         for k, v in list(locals().items()):
             if k != "fs" and callable(v):
@@ -275,8 +276,10 @@ async def t_happy_path():
     assert (p["129:98"]["inputs"]["width"], p["129:98"]["inputs"]["height"]) == (848, 480)      # 1920x1080 사진 비율
     assert p["108"]["inputs"]["filename_prefix"].startswith("bob/" + str(t["id"])[:8] + "/")
     assert body["client_id"].startswith("studio-" + str(t["id"]))
-    for k in ("turn_created", "spec", "render", "negative_check", "comfy_submitted", "output", "inspect"):
+    for k in ("turn_created", "spec", "render", "negative_check", "comfy_submitted", "output", "inspect", "node_timing"):
         assert k in kinds(fs), (k, kinds(fs))
+    nt = [d_ for k, d_ in fs.events if k == "node_timing"][0]["nodes"]
+    assert nt and all(set(n) == {"node", "ms"} and n["ms"] >= 0 for n in nt) and {"129:86", "129:85"} <= {n["node"] for n in nt}, nt
     # 결과 메시지와 결과 첨부
     res = [m for m in fs.messages if m["kind"] == "result"]
     assert len(res) == 1 and res[0]["data"]["attachment_ids"] and "소리는 아직 넣지 못합니다" not in res[0]["data"]["notes"] or True
@@ -294,6 +297,8 @@ async def t_happy_path():
     assert ins[0] == "studio" and ins[1] == "chat/2026-11-12/bob/abcd1234" and ins[2] == "check_frame_00001_.png"
     assert ins[3] == [D.FIRST_PERSON_TRAIT]
     assert d.tasks == {} and not deps.receivers      # 수신기를 풀었다
+    assert fs.stages[0] == "frame" and fs.stages[-1] == "collect" and len(set(fs.stages)) == len(fs.stages) - fs.stages.count("x"), fs.stages
+    assert "generate" in fs.stages
     assert any(e["type"] == "turn.state" and e["state"] == "done" for e in deps.published)
 
 
@@ -628,6 +633,23 @@ async def t_new_seed_with_new_seconds_rewrites_prompt():
     names = [c[0] for c in deps.calls]
     assert "render" in names and "reuse_skipped" in kinds(fs), (names, kinds(fs))       # 길이가 바뀌면 새로 쓴다
     assert [c[1] for c in deps.calls if c[0] == "render"][0]["seconds"] == 3.0
+
+
+async def t_first_stage_matches_action():
+    assert D.first_stage("i2v") == "frame"
+    for a in ("image", "t2v", "edit", None):
+        assert D.first_stage(a) == "prompt"
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs, rec=IMG)
+    deps.hold = True
+    d = D.Director(deps, {IMG["id"]: IMG})
+    t = new_turn(fs, "작은 카페", rec=IMG)
+    await d.pump()
+    assert t["stage"] == "prompt", t["stage"]          # 운영자 화면이 보는 stage 칸
+    await store.request_cancel(t["id"])
+    deps.hold = False
+    await d.cancel(t)
+    await settle(d)
 
 
 async def t_resume_after_prompt_done_skips_llm():
