@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}채팅 요청 상세 · 관리자{% endblock %}
+{% block body %}
+{% set t = d.turn %}
+<p><a href="/admin/studio">← 채팅 기록</a></p>
+<h1>요청 {{ t.id|string|truncate(8, True, '') }}</h1>
+<div class="card small">
+  {{ t.username }} · {{ t.title }} · 종류 <b>{{ t.action }}</b> · 상태 <b>{{ t.state }}</b>{% if t.stage %} ({{ t.stage }}){% endif %}
+  · 레시피 {{ t.recipe_id }} v{{ t.recipe_version }} · 시각 {{ t.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
+  {% if t.error %}· 오류 <span class="pill warn">{{ t.error.code }}</span>{% endif %}
+</div>
+
+<h2>요청</h2>
+<div class="card">
+  <pre style="white-space:pre-wrap;margin:0;">{{ d.request.text }}</pre>
+  <div class="muted small">IP {{ d.request.ip }} · 방식 {{ d.request.mode }} · 지정 {{ d.request.spec }} · 안내 {{ d.request.notes }}</div>
+  {% for a in d.request.attachments %}<div class="small">첨부 {{ a.media }} {{ a.width }}×{{ a.height }} ({{ a.source }}) <code>{{ a.input_rel or a.result_rel }}</code></div>{% endfor %}
+</div>
+
+<h2>판단</h2>
+<div class="card small"><pre style="margin:0;white-space:pre-wrap;">{{ pretty(d.decision.column) }}</pre>
+  {% if d.decision.events %}<pre style="margin:6px 0 0;white-space:pre-wrap;">{{ pretty(d.decision.events) }}</pre>{% endif %}</div>
+
+{% if d.frame %}<h2>첫 화면 읽기</h2><div class="card small"><pre style="margin:0;white-space:pre-wrap;">{{ pretty(d.frame) }}</pre></div>{% endif %}
+
+<h2>프롬프트</h2>
+<div class="card small">
+  <div class="muted">프로필 {{ d.prompt.profile }} · 길이 선택 {{ d.length.tier }} ({{ d.length.by }}): {{ d.length.reason }}</div>
+  <pre style="white-space:pre-wrap;">{{ d.prompt.text }}</pre>
+  {% if d.prompt.ko %}<pre style="white-space:pre-wrap;">{{ pretty(d.prompt.ko) }}</pre>{% endif %}
+</div>
+
+<h2>제작진</h2>
+<div class="card small"><pre style="margin:0;white-space:pre-wrap;">{{ pretty(d.crew) }}</pre></div>
+
+<h2>걸린 검사 (프롬프트 위반)</h2>
+<div class="card small"><pre style="margin:0;white-space:pre-wrap;">{{ pretty(d.violations) }}</pre></div>
+
+<h2>GPU 작업</h2>
+<div class="tbl"><table>
+  <tr><th>순번</th><th>단계</th><th>종류 / 목적</th><th>상태 / 결과</th><th>대기</th><th>콜드 스타트</th><th>실행</th><th>정리</th><th>VRAM 최대</th><th>LLM 차례 끝난 이유</th><th>job id</th></tr>
+  {% for g in d.gpu %}
+  <tr><td>{{ g.seq }}</td><td>{{ g.step }}</td><td>{{ g.kind }} {{ g.purpose or '' }}</td><td>{{ g.state }} / {{ g.outcome or '-' }}</td>
+    <td>{{ g.wait_ms or '-' }}</td><td>{{ g.cold_start_ms or '-' }}</td><td>{{ g.run_ms or '-' }}</td><td>{{ g.cleanup_ms or '-' }}</td>
+    <td>{{ g.vram_peak_mb or '-' }}</td><td>{{ g.end or '-' }}</td><td class="small"><code>{{ g.id }}</code></td></tr>
+  {% for c in g.calls %}<tr><td></td><td colspan="10" class="muted small">LLM {{ c.model }} · {{ c.duration_ms }}ms · 토큰 {{ c.prompt_tokens }}/{{ c.completion_tokens }} · 상태 {{ c.status }}</td></tr>{% endfor %}
+  {% else %}<tr><td colspan="11" class="muted">GPU 작업이 없습니다</td></tr>{% endfor %}
+</table></div>
+
+<h2>접수한 값</h2>
+<div class="card small"><pre style="margin:0;white-space:pre-wrap;">{{ pretty(d.submitted) }}</pre>
+  <div class="muted">마지막 레시피 검사: {% if d.recipe_check %}{{ d.recipe_check.checked_at }} · {% if d.recipe_check.ok %}통과{% else %}실패{% endif %}{% else %}기록 없음{% endif %}</div></div>
+
+{% if d.node_timing %}<h2>노드 시간</h2><div class="card small"><pre style="margin:0;white-space:pre-wrap;">{{ pretty(d.node_timing) }}</pre></div>{% endif %}
+
+<h2>결과와 검사</h2>
+<div class="card small"><pre style="margin:0;white-space:pre-wrap;">{{ pretty(d.result) }}</pre>
+  <pre style="white-space:pre-wrap;">{{ pretty(d.outputs) }}</pre>
+  <pre style="white-space:pre-wrap;">{{ pretty(d.inspect) }}</pre></div>
+
+<h2>안내·재시도·취소·오류</h2>
+<div class="card small"><pre style="margin:0;white-space:pre-wrap;">{{ pretty({'notices': d.notices, 'errors': d.errors, 'cancels': d.cancels}) }}</pre></div>
+
+<h2>재현</h2>
+<div class="card small">
+  {% if d.repro %}<a href="/admin/studio/turns/{{ t.id }}/repro.json">API JSON 내려받기</a>
+    <span class="muted">레시피와 접수 때 넣은 값으로 다시 만든 prompt 입니다. ComfyUI 에서 열어 다시 실행해 볼 수 있습니다 (저장 이름은 repro/ 로 바뀝니다).</span>
+  {% else %}<span class="muted">다시 만들 접수 기록이 없습니다.</span>{% endif %}
+  {% if job_prompt %}<details><summary>실제로 접수한 jobs.prompt (비교용, 그대로는 다시 실행되지 않습니다)</summary><pre style="white-space:pre-wrap;">{{ pretty(job_prompt) }}</pre></details>{% endif %}
+</div>
+
+<h2>대화 메시지</h2>
+<div class="card small">
+  {% for m in d.messages %}<div><b>{{ m.role }}/{{ m.kind }}</b> {{ m.body }}</div>{% else %}<span class="muted">없음</span>{% endfor %}
+</div>
+
+<details style="margin-top:12px;"><summary>모든 기록 (chat_events)</summary>
+  <div class="tbl"><table><tr><th>시각</th><th>종류</th><th>내용</th></tr>
+    {% for e in d.events %}<tr><td class="small">{{ e.ts.strftime('%H:%M:%S') if e.ts else '' }}</td><td>{{ e.kind }}</td><td class="small"><code>{{ short(pretty(e.detail), 400) }}</code></td></tr>{% endfor %}
+  </table></div></details>
+{% endblock %}

@@ -73,7 +73,9 @@ case "$MODE" in
     # 워크플로우 안의 Ollama 노드가 기본 주소(127.0.0.1:11434)로 호출해도 허브 LLM 중계로 가게 한다
     start_socat TCP-LISTEN:11434,bind=127.0.0.1,fork,reuseaddr TCP:host.docker.internal:11434
     mkdir -p /tmp/wuser
+    # 채팅 스튜디오 작업공간이면 허브가 MGS_HIDE_METADATA=1 을 준다: 결과 파일 메타데이터에 프롬프트를 넣지 않는다 (D18)
     exec "$PY" /env/ComfyUI/main.py "${COMMON[@]}" \
+      ${MGS_HIDE_METADATA:+--disable-metadata} \
       --user-directory /tmp/wuser \
       --temp-directory /state/worker
     ;;

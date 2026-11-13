@@ -1,0 +1,680 @@
+{
+  "schema": "studio-recipe-1",
+  "id": "wan22_i2v_14b_fast",
+  "version": 1,
+  "title": "Wan 2.2 14B 이미지→영상 · 빠름(4스텝 LoRA)",
+  "quality_label": "빠름",
+  "action": "i2v",
+  "video_profile": "wan22_i2v_long",
+  "negative_source": "node",
+  "source": {
+    "template": "video_wan2_2_14B_i2v",
+    "exported": "메인(studio-chat 작업공간, 2026-11-13) ComfyUI 메뉴 Export (API) 그대로. 바꾼 것: 129:161·129:163(길이 수식) 제거 후 129:98.length 를 숫자로, 129:131(4스텝 LoRA) 켬, 시드·프롬프트·첫 화면은 자리 표시, 900·901(검사 프레임) 추가",
+    "templates_json_version": "TBD (메인에서 확인)",
+    "frontend_version": "TBD (메인에서 확인)",
+    "removed_nodes": [
+      "129:161",
+      "129:163"
+    ]
+  },
+  "prompt": {
+    "97": {
+      "inputs": {
+        "image": "studio/_check/sample.png"
+      },
+      "class_type": "LoadImage",
+      "_meta": {
+        "title": "이미지 로드"
+      }
+    },
+    "108": {
+      "inputs": {
+        "filename_prefix": "video/Wan2.2_i2v",
+        "format": "auto",
+        "format.codec": "auto",
+        "codec": "auto",
+        "video-preview": "",
+        "video": [
+          "129:94",
+          0
+        ]
+      },
+      "class_type": "SaveVideo",
+      "_meta": {
+        "title": "비디오 저장"
+      }
+    },
+    "129:98": {
+      "inputs": {
+        "width": 640,
+        "height": 640,
+        "length": 81,
+        "batch_size": 1,
+        "positive": [
+          "129:93",
+          0
+        ],
+        "negative": [
+          "129:89",
+          0
+        ],
+        "vae": [
+          "129:90",
+          0
+        ],
+        "start_image": [
+          "97",
+          0
+        ]
+      },
+      "class_type": "WanImageToVideo",
+      "_meta": {
+        "title": "WAN 비디오 생성 (이미지 → 비디오)"
+      }
+    },
+    "129:94": {
+      "inputs": {
+        "fps": [
+          "129:162",
+          0
+        ],
+        "bit_depth": 8,
+        "color_space": "sRGB",
+        "codec": "none",
+        "images": [
+          "129:87",
+          0
+        ]
+      },
+      "class_type": "CreateVideo",
+      "_meta": {
+        "title": "비디오 생성"
+      }
+    },
+    "129:104": {
+      "inputs": {
+        "shift": 5.000000000000001,
+        "model": [
+          "129:116",
+          0
+        ]
+      },
+      "class_type": "ModelSamplingSD3",
+      "_meta": {
+        "title": "모델 샘플링 (SD3)"
+      }
+    },
+    "129:89": {
+      "inputs": {
+        "text": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
+        "clip": [
+          "129:84",
+          0
+        ]
+      },
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "CLIP Text Encode (Negative Prompt)"
+      }
+    },
+    "129:128": {
+      "inputs": {
+        "value": 20
+      },
+      "class_type": "PrimitiveInt",
+      "_meta": {
+        "title": "Int (Steps)"
+      }
+    },
+    "129:87": {
+      "inputs": {
+        "samples": [
+          "129:85",
+          0
+        ],
+        "vae": [
+          "129:90",
+          0
+        ]
+      },
+      "class_type": "VAEDecode",
+      "_meta": {
+        "title": "VAE 디코드"
+      }
+    },
+    "129:93": {
+      "inputs": {
+        "text": "",
+        "clip": [
+          "129:84",
+          0
+        ]
+      },
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "CLIP Text Encode (Positive Prompt)"
+      }
+    },
+    "129:131": {
+      "inputs": {
+        "value": true
+      },
+      "class_type": "PrimitiveBoolean",
+      "_meta": {
+        "title": "Enable 4steps LoRA?"
+      }
+    },
+    "129:90": {
+      "inputs": {
+        "vae_name": "wan_2.1_vae.safetensors"
+      },
+      "class_type": "VAELoader",
+      "_meta": {
+        "title": "VAE 로드"
+      }
+    },
+    "129:84": {
+      "inputs": {
+        "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "type": "wan",
+        "device": "default"
+      },
+      "class_type": "CLIPLoader",
+      "_meta": {
+        "title": "CLIP 로드"
+      }
+    },
+    "129:96": {
+      "inputs": {
+        "unet_name": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+        "weight_dtype": "default"
+      },
+      "class_type": "UNETLoader",
+      "_meta": {
+        "title": "확산 모델 로드"
+      }
+    },
+    "129:95": {
+      "inputs": {
+        "unet_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+        "weight_dtype": "default"
+      },
+      "class_type": "UNETLoader",
+      "_meta": {
+        "title": "확산 모델 로드"
+      }
+    },
+    "129:127": {
+      "inputs": {
+        "value": 10
+      },
+      "class_type": "PrimitiveInt",
+      "_meta": {
+        "title": "Int (split_step)"
+      }
+    },
+    "129:126": {
+      "inputs": {
+        "value": 3.5
+      },
+      "class_type": "PrimitiveFloat",
+      "_meta": {
+        "title": "Float (CFG)"
+      }
+    },
+    "129:102": {
+      "inputs": {
+        "lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors",
+        "strength_model": 1.0000000000000002,
+        "model": [
+          "129:96",
+          0
+        ]
+      },
+      "class_type": "LoraLoaderModelOnly",
+      "_meta": {
+        "title": "LoRA 로드 (모델 전용)"
+      }
+    },
+    "129:101": {
+      "inputs": {
+        "lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
+        "strength_model": 1.0000000000000002,
+        "model": [
+          "129:95",
+          0
+        ]
+      },
+      "class_type": "LoraLoaderModelOnly",
+      "_meta": {
+        "title": "LoRA 로드 (모델 전용)"
+      }
+    },
+    "129:86": {
+      "inputs": {
+        "add_noise": "enable",
+        "noise_seed": 0,
+        "steps": [
+          "129:119",
+          0
+        ],
+        "cfg": [
+          "129:120",
+          0
+        ],
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "start_at_step": 0,
+        "end_at_step": [
+          "129:125",
+          0
+        ],
+        "return_with_leftover_noise": "enable",
+        "model": [
+          "129:104",
+          0
+        ],
+        "positive": [
+          "129:98",
+          0
+        ],
+        "negative": [
+          "129:98",
+          1
+        ],
+        "latent_image": [
+          "129:98",
+          2
+        ]
+      },
+      "class_type": "KSamplerAdvanced",
+      "_meta": {
+        "title": "고급 KSampler"
+      }
+    },
+    "129:85": {
+      "inputs": {
+        "add_noise": "disable",
+        "noise_seed": 0,
+        "steps": [
+          "129:119",
+          0
+        ],
+        "cfg": [
+          "129:120",
+          0
+        ],
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "start_at_step": [
+          "129:125",
+          0
+        ],
+        "end_at_step": [
+          "129:119",
+          0
+        ],
+        "return_with_leftover_noise": "disable",
+        "model": [
+          "129:103",
+          0
+        ],
+        "positive": [
+          "129:98",
+          0
+        ],
+        "negative": [
+          "129:98",
+          1
+        ],
+        "latent_image": [
+          "129:86",
+          0
+        ]
+      },
+      "class_type": "KSamplerAdvanced",
+      "_meta": {
+        "title": "고급 KSampler"
+      }
+    },
+    "129:122": {
+      "inputs": {
+        "value": 1
+      },
+      "class_type": "PrimitiveFloat",
+      "_meta": {
+        "title": "Float (CFG)"
+      }
+    },
+    "129:124": {
+      "inputs": {
+        "value": 2
+      },
+      "class_type": "PrimitiveInt",
+      "_meta": {
+        "title": "Int (split_step)"
+      }
+    },
+    "129:118": {
+      "inputs": {
+        "value": 4
+      },
+      "class_type": "PrimitiveInt",
+      "_meta": {
+        "title": "Int (Steps)"
+      }
+    },
+    "129:116": {
+      "inputs": {
+        "switch": [
+          "129:131",
+          0
+        ],
+        "on_false": [
+          "129:95",
+          0
+        ],
+        "on_true": [
+          "129:101",
+          0
+        ]
+      },
+      "class_type": "ComfySwitchNode",
+      "_meta": {
+        "title": "Switch (Model)"
+      }
+    },
+    "129:125": {
+      "inputs": {
+        "switch": [
+          "129:131",
+          0
+        ],
+        "on_false": [
+          "129:127",
+          0
+        ],
+        "on_true": [
+          "129:124",
+          0
+        ]
+      },
+      "class_type": "ComfySwitchNode",
+      "_meta": {
+        "title": "Switch (Split Step)"
+      }
+    },
+    "129:119": {
+      "inputs": {
+        "switch": [
+          "129:131",
+          0
+        ],
+        "on_false": [
+          "129:128",
+          0
+        ],
+        "on_true": [
+          "129:118",
+          0
+        ]
+      },
+      "class_type": "ComfySwitchNode",
+      "_meta": {
+        "title": "Switch (Steps)"
+      }
+    },
+    "129:120": {
+      "inputs": {
+        "switch": [
+          "129:131",
+          0
+        ],
+        "on_false": [
+          "129:126",
+          0
+        ],
+        "on_true": [
+          "129:122",
+          0
+        ]
+      },
+      "class_type": "ComfySwitchNode",
+      "_meta": {
+        "title": "Switch (CFG)"
+      }
+    },
+    "129:103": {
+      "inputs": {
+        "shift": 5.000000000000001,
+        "model": [
+          "129:117",
+          0
+        ]
+      },
+      "class_type": "ModelSamplingSD3",
+      "_meta": {
+        "title": "모델 샘플링 (SD3)"
+      }
+    },
+    "129:117": {
+      "inputs": {
+        "switch": [
+          "129:131",
+          0
+        ],
+        "on_false": [
+          "129:96",
+          0
+        ],
+        "on_true": [
+          "129:102",
+          0
+        ]
+      },
+      "class_type": "ComfySwitchNode",
+      "_meta": {
+        "title": "Switch (Model)"
+      }
+    },
+    "129:162": {
+      "inputs": {
+        "value": 16
+      },
+      "class_type": "PrimitiveFloat",
+      "_meta": {
+        "title": "Float (FPS)"
+      }
+    },
+    "900": {
+      "class_type": "ImageFromBatch",
+      "inputs": {
+        "image": [
+          "129:87",
+          0
+        ],
+        "batch_index": 40,
+        "length": 1
+      }
+    },
+    "901": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "check_frame",
+        "images": [
+          "900",
+          0
+        ]
+      }
+    }
+  },
+  "inject": {
+    "prompt": {
+      "node": "129:93",
+      "input": "text",
+      "type": "string",
+      "role": "positive",
+      "max_len": 8000
+    },
+    "first_frame": {
+      "node": "97",
+      "input": "image",
+      "type": "input_image"
+    },
+    "seed": {
+      "node": "129:86",
+      "input": "noise_seed",
+      "type": "int",
+      "min": 0,
+      "max": 281474976710655
+    },
+    "frames": {
+      "node": "129:98",
+      "input": "length",
+      "type": "int",
+      "min": 5,
+      "max": 81,
+      "step": 4,
+      "offset": 1
+    },
+    "width": {
+      "node": "129:98",
+      "input": "width",
+      "type": "int",
+      "min": 256,
+      "max": 1024,
+      "step": 16
+    },
+    "height": {
+      "node": "129:98",
+      "input": "height",
+      "type": "int",
+      "min": 256,
+      "max": 1024,
+      "step": 16
+    },
+    "check_index": {
+      "node": "900",
+      "input": "batch_index",
+      "type": "int",
+      "min": 0,
+      "max": 80
+    },
+    "save_prefix": [
+      {
+        "node": "108",
+        "input": "filename_prefix",
+        "type": "prefix",
+        "suffix": "video"
+      },
+      {
+        "node": "901",
+        "input": "filename_prefix",
+        "type": "prefix",
+        "suffix": "check_frame"
+      }
+    ]
+  },
+  "fixed": {
+    "negative": {
+      "node": "129:89",
+      "input": "text",
+      "type": "string",
+      "role": "negative"
+    },
+    "turbo": {
+      "node": "129:131",
+      "input": "value",
+      "type": "bool",
+      "value": true
+    }
+  },
+  "outputs": {
+    "main": {
+      "node": "108",
+      "kind": "video",
+      "ext": [
+        ".mp4",
+        ".webm"
+      ]
+    },
+    "check": {
+      "node": "901",
+      "kind": "image",
+      "ext": [
+        ".png"
+      ]
+    }
+  },
+  "defaults": {
+    "width": 640,
+    "height": 640,
+    "fps": 16,
+    "frames": 81,
+    "size_rule": "keep_aspect_area",
+    "size_step": 16,
+    "max_side": 1024
+  },
+  "progress": {
+    "bands": [
+      {
+        "key": "load",
+        "label": "준비",
+        "weight": 10,
+        "nodes": [
+          "97",
+          "129:84",
+          "129:90",
+          "129:95",
+          "129:96",
+          "129:101",
+          "129:102",
+          "129:93",
+          "129:89",
+          "129:98"
+        ]
+      },
+      {
+        "key": "high",
+        "label": "생성 1/2",
+        "weight": 40,
+        "nodes": [
+          "129:86"
+        ],
+        "sampler": true
+      },
+      {
+        "key": "low",
+        "label": "생성 2/2",
+        "weight": 40,
+        "nodes": [
+          "129:85"
+        ],
+        "sampler": true
+      },
+      {
+        "key": "finish",
+        "label": "영상 만들기",
+        "weight": 10,
+        "nodes": [
+          "129:87",
+          "129:94",
+          "108",
+          "900",
+          "901"
+        ]
+      }
+    ]
+  },
+  "inspect": {
+    "output": "check",
+    "when": "after_delivery"
+  },
+  "estimate": {
+    "gpu_seconds": 90,
+    "basis": "docs/video-renderer.md:116 — 640×640, 81프레임, 4스텝 LoRA 에서 약 1분 반"
+  },
+  "limits": {
+    "max_run_seconds": 900
+  }
+}

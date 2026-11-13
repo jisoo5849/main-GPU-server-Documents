@@ -283,8 +283,10 @@ class Scheduler:
         await hostops.delete_subvolume(run)
         # 고정된 버전(읽기 전용)의 쓰기 가능한 사본. 작업 중 노드가 자기 폴더에 써도 버전은 바뀌지 않는다.
         await hostops.snapshot(ver["snapshot_path"], run)
+        # 채팅 스튜디오 작업공간의 결과 파일에는 영문 프롬프트를 남기지 않는다 (docs/chat-studio-design.md D18, 14.2)
         info = await dockerctl.run_worker(run, settings.state_path(env["slug"]), env["username"], env["name"],
-                                          env["linux_uid"], {"mgs.version": str(vid), "mgs.env": env["slug"]})
+                                          env["linux_uid"], {"mgs.version": str(vid), "mgs.env": env["slug"]},
+                                          extra_env={"MGS_HIDE_METADATA": "1"} if _hides_prompt(env) else None)
         self.worker = {"name": settings.worker_name, **info, "version_id": vid, "env_id": env["id"], "ctx_mb": 0}
         deadline = time.monotonic() + settings.worker_start_timeout
         while True:
@@ -469,8 +471,10 @@ class Scheduler:
         info = {
             "job_id": str(job["id"]), "user": env["username"], "env": env["name"],
             "env_version_id": job["env_version_id"], "submitted_at": str(job["submitted_at"]),
-            "outputs": outputs, "workflow": job["workflow"], "prompt": job["prompt"],
+            "outputs": outputs,
         }
+        if not _hides_prompt(env):     # 채팅 작업은 영문 프롬프트와 워크플로우를 설명 파일에 쓰지 않는다 (D18)
+            info["workflow"], info["prompt"] = job["workflow"], job["prompt"]
         with open(path, "w", encoding="utf-8") as f:
             json.dump(info, f, ensure_ascii=False, indent=1)
         os.chown(path, env["linux_uid"], settings.group_gid)
@@ -684,6 +688,11 @@ def _safe_json(r) -> dict:
         return r.json()
     except ValueError:
         return {}
+
+
+def _hides_prompt(env: dict) -> bool:
+    """채팅 스튜디오 작업공간의 작업이면 영문 프롬프트를 결과 파일 메타데이터·설명 파일에 남기지 않는다 (D18)"""
+    return bool(settings.studio_enabled and env.get("slug") == settings.studio_env_slug)
 
 
 def _rmtree(path):

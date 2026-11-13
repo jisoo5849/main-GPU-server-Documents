@@ -50,10 +50,11 @@ code { background:var(--accent-soft); padding:1px 5px; border-radius:4px; font-s
   {% if user %}
   <nav>
     <a href="/">내 ComfyUI</a>
+    {% if studio_open %}<a href="/studio">스튜디오</a>{% endif %}
     <a href="/portal">모델 선택</a>
     <a href="/history">작업 이력</a>
     <a href="/models">모델 추가</a>
-    {% if user.role == 'admin' %}<a href="/admin">관리자</a>{% endif %}
+    {% if user.role == 'admin' %}<a href="/admin">관리자</a>{% if studio_open %}<a href="/admin/studio">채팅 기록</a>{% endif %}{% endif %}
   </nav>
   <div class="me">{{ user.display_name or user.username }}
     <form method="post" action="/logout" class="inline"><button class="ghost">로그아웃</button></form>

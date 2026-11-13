@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스튜디오</title>
+<link rel="stylesheet" href="/studio/static/studio.css">
+</head>
+<body data-notice="{{NOTICE}}">
+<div id="app">
+  <aside id="side">
+    <div class="side-top">
+      <b>스튜디오</b>
+      <button id="new-thread" class="ghost" type="button">새 대화</button>
+    </div>
+    <ul id="threads"></ul>
+    <label id="ask-box" class="side-opt" title="켜면 영상 요청마다 길이·크기·예상 시간을 먼저 보여 주고 승인을 받습니다">
+      <input type="checkbox" id="ask-long"> 긴 영상은 먼저 계획 확인
+    </label>
+    <div class="side-bottom">
+      <a href="/portal">포털</a>
+      <button id="logout" class="ghost" type="button">로그아웃</button>
+    </div>
+  </aside>
+  <main id="main">
+    <div id="banner" hidden></div>
+    <div id="full-notice" hidden></div>
+    <div id="feed" aria-live="polite"></div>
+    <form id="composer" autocomplete="off">
+      <div id="attach" hidden></div>
+      <div id="error" role="alert" hidden></div>
+      <div class="opts">
+        <label>길이 <select id="opt-seconds"><option value="">자동</option><option value="2">2초</option><option value="3">3초</option><option value="4">4초</option><option value="5">5초</option></select></label>
+        <label>비율 <select id="opt-aspect"><option value="">자동</option><option value="landscape">가로</option><option value="portrait">세로</option><option value="square">정사각</option></select></label>
+        <span class="hint">길이는 영상에, 비율은 이미지·글→영상에 적용됩니다. 사진으로 만드는 영상은 사진 비율을 따릅니다.</span>
+      </div>
+      <div class="row">
+        <label class="clip" title="사진 올리기">
+          <input id="file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+          <span>사진</span>
+        </label>
+        <textarea id="text" rows="1" placeholder="사진을 올리고 원하는 영상을 말해 주세요"></textarea>
+        <button id="send" type="submit" disabled>보내기</button>
+      </div>
+    </form>
+  </main>
+</div>
+<script src="/studio/static/studio.js"></script>
+</body>
+</html>

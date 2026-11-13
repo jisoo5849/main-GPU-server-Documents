@@ -2,6 +2,7 @@
 // 허브의 /mgs/api/* (같은 주소, 같은 로그인 쿠키)를 부른다. ComfyUI 프런트엔드 1.57.1 번들에서 확인한 API 만 쓴다.
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { NegativeGuard, pickPositive, promptCandidates, setWidgetText, workflowKind } from "./mgs_nodes.js";
 
 const TAB_ID = "mgs-main-gpu";
 const KINDS = [
@@ -29,15 +30,25 @@ const state = {
   error: null,
   loginUrl: null,
   // 프롬프트 도우미 (메타 규칙 확장)
-  helper: { text: "", style: "", notes: "", busy: false, result: null, open: false },
+  helper: { text: "", style: "", notes: "", busy: false, result: null, open: false, crew: true },
+  // 영상 렌더러: 요청(도우미 칸) + 첫 화면 → 영상 모델용 움직임 프롬프트
+  video: { open: false, profile: "", seconds: 5, readFrame: true, busy: false, result: null, profiles: null, loading: false, loadError: null,
+           manual: false, advOpen: false, fixing: false, fixNote: null, ctx: null, inserted: "", wkKey: "" },
   // 결과 자동 검사 (VLM)
   check: { on: false, expect: "", results: [], seen: new Set() },
 };
 
 // 사용자가 적어 둔 그림체·필수 특징·자동 검사 설정은 브라우저에 기억한다 (작업공간 포트마다 따로)
-const SAVED_KEYS = { style: "mgs.helper.style", expect: "mgs.check.expect", on: "mgs.check.on" };
+const SAVED_KEYS = {
+  style: "mgs.helper.style", expect: "mgs.check.expect", on: "mgs.check.on", crew: "mgs.helper.crew",
+  videoProfile: "mgs.video.profile", videoRead: "mgs.video.read", videoManual: "mgs.video.manual",
+};
 try {
   state.helper.style = localStorage.getItem(SAVED_KEYS.style) || "";
+  state.helper.crew = localStorage.getItem(SAVED_KEYS.crew) !== "0";
+  state.video.profile = localStorage.getItem(SAVED_KEYS.videoProfile) || "";
+  state.video.readFrame = localStorage.getItem(SAVED_KEYS.videoRead) !== "0";
+  state.video.manual = localStorage.getItem(SAVED_KEYS.videoManual) === "1";   // 고급에서 직접 고른 경우만 그 모델을 쓴다
   state.check.expect = localStorage.getItem(SAVED_KEYS.expect) || "";
   state.check.on = localStorage.getItem(SAVED_KEYS.on) === "1";
 } catch { /* 저장소를 못 쓰는 브라우저 */ }
@@ -136,7 +147,7 @@ function injectStyle() {
 .mgs-btn.primary{border-color:var(--fg-color)}
 .mgs-link{color:var(--fg-color);text-decoration:underline;cursor:pointer;font-size:12px;background:none;border:0;padding:0;font-family:inherit}
 .mgs-foot{display:flex;flex-wrap:wrap;gap:8px 12px;padding-top:6px;border-top:1px solid var(--border-color)}
-.mgs-code{font-family:ui-monospace,monospace;font-size:11px;word-break:break-all;background:var(--comfy-menu-bg);padding:4px 6px;border-radius:4px}
+.mgs-code{font-family:ui-monospace,monospace;font-size:11px;word-break:break-all;white-space:pre-wrap;background:var(--comfy-menu-bg);padding:4px 6px;border-radius:4px}
 .mgs-empty{color:var(--descrip-text);padding:6px 2px}
 `;
   document.head.append(h("style", { id: "mgs-panel-style" }, css));
@@ -167,7 +178,18 @@ function render(container) {
       return stopTimer();
     }
     if (!document.hidden) refreshQueue();
+    refreshVideoWorkflow();
   }, 3000);
+}
+
+function refreshVideoWorkflow() {
+  const vd = state.video;
+  if (!vd.open || vd.busy || vd.fixing) return;
+  const wk = videoWorkflow();
+  const key = `${wk.kind}:${wk.hasLoadImage}:${findFirstFrame()?.label || ""}`;
+  if (key === vd.wkKey) return;
+  vd.wkKey = key;
+  redrawVideo();
 }
 
 function stopTimer() {
@@ -235,7 +257,7 @@ function draw() {
     root.replaceChildren(titleRow(), h("div", { class: "mgs-empty", text: "불러오는 중…" }));
     return;
   }
-  root.replaceChildren(...[header(), queueCard(), helperCard(), checkCard(), tabs(), search(), list(), keyBox(),
+  root.replaceChildren(...[header(), queueCard(), helperCard(), videoCard(), checkCard(), tabs(), search(), list(), keyBox(),
     footer()].filter(Boolean));
 }
 
@@ -305,11 +327,15 @@ function helperCard() {
     textArea(hp.notes, "꼭 지킬 특징 (선택) 예: 손은 항상 긴 소매 속에 숨김", 2, (v) => { hp.notes = v; }),
     textArea(hp.style, "그림체 고정 문장 (선택, 영문). 적으면 끝에 그대로 붙이고 다른 그림체 말은 막습니다.", 2,
       (v) => { hp.style = v; save("style", v); }),
+    h("label", { class: "mgs-row" },
+      h("input", { type: "checkbox", checked: hp.crew, onchange: (ev) => { hp.crew = ev.target.checked; save("crew", hp.crew ? "1" : "0"); } }),
+      h("span", { class: "mgs-sub", text: "제작진 모드: 제품·공간·풍경 요청이면 전문가 지식으로 기획·연출·촬영·디테일을 먼저 정합니다 (캐릭터 요청은 건너뜀)" })),
     h("div", { class: "mgs-row" },
       h("button", { class: "mgs-btn primary", disabled: hp.busy, onclick: runExpand }, hp.busy ? "메인 GPU에서 작성 중…" : "프롬프트 확장"),
       h("span", { class: "mgs-sub", text: "GPU 대기열을 거칩니다" })));
   const r = hp.result;
   if (r) {
+    if (r.crew?.used) card.append(crewSheet(r.crew));
     card.append(h("div", { class: "mgs-code", text: r.prompt }));
     card.append(h("div", { class: "mgs-sub", text: `규칙 검사 ${r.rounds}회 · ${r.model}` }));
     if (r.violations?.length) {
@@ -321,9 +347,19 @@ function helperCard() {
     for (const a of r.advice || []) card.append(h("div", { class: "mgs-sub", text: `참고: ${a}` }));
     card.append(h("div", { class: "mgs-row" },
       h("button", { class: "mgs-btn", onclick: () => copyText(r.prompt, "프롬프트를 복사했습니다") }, "복사"),
-      h("button", { class: "mgs-btn", onclick: () => putIntoSelectedNode(r.prompt) }, "선택한 노드에 넣기")));
+      h("button", { class: "mgs-btn", onclick: () => putPrompt(r.prompt) }, "긍정 프롬프트 노드에 넣기")));
   }
   return card;
+}
+
+// 제작진 모드가 쓰였을 때 보여 주는 한국어 지시서: 고른 항목과 [기획][연출][촬영·조명][디테일]
+function crewSheet(c) {
+  const box = h("div", { class: "mgs-item" });
+  box.append(h("div", { class: "mgs-name", text: `제작진 지시서 · ${c.title}` }));
+  box.append(h("div", { class: "mgs-sub", text: c.picked.map((p) => `${p.step}: ${p.ko}`).join(" / ") }));
+  const parts = [["기획", c.ko.plan], ["연출", c.ko.direction], ["촬영·조명", c.ko.camera_lighting], ["디테일", c.ko.details]];
+  for (const [name, text] of parts) if (text) box.append(h("div", { class: "mgs-sub", text: `[${name}] ${text}` }));
+  return box;
 }
 
 function redrawHelper() {
@@ -338,7 +374,9 @@ async function runExpand() {
   hp.busy = true;
   redrawHelper();
   try {
-    hp.result = await postJSON("/mgs/api/expand", { text: hp.text, notes: hp.notes, style: hp.style });
+    const key = helperKey();
+    hp.result = await postJSON("/mgs/api/expand", { text: hp.text, notes: hp.notes, style: hp.style, crew: hp.crew });
+    hp.resultFor = key;
   } catch (e) {
     if (e instanceof LoginError) { state.error = "login"; draw(); return; }
     toast("error", "프롬프트를 확장하지 못했습니다", e.message, 8000);
@@ -348,20 +386,340 @@ async function runExpand() {
   }
 }
 
-function putIntoSelectedNode(text) {
-  // 선택한 노드의 글 입력칸(CLIPTextEncode 의 text, Qwen 편집 노드의 prompt 등)에 넣는다
+function focusNode(cand) {
+  try { if (!cand.inner) app.canvas?.centerOnNode?.(cand.node); } catch { /* 화면 이동은 선택 */ }
+}
+
+// 프롬프트를 긍정 프롬프트 노드에 자동으로 넣는다. 샘플러의 positive 입력에 이어진 글 노드를 찾으므로 복잡한 그래프에서도
+// 사용자가 노드를 고를 필요가 없다. 선택한 노드가 부정 프롬프트 노드면 알려 주고 긍정 노드에 넣는다.
+function putPrompt(text) {
   const sel = Object.values(app.canvas?.selected_nodes || {});
-  for (const node of sel) {
-    const w = node.widgets?.find((x) => ["text", "prompt", "positive", "text_g"].includes(x.name) && typeof x.value === "string");
-    if (!w) continue;
-    w.value = text;
-    w.callback?.(w.value, app.canvas, node);
-    app.canvas?.setDirty?.(true, true);
-    markChanged();
-    toast("success", "노드에 넣었습니다", node.title || node.type);
-    return;
+  const cands = promptCandidates(currentGraph());
+  const wrong = cands.find((c) => c.role === "negative" && sel.some((n) => n.id === c.node.id));
+  const target = pickPositive(cands, sel);
+  if (!target) {
+    // 연결로 긍정 노드를 못 찾으면 선택한 글 노드(부정이 아닌 것)에 넣는다
+    const own = cands.find((c) => sel.some((n) => n.id === c.node.id) && c.role !== "negative");
+    if (own) {
+      setWidgetText(own, text, app.canvas);
+      markChanged();
+      toast("success", "노드에 넣었습니다", own.label);
+      return true;
+    }
+    toast("info", "긍정 프롬프트 노드를 찾지 못했습니다", wrong
+      ? `선택한 '${wrong.label}' 은 부정 프롬프트 노드입니다. 긍정 프롬프트 노드를 선택한 뒤 다시 눌러 주세요`
+      : "글 입력칸이 있는 노드를 선택한 뒤 다시 눌러 주세요 (예: CLIP Text Encode)", 8000);
+    return false;
   }
-  toast("info", "글 입력칸이 있는 노드를 먼저 선택하세요", "예: CLIP Text Encode (Prompt)", 6000);
+  setWidgetText(target, text, app.canvas);
+  markChanged();
+  focusNode(target);
+  if (wrong) {
+    toast("warn", "부정 프롬프트 노드에는 넣지 않았습니다",
+      `선택한 '${wrong.label}' 은 부정 프롬프트 노드라서 긍정 프롬프트 노드 '${target.label}' 에 넣었습니다`, 9000);
+  } else {
+    toast("success", "긍정 프롬프트 노드에 넣었습니다", target.label);
+  }
+  return true;
+}
+
+// 긍정 프롬프트가 부정 프롬프트 노드에 들어가면 감지해서 알리고 긍정 노드로 옮긴다 (직접 붙여 넣은 경우도)
+function startNegativeGuard() {
+  const generated = () => [state.video.result?.prompt, state.video.result?.motion, state.helper.result?.body,
+    state.helper.result?.prompt].filter((t) => typeof t === "string" && t);
+  const guard = new NegativeGuard({
+    getGraph: currentGraph,
+    getGenerated: generated,
+    canvas: () => app.canvas,
+    onMoved: ({ from, to }) => {
+      markChanged();
+      toast("warn", "긍정 프롬프트가 부정 프롬프트 노드에 들어가 있었습니다",
+        `'${from.label}' 의 글은 원래대로 되돌리고, 긍정 프롬프트 노드 '${to.label}' 에 넣었습니다`, 10000);
+    },
+    onStuck: (from) => toast("warn", "부정 프롬프트 노드에 긍정 프롬프트처럼 보이는 글이 있습니다",
+      `'${from.label}' 에서 옮길 긍정 프롬프트 노드를 찾지 못했습니다. 확인해 주세요`, 10000),
+  });
+  setInterval(() => {
+    if (document.hidden) return;
+    try { guard.tick(); } catch (e) { console.warn("[메인 GPU] 프롬프트 노드 감시 오류", e); }
+  }, 1000);
+}
+
+// ── 영상 프롬프트 (렌더러) ─────────────────────────────────
+// 요청·특징·그림체는 프롬프트 도우미 칸의 글을 그대로 쓴다. 첫 화면은 화면의 LoadImage 노드에서 찾는다.
+
+const helperKey = () => JSON.stringify([state.helper.text, state.helper.notes, state.helper.style]);
+// 지금 도우미 칸의 요청으로 만든 확장 결과만 장면으로 쓴다
+const freshScene = () => (state.helper.result?.body && state.helper.resultFor === helperKey() ? state.helper.result.body : "");
+
+function findFirstFrame() {
+  const isLoad = (n) => (n.comfyClass || n.type) === "LoadImage";
+  const live = (n) => n.mode !== 2 && n.mode !== 4;   // 꺼 둔(mute)·건너뛰는(bypass) 노드는 첫 화면이 아니다
+  const sel = Object.values(app.canvas?.selected_nodes || {});
+  const graph = currentGraph();
+  const nodes = (graph?._nodes || graph?.nodes || []).filter((n) => isLoad(n) && live(n));
+  // 선택한 노드 → 영상 노드의 start_image 에 연결된 노드 → 첫 LoadImage 순으로 고른다
+  const wired = nodes.find((n) => (n.outputs?.[0]?.links || []).some((id) => {
+    const link = graph?.links?.[id] ?? graph?.links?.get?.(id);
+    const target = link && graph.getNodeById?.(link.target_id);
+    return target?.inputs?.[link.target_slot]?.name === "start_image";
+  }));
+  const node = sel.find(isLoad) || wired || nodes[0];
+  const w = node?.widgets?.find((x) => x.name === "image");
+  let v = String(w?.value || "").trim();
+  if (!v) return null;
+  let type = "input";
+  const m = v.match(/^(.*) \[(input|output|temp)\]$/);
+  if (m) { v = m[1]; type = m[2]; }
+  // 서버가 읽을 수 있는 것만 보낸다 (입력·결과 폴더의 png/jpg/webp). 그 밖은 글만 보고 쓴다
+  if (type === "temp" || !/\.(png|jpe?g|webp)$/i.test(v)) return null;
+  const i = v.lastIndexOf("/");
+  return { filename: i >= 0 ? v.slice(i + 1) : v, subfolder: i >= 0 ? v.slice(0, i) : "", type, label: v };
+}
+
+// 지금 열린 워크플로우가 이미지→영상인지 글→영상인지 알아본다 (패널이 모델을 자동으로 고르는 기준)
+function videoWorkflow() {
+  try { return workflowKind(currentGraph()); } catch { return { kind: "unknown", hasLoadImage: false, hasLoadVideo: false, label: "" }; }
+}
+
+function autoVideoMode(wk) {
+  if (wk.kind === "i2v" || wk.kind === "t2v") return wk.kind;
+  return wk.hasLoadImage ? "i2v" : "t2v";   // 알아보지 못하면 첫 화면 이미지가 있는 쪽으로
+}
+
+// 사용자는 '자세히 / 간단히' 만 고른다. 이미지→영상·글→영상은 워크플로우가 정한다 (고급에서 직접 고를 수도 있다)
+// 길이(자세히·보통)는 사용자가 고르지 않는다. 패널은 워크플로우에 맞는 장문 프로필을 보내고 auto_length 를 켜면
+// 허브가 요청을 보고 장문·보통 중 하나로 정해 결과에 이유와 함께 돌려준다. 고급에서 직접 고른 모델만 그대로 쓴다
+function pickVideoProfile(profs, wk = videoWorkflow()) {
+  const vd = state.video;
+  const manual = vd.manual && profs.find((p) => p.id === vd.profile);
+  if (manual) return manual;
+  const mode = autoVideoMode(wk);
+  return profs.find((p) => p.mode === mode && p.long && !p.mid) || profs.find((p) => p.mode === mode) || profs[0];
+}
+
+function workflowLine(wk, cur, manual) {
+  if (wk.kind === "control") {
+    return h("div", { class: "mgs-warn", text: "⚠ 지금 열린 워크플로우는 참조 영상이 필요한 종류(Fun Control 등)라서 이미지 한 장으로는 영상을 만들 수 없습니다 ('미디어 입력 누락' 오류가 납니다). 모델 목록에서 이미지 → 영상(i2v) 모델의 '시작 워크플로우'를 열어 주세요." });
+  }
+  const how = manual ? "직접 고른 모델을 씁니다" : "자동으로 맞췄습니다";
+  if (wk.kind === "i2v") {
+    return wk.hasLoadImage
+      ? h("div", { class: "mgs-ok", text: `✅ 이미지 → 영상 워크플로우입니다 (${how})` })
+      : h("div", { class: "mgs-warn", text: "⚠ 이미지 → 영상 워크플로우인데 첫 화면 이미지(LoadImage) 노드가 없습니다" });
+  }
+  if (wk.kind === "t2v") return h("div", { class: "mgs-ok", text: `✅ 글 → 영상 워크플로우입니다 (${how})` });
+  return h("div", { class: "mgs-sub", text: `영상 워크플로우를 알아보지 못해 ${cur.mode === "i2v" ? "이미지 → 영상" : "글 → 영상"}으로 맞췄습니다. 틀리면 아래 '고급'에서 바꿀 수 있습니다.` });
+}
+
+function violationRows(r) {
+  const ko = Array.isArray(r.violations_ko) && r.violations_ko.length === r.violations.length ? r.violations_ko : [];
+  return r.violations.map((v, i) => h("div", { class: "mgs-sub", title: v, text: `· ${ko[i] || v}` }));
+}
+
+function videoCard() {
+  const vd = state.video;
+  const card = h("div", { class: "mgs-card mgs-video" });
+  card.append(h("div", { class: "mgs-row" },
+    h("b", { text: "영상 프롬프트" }),
+    h("button", { class: "mgs-link", onclick: () => { vd.open = !vd.open; if (vd.open) loadVideoProfiles(); redrawVideo(); } },
+      vd.open ? "접기" : "펼치기")));
+  if (!vd.open) {
+    card.append(h("div", { class: "mgs-sub", text: "한 줄 요청과 첫 화면을 보고 영상 모델용 프롬프트를 씁니다. '자세히'는 러다이트처럼 구도 · 카메라와 빛 · 시간 순서 · 마무리 네 단락의 긴 영어 프롬프트를 씁니다." }));
+    return card;
+  }
+  const profs = vd.profiles || [];
+  card.append(h("div", { class: "mgs-sub", text: "요청·꼭 지킬 특징·그림체는 위 프롬프트 도우미 칸의 글을 씁니다. 제작진 모드 체크도 그대로 따릅니다." }));
+  if (!profs.length) {
+    if (vd.loadError) {
+      card.append(h("div", { class: "mgs-warn", text: `영상 모델 목록을 불러오지 못했습니다: ${vd.loadError}` }),
+        h("button", { class: "mgs-btn", onclick: () => { vd.loadError = null; loadVideoProfiles(); } }, "다시 시도"));
+    } else {
+      card.append(h("div", { class: "mgs-sub", text: "영상 모델 목록을 불러오는 중…" }));
+      if (!vd.loading) loadVideoProfiles();   // 패널을 다시 그렸을 때도 목록을 채운다
+    }
+    return card;
+  }
+  const wk = videoWorkflow();
+  const manual = Boolean(vd.manual && profs.find((p) => p.id === vd.profile));
+  const cur = pickVideoProfile(profs, wk);
+  card.append(workflowLine(wk, cur, manual));
+  card.append(h("div", { class: "mgs-sub", text: manual
+    ? `사용 모델: ${cur.title}`
+    : `사용 모델: ${cur.title.split(" · ")[0]} · 글 길이는 요청을 보고 자동으로 정합니다` }));
+  card.append(h("details", { open: vd.advOpen, ontoggle: (ev) => { vd.advOpen = ev.target.open; } },
+    h("summary", { class: "mgs-sub", text: "고급: 모델 직접 고르기" }),
+    h("select", {
+      class: "mgs-select",
+      onchange: (ev) => { vd.profile = ev.target.value; vd.manual = true; save("videoProfile", vd.profile); save("videoManual", "1"); redrawVideo(); },
+    }, profs.map((p) => h("option", { value: p.id, selected: p.id === cur.id, text: p.title }))),
+    manual ? h("button", { class: "mgs-btn", onclick: () => { vd.manual = false; save("videoManual", "0"); redrawVideo(); } }, "자동 선택으로 돌아가기") : null));
+  card.append(h("label", { class: "mgs-row" },
+    h("span", { class: "mgs-sub", text: `길이(초, 최대 ${cur.max_seconds})` }),
+    h("input", {
+      class: "mgs-input", type: "number", min: "1", max: String(cur.max_seconds), step: "0.5", value: String(vd.seconds),
+      style: "width:90px",
+      oninput: (ev) => { vd.seconds = Math.min(cur.max_seconds, Math.max(1, Number(ev.target.value) || cur.default_seconds)); },
+    })));
+  if (cur.mode === "i2v") {
+    const ff = findFirstFrame();
+    card.append(h("div", { class: "mgs-sub", text: ff ? `첫 화면: ${ff.label}` : "첫 화면: LoadImage 노드를 찾지 못했습니다 (요청 글만 보고 씁니다)" }));
+    card.append(h("label", { class: "mgs-row" },
+      h("input", { type: "checkbox", checked: vd.readFrame, onchange: (ev) => { vd.readFrame = ev.target.checked; save("videoRead", vd.readFrame ? "1" : "0"); } }),
+      h("span", { class: "mgs-sub", text: "첫 화면을 시각 모델로 읽어 실제 그림에 있는 것만 움직이게 (GPU 차례 한 번 더)" })));
+  } else if (cur.long) {
+    card.append(h("div", { class: "mgs-sub", text: freshScene()
+      ? "장면: 위 도우미의 확장 결과를 바탕으로 네 단락의 장문 프롬프트를 씁니다"
+      : "장면: 도우미 확장 결과가 없어 같은 GPU 차례 안에서 장면부터 쓰고 장문으로 풀어 씁니다" }));
+  } else {
+    card.append(h("div", { class: "mgs-sub", text: freshScene()
+      ? "장면: 위 도우미의 확장 결과를 쓰고 그 뒤에 움직임을 붙입니다"
+      : "장면: 도우미 확장 결과가 없어 같은 GPU 차례 안에서 장면부터 씁니다" }));
+  }
+  card.append(h("div", { class: "mgs-row" },
+    h("button", { class: "mgs-btn primary", disabled: vd.busy || vd.fixing, onclick: runVideo }, vd.busy ? "메인 GPU에서 작성 중…" : "영상 프롬프트 만들기"),
+    h("span", { class: "mgs-sub", text: "GPU 대기열을 거칩니다" })));
+  const r = vd.result;
+  if (r) {
+    if (r.crew?.used) {
+      const box = h("div", { class: "mgs-item" });
+      box.append(h("div", { class: "mgs-name", text: `영상 제작진 · ${r.crew.title}` }));
+      box.append(h("div", { class: "mgs-sub", text: r.crew.picked.map((p) => `${p.step}: ${p.ko}`).join(" / ") }));
+      card.append(box);
+    }
+    const plan = [["카메라", r.ko?.camera], ["움직임", r.ko?.motion], ["시간", r.ko?.timing]];
+    for (const [name, text] of plan) if (text) card.append(h("div", { class: "mgs-sub", text: `[${name}] ${text}` }));
+    if (r.frame) {
+      const f = r.frame;
+      card.append(h("div", { class: "mgs-sub", text: `첫 화면 읽기: ${f.subject}${f.setting ? ` · ${f.setting}` : ""}${f.movable?.length ? ` · 움직일 수 있는 것: ${f.movable.join(", ")}` : ""}` }));
+    }
+    card.append(h("div", { class: "mgs-code", text: r.prompt }));
+    if (r.length_choice) {
+      const label = r.length_choice.tier === "mid" ? "보통" : "자세히";
+      card.append(h("div", { class: "mgs-sub", text: `글 길이 자동 선택: ${label}${r.length_choice.by === "llm" ? " (AI 판단)" : ""} — ${r.length_choice.reason}` }));
+    }
+    const s = r.settings || {};
+    card.append(h("div", { class: "mgs-sub", text: `권장 설정: ${s.frames}프레임 · ${s.fps}fps (약 ${s.seconds}초) · ${r.profile_title} · 규칙 검사 ${r.rounds}회` }));
+    if (r.violations?.length) {
+      card.append(h("div", { class: "mgs-warn", text: "아직 규칙에 어긋나는 점이 있습니다 (그대로 써도 되지만 확인하세요):" }));
+      card.append(...violationRows(r));
+      card.append(h("div", { class: "mgs-row" },
+        h("button", { class: "mgs-btn primary", disabled: vd.fixing || vd.busy, onclick: fixVideo }, vd.fixing ? "메인 GPU에서 고치는 중…" : "자동으로 고치기"),
+        h("span", { class: "mgs-sub", text: "경고 내용만 고쳐 쓰고 나머지는 그대로 둡니다 (GPU 대기열)" })));
+    } else {
+      card.append(h("div", { class: "mgs-ok", text: r.long
+        ? "규칙 검사 통과: 사용자 말 · 한 컷 · 카메라 이동 하나 · 네 단락 · 부정어 없음 · 품질 유행어 없음"
+        : "규칙 검사 통과: 사용자 말 · 한 컷 · 카메라 이동 하나 · 외형 반복 없음 · 부정어 없음" }));
+    }
+    if (vd.fixNote) {
+      card.append(h("div", { class: vd.fixNote.ok ? "mgs-ok" : "mgs-sub", text: vd.fixNote.text }));
+      for (const line of vd.fixNote.lines || []) card.append(h("div", { class: "mgs-sub", text: `· ${line}` }));
+    }
+    if (r.scene_violations?.length) {
+      card.append(h("div", { class: "mgs-warn", text: "장면(도우미 확장)에 남은 점:" }));
+      for (const v of r.scene_violations) card.append(h("div", { class: "mgs-sub", text: `· ${v}` }));
+    }
+    for (const a of r.advice || []) card.append(h("div", { class: "mgs-sub", text: `참고: ${a}` }));
+    if (r.prompt) {   // 빈 결과를 노드에 넣어 사용자의 글을 지우지 않게
+      card.append(h("div", { class: "mgs-row" },
+        h("button", { class: "mgs-btn", onclick: () => copyText(r.prompt, "영상 프롬프트를 복사했습니다") }, "복사"),
+        h("button", { class: "mgs-btn", onclick: () => { if (putPrompt(r.prompt)) vd.inserted = r.prompt; } }, "긍정 프롬프트 노드에 넣기")));
+    }
+  }
+  return card;
+}
+
+function redrawVideo() {
+  const old = state.root?.querySelector(".mgs-video");
+  if (old) old.replaceWith(videoCard());
+}
+
+async function loadVideoProfiles() {
+  const vd = state.video;
+  if (vd.profiles?.length || vd.loading) return;
+  vd.loading = true;
+  try {
+    vd.profiles = (await getJSON("/mgs/api/video_profiles")).profiles || [];
+    const cur = vd.profiles.find((p) => p.id === vd.profile) || vd.profiles[0];
+    if (cur) { vd.profile = cur.id; vd.seconds = Math.min(vd.seconds, cur.max_seconds) || cur.default_seconds; }
+    else vd.loadError = "프로필이 없습니다";
+  } catch (e) {
+    if (e instanceof LoginError) { vd.loading = false; state.error = "login"; draw(); return; }
+    vd.loadError = e.message;   // 다시 그릴 때마다 다시 부르지 않게 오류를 남기고 '다시 시도' 를 보여 준다
+  } finally {
+    vd.loading = false;
+  }
+  redrawVideo();
+}
+
+// 규칙 경고를 허브가 한 GPU 차례에서 고쳐 쓰게 한다. 경고(영문)를 사용자가 읽고 고치지 않아도 된다
+async function fixVideo() {
+  const vd = state.video;
+  const r = vd.result;
+  if (!r || vd.fixing || vd.busy) return;
+  const ctx = vd.ctx || {};
+  vd.fixing = true;
+  vd.fixNote = null;
+  redrawVideo();
+  try {
+    const f = await postJSON("/mgs/api/fix_video", {
+      text: ctx.text ?? state.helper.text, notes: ctx.notes ?? state.helper.notes, style: ctx.style ?? state.helper.style,
+      profile: r.profile, seconds: ctx.seconds ?? vd.seconds,
+      current: { ko: r.ko, parts: r.parts, motion: r.motion }, frame: r.frame || null,
+      scene: r.mode === "t2v" ? r.scene : (ctx.image_prompt || ""),
+    });
+    const was = r.prompt;
+    vd.result = { ...r, prompt: f.prompt, motion: f.motion, parts: f.parts, ko: f.ko, violations: f.violations,
+                  violations_ko: f.violations_ko, rounds: (r.rounds || 0) + (f.rounds || 0) };
+    if (f.fixed) {
+      vd.fixNote = { ok: true, text: `자동 수정 완료: ${f.words_before}낱말 → ${f.words_after}낱말, 규칙 위반이 모두 해결되었습니다.`,
+                     lines: f.before_ko };
+    } else if (f.changed) {
+      vd.fixNote = { ok: false, text: `일부만 고쳐졌습니다 (${f.words_before}낱말 → ${f.words_after}낱말). 남은 경고는 한 번 더 눌러 보거나, 규칙이 지나친 것이면 그대로 쓰셔도 됩니다.`,
+                     lines: [] };
+    } else {
+      vd.fixNote = { ok: false, text: f.before_ko?.length
+        ? "이번에는 더 나아지지 않아 원래 글을 그대로 두었습니다. 한 번 더 눌러 보세요."
+        : "고칠 경고가 없습니다. 이미 규칙에 맞습니다.", lines: [] };
+    }
+    // 고치기 전 글을 이미 워크플로우에 넣어 두었다면 고친 글로 바꿔 넣는다
+    if (f.changed && vd.inserted && vd.inserted === was && putPrompt(f.prompt)) vd.inserted = f.prompt;
+  } catch (e) {
+    if (e instanceof LoginError) { state.error = "login"; draw(); return; }
+    toast("error", "자동으로 고치지 못했습니다", e.message, 8000);
+  } finally {
+    vd.fixing = false;
+    redrawVideo();
+  }
+}
+
+async function runVideo() {
+  const vd = state.video;
+  const hp = state.helper;
+  if (vd.busy) return;
+  if (!hp.text.trim()) { toast("info", "프롬프트 도우미 칸에 요청을 먼저 적어 주세요"); hp.open = true; redrawHelper(); return; }
+  const cur = vd.profiles?.length ? pickVideoProfile(vd.profiles) : null;
+  if (!cur) { toast("info", "영상 모델 목록을 아직 불러오지 못했습니다", "잠시 뒤 다시 눌러 주세요"); return; }
+  const ff = cur.mode === "i2v" ? findFirstFrame() : null;
+  vd.busy = true;
+  vd.fixNote = null;
+  redrawVideo();
+  try {
+    vd.result = await postJSON("/mgs/api/expand_video", {
+      text: hp.text, notes: hp.notes, style: hp.style, crew: hp.crew, profile: cur.id, seconds: vd.seconds,
+      image: ff ? { filename: ff.filename, subfolder: ff.subfolder, type: ff.type } : null,
+      image_prompt: freshScene(), read_frame: vd.readFrame, auto_length: !(vd.manual && vd.profiles.some((p) => p.id === vd.profile)),
+    });
+    // 자동으로 고칠 때 이 결과를 만든 요청 그대로 쓴다 (그 사이 도우미 칸을 고쳐도 달라지지 않게)
+    vd.ctx = { text: hp.text, notes: hp.notes, style: hp.style, seconds: vd.seconds, image_prompt: freshScene() };
+    vd.inserted = "";
+  } catch (e) {
+    if (e instanceof LoginError) { state.error = "login"; draw(); return; }
+    toast("error", "영상 프롬프트를 만들지 못했습니다", e.message, 8000);
+  } finally {
+    vd.busy = false;
+    redrawVideo();
+  }
 }
 
 // ── 결과 자동 검사 ──────────────────────────────────────
@@ -779,6 +1137,7 @@ app.registerExtension({
     });
     // 결과 자동 검사: 이 화면에서 실행한 작업이 끝날 때마다 (패널이 닫혀 있어도) 결과 이미지를 검사한다
     api.addEventListener("executed", (ev) => { onExecuted(ev); });
+    startNegativeGuard();   // 긍정 프롬프트가 부정 프롬프트 노드에 들어가면 알리고 옮긴다
     // 처음 접속한 브라우저에서는 패널을 한 번 열어 위치를 알려 준다
     try {
       if (!localStorage.getItem("mgs.panel.intro")) {
