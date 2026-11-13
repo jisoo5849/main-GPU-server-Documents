@@ -69,6 +69,9 @@ assert R.check_object_info(p4, oi)[0]
 p5 = copy.deepcopy(p); p5["1"]["inputs"]["format.codec"] = "auto"            # 점 이름은 첫 마디만 본다
 assert R.check_object_info(p5, {**oi, "CLIPTextEncode": {"input": {"required": {"text": [], "clip": [], "format": []}}}})[0] == []
 
+p6 = copy.deepcopy(p); p6["2"]["inputs"]["video-preview"] = ""               # 화면 전용 입력은 건너뛴다
+assert R.check_object_info(p6, oi)[0] == []
+
 # ── V12 표본 값: 레시피마다 필요한 자리만 ──
 sv = R.sample_values(wan)
 assert set(sv) == set(wan["inject"]) and sv["first_frame"] == R.SAMPLE_IMAGE and sv["frames"] == 81 and sv["check_index"] == 40

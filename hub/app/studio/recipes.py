@@ -400,6 +400,11 @@ def sample_values(recipe: dict, frames: int | None = None) -> dict:
     return {k: v for k, v in vals.items() if k in inj}
 
 
+# Export (API) 파일에 들어 있지만 ComfyUI 화면에서만 쓰고 백엔드는 모르는 입력 (SaveVideo 의 video-preview 등).
+# 메인에서 내보낸 Wan 레시피가 이 입력을 가진 채로 실제 영상을 만들었다
+FRONTEND_ONLY_INPUTS = {"video-preview", "audioUI", "upload", "videoUI"}
+
+
 def check_object_info(prompt: dict, object_info: dict, accept_missing: bool = True) -> tuple[list, list]:
     """V11: 모든 class_type 이 /object_info 에 있고 입력 이름이 있는가. (오류, 경고).
     편집 공간은 CPU 로 떠서 CUDA 가 필요한 노드가 '없는 노드'로 나온다 → accept_missing 이면 경고로 남기고 입력 검사는 건너뛴다.
@@ -418,6 +423,8 @@ def check_object_info(prompt: dict, object_info: dict, accept_missing: bool = Tr
         inputs = info.get("input") or {}
         known = set((inputs.get("required") or {})) | set((inputs.get("optional") or {}))
         for name in (node.get("inputs") or {}):
+            if name in FRONTEND_ONLY_INPUTS:
+                continue
             if name.split(".")[0] not in known:
                 errs.append(f"노드 {nid}({ct}): 입력 {name} 을 모릅니다")
     return errs, warns
