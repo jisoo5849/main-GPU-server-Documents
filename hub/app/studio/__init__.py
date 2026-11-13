@@ -31,6 +31,7 @@ def routes() -> list:
         Route("/studio/api/turns/{id}", api.turn_get),
         Route("/studio/api/turns/{id}/cancel", api.turn_cancel, methods=["POST"]),
         Route("/studio/api/turns/{id}/retry", api.turn_retry, methods=["POST"]),
+        Route("/studio/api/turns/{id}/to_video", api.turn_to_video, methods=["POST"]),
         Route("/studio/api/queue", api.queue_counts),
         WebSocketRoute("/studio/ws", api.ws_endpoint),
     ]

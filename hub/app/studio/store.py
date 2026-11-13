@@ -231,7 +231,7 @@ async def attach_to_message(att_ids: list, message_id: int, thread_id, user_id: 
     ids = [uuid.UUID(str(a)) for a in att_ids]
     rows = await db.fetch(
         "UPDATE chat_attachments SET message_id=$2 WHERE id = ANY($1::uuid[]) AND user_id=$3 AND thread_id=$4 "
-        "AND source='upload' AND message_id IS NULL AND deleted_at IS NULL RETURNING *", ids, message_id, user_id,
+        "AND source IN ('upload','copy') AND message_id IS NULL AND deleted_at IS NULL RETURNING *", ids, message_id, user_id,
         thread_id)
     return [dict(r) for r in rows]
 
@@ -293,14 +293,25 @@ async def turn_of_message(message_id: int):
                                   message_id))
 
 
+async def set_decision(turn_id, decision: dict):
+    await db.execute("UPDATE chat_turns SET decision=$2 WHERE id=$1", turn_id, _j(decision))
+
+
+async def result_attachment(turn: dict):
+    """요청의 결과 첨부 하나 (없으면 None)"""
+    ids = ((turn or {}).get("result") or {}).get("attachment_ids") or []
+    rows = await attachments_of(ids[:1])
+    return rows[0] if rows else None
+
+
 async def set_retry_of(turn_id, source_id):
     await db.execute("UPDATE chat_turns SET retry_of=$2 WHERE id=$1", turn_id, source_id)
 
 
 async def unsent_uploads(hours: int) -> list[dict]:
-    """보내지 않고 오래된 업로드 (9.4). 결과·복사 행은 대상이 아니다"""
+    """보내지 않고 오래된 업로드와 복사본 (9.4). 복사본은 메시지를 만들다 실패해 고아가 된 경우를 거둔다. 결과 행은 대상이 아니다"""
     rows = await db.fetch(
-        "SELECT * FROM chat_attachments WHERE source='upload' AND message_id IS NULL AND deleted_at IS NULL "
+        "SELECT * FROM chat_attachments WHERE source IN ('upload','copy') AND message_id IS NULL AND deleted_at IS NULL "
         "AND created_at < now() - make_interval(hours => $1)", hours)
     return [dict(r) for r in rows]
 

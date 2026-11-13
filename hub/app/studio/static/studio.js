@@ -39,7 +39,7 @@
   // ── 그리기 ──
   function emptyState() {
     if (feed.children.length) return;
-    feed.append(el("div", "empty", "사진을 올리고 원하는 영상을 말해 주세요. 사진만 보내도 만들어 드립니다."));
+    feed.append(el("div", "empty", "사진을 올리면 영상으로, 글만 적으면 이미지로 만들어 드립니다. 사진만 보내도 영상이 됩니다."));
   }
   function clearEmpty() { const e = feed.querySelector(".empty"); if (e) e.remove(); }
   function scrollDown() { feed.scrollTop = feed.scrollHeight; }
@@ -48,6 +48,20 @@
     const url = "/studio/api/files/" + id;
     if (media === "video") { const v = document.createElement("video"); v.src = url; v.controls = true; v.loop = true; v.playsInline = true; v.preload = "metadata"; return v; }
     const i = document.createElement("img"); i.src = url; i.className = "thumb"; i.alt = ""; return i;
+  }
+
+  function actionButtons(turnId, actions) {
+    const acts = el("div", "acts");
+    for (const a of actions) {
+      const b = el("button", null, a.label); b.type = "button";
+      b.addEventListener("click", async () => {
+        b.disabled = true;
+        const ok = a.id === "to_video" ? await toVideo(turnId) : await retry(turnId, a.id === "retry_seed" ? "new_seed" : "rewrite");
+        if (!ok) b.disabled = false;       // 실패하면 다시 누를 수 있게 (429·409 등)
+      });
+      acts.append(b);
+    }
+    return acts;
   }
 
   function renderMessage(m) {
@@ -59,21 +73,14 @@
     const data = m.data || {};
     if (m.kind === "notice") {
       const n = el("div", "notice" + ((data.level === "error") ? " error" : ""), m.body);
-      if (Array.isArray(data.actions) && data.actions.length) {
-        const acts = el("div", "acts");
-        for (const a of data.actions) {
-          const b = el("button", null, a.label); b.type = "button";
-          b.addEventListener("click", () => { b.disabled = true; retry(m.turn_id, a.id === "retry_seed" ? "new_seed" : "rewrite"); });
-          acts.append(b);
-        }
-        n.append(acts);
-      }
+      if (Array.isArray(data.actions) && data.actions.length) n.append(actionButtons(m.turn_id, data.actions));
       wrap.append(n);
     } else {
       const b = el("div", "bubble");
       if (m.body) b.append(document.createTextNode(m.body));
-      for (const id of (data.attachment_ids || [])) b.append(attachmentNode(id, m.kind === "result" ? "video" : "image"));
+      for (const id of (data.attachment_ids || [])) b.append(attachmentNode(id, m.kind === "result" ? (data.media || "video") : "image"));
       if (m.kind === "result" && (data.notes || []).length) b.append(el("div", "note", data.notes.join(" · ")));
+      if (m.kind === "result" && Array.isArray(data.actions) && data.actions.length) b.append(actionButtons(m.turn_id, data.actions));
       if (!m.body && !(data.attachment_ids || []).length) b.textContent = "…";
       wrap.append(b);
     }
@@ -199,13 +206,24 @@
     state.sending = false; refreshSend();
   }
 
+  async function toVideo(turnId) {
+    showError("");
+    try {
+      const r = await api("/studio/api/turns/" + turnId + "/to_video", { method: "POST", json: { client_msg_id: uuid() } });
+      if (r.message) renderMessage(r.message);
+      if (r.turn) cardFor(r.turn.id);
+      return true;
+    } catch (ex) { showError(ex.message); return false; }
+  }
+
   async function retry(turnId, mode) {
     showError("");
     try {
       const r = await api("/studio/api/turns/" + turnId + "/retry", { method: "POST", json: { mode, client_msg_id: uuid() } });
       renderMessage(r.message);
       if (r.turn) cardFor(r.turn.id);
-    } catch (ex) { showError(ex.message); }
+      return true;
+    } catch (ex) { showError(ex.message); return false; }
   }
 
   // ── 실시간 ──

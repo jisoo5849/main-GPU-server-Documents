@@ -1,0 +1,229 @@
+{
+  "schema": "studio-recipe-1",
+  "id": "zimage_turbo_t2i",
+  "version": 1,
+  "title": "Z-Image Turbo 이미지 생성 · 빠름(8스텝)",
+  "quality_label": "빠름",
+  "action": "image",
+  "negative_source": "zero_out",
+  "source": {
+    "template": "image_z_image_turbo",
+    "exported": "개발 PC 템플릿 구조를 API 형식으로 옮긴 안. 메인의 Export (API) 파일로 바꾼 뒤 version 을 올린다 [TBD]",
+    "templates_json_version": "TBD (메인에서 확인)",
+    "frontend_version": "TBD (메인에서 확인)"
+  },
+  "prompt": {
+    "9": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "z-image-turbo",
+        "images": [
+          "57:8",
+          0
+        ]
+      }
+    },
+    "57:30": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen_3_4b.safetensors",
+        "type": "lumina2",
+        "device": "default"
+      }
+    },
+    "57:29": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "ae.safetensors"
+      }
+    },
+    "57:28": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "z_image_turbo_bf16.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "57:11": {
+      "class_type": "ModelSamplingAuraFlow",
+      "inputs": {
+        "shift": 3,
+        "model": [
+          "57:28",
+          0
+        ]
+      }
+    },
+    "57:27": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "57:30",
+          0
+        ]
+      }
+    },
+    "57:33": {
+      "class_type": "ConditioningZeroOut",
+      "inputs": {
+        "conditioning": [
+          "57:27",
+          0
+        ]
+      }
+    },
+    "57:13": {
+      "class_type": "EmptySD3LatentImage",
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    "57:3": {
+      "class_type": "KSampler",
+      "inputs": {
+        "seed": 0,
+        "steps": 8,
+        "cfg": 1,
+        "sampler_name": "res_multistep",
+        "scheduler": "simple",
+        "denoise": 1,
+        "model": [
+          "57:11",
+          0
+        ],
+        "positive": [
+          "57:27",
+          0
+        ],
+        "negative": [
+          "57:33",
+          0
+        ],
+        "latent_image": [
+          "57:13",
+          0
+        ]
+      }
+    },
+    "57:8": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "57:3",
+          0
+        ],
+        "vae": [
+          "57:29",
+          0
+        ]
+      }
+    }
+  },
+  "inject": {
+    "prompt": {
+      "node": "57:27",
+      "input": "text",
+      "type": "string",
+      "role": "positive",
+      "max_len": 8000
+    },
+    "seed": {
+      "node": "57:3",
+      "input": "seed",
+      "type": "int",
+      "min": 0,
+      "max": 281474976710655
+    },
+    "width": {
+      "node": "57:13",
+      "input": "width",
+      "type": "int",
+      "min": 256,
+      "max": 1536,
+      "step": 16
+    },
+    "height": {
+      "node": "57:13",
+      "input": "height",
+      "type": "int",
+      "min": 256,
+      "max": 1536,
+      "step": 16
+    },
+    "save_prefix": [
+      {
+        "node": "9",
+        "input": "filename_prefix",
+        "type": "prefix",
+        "suffix": "image"
+      }
+    ]
+  },
+  "fixed": {},
+  "outputs": {
+    "main": {
+      "node": "9",
+      "kind": "image",
+      "ext": [
+        ".png"
+      ]
+    }
+  },
+  "defaults": {
+    "width": 1024,
+    "height": 1024,
+    "size_rule": "keep_aspect_area",
+    "size_step": 16,
+    "max_side": 1536
+  },
+  "progress": {
+    "bands": [
+      {
+        "key": "load",
+        "label": "준비",
+        "weight": 15,
+        "nodes": [
+          "57:30",
+          "57:29",
+          "57:28",
+          "57:27",
+          "57:33",
+          "57:13",
+          "57:11"
+        ]
+      },
+      {
+        "key": "gen",
+        "label": "생성",
+        "weight": 75,
+        "nodes": [
+          "57:3"
+        ],
+        "sampler": true
+      },
+      {
+        "key": "finish",
+        "label": "저장",
+        "weight": 10,
+        "nodes": [
+          "57:8",
+          "9"
+        ]
+      }
+    ]
+  },
+  "inspect": {
+    "output": "main",
+    "when": "after_delivery"
+  },
+  "estimate": {
+    "gpu_seconds": 60,
+    "basis": "docs/checklist-2026-10-27.md:24 '1분 안쪽' [추정]"
+  },
+  "limits": {
+    "max_run_seconds": 300
+  }
+}

@@ -31,6 +31,7 @@ settings.studio_progress_min_interval_ms = 0
 settings.studio_inspect = "idle"
 
 REC = recipes.load_all()["wan22_i2v_14b_fast"]
+IMG = recipes.load_all()["zimage_turbo_t2i"]
 USER = {"id": 7, "username": "bob", "active": True}
 ENV = {"id": 3, "slug": "studio-chat", "name": "chat", "username": "studio", "linux_uid": 2001}
 
@@ -90,8 +91,10 @@ class FakeStore:
 
 
 class FakeDeps:
-    def __init__(self, fs, violations=None, outcome="success", fix_changes=True):
+    def __init__(self, fs, violations=None, outcome="success", fix_changes=True, rec=None):
         self.fs, self.violations, self.outcome = fs, violations or [], outcome
+        self.rec = rec or REC
+        self.outcome_seq = []        # 접수마다 차례로 쓸 outcome (없으면 outcome)
         self.calls = []
         self.receivers = {}
         self.queue_rows = []
@@ -114,6 +117,12 @@ class FakeDeps:
         return {"prompt": "P " * 300, "parts": {"a": "x"}, "ko": {"subject": "s"}, "motion": "m", "profile": "wan22_i2v_long",
                 "settings": {"frames": 81, "seconds": 5.0}, "frame": {"subject": "cockpit"}, "violations": self.violations,
                 "length_choice": {"tier": "long", "reason": "자세해서", "by": "rule"}, "crew": None, "rounds": 0}
+
+    async def expand_image(self, user, ip, text, crew=None):
+        self.calls.append(("expand_image", text))
+        await asyncio.sleep(0.02)
+        return {"prompt": "IMG " + text, "body": text, "keep": [], "categories": {}, "people": 1, "violations": [],
+                "rounds": 1, "crew": {"category": "공간", "used": True}, "advice": []}
 
     async def fix(self, user, ip, env, **kw):
         self.calls.append(("fix", kw))
@@ -138,11 +147,13 @@ class FakeDeps:
                              "started_at": None}
         self.fs.by_client[cid] = {"prompt_id": jid, "number": 5, "node_errors": {}}
         self.queue_rows = [{"id": jid, "seq": 5, "state": "queued", "kind": "comfy"}]
-        asyncio.ensure_future(self._drive(jid, cid))
+        outcome = self.outcome_seq.pop(0) if self.outcome_seq else self.outcome
+        asyncio.ensure_future(self._drive(jid, cid, outcome))
         return {"prompt_id": jid, "number": 5, "node_errors": {}}
 
-    async def _drive(self, jid, cid):
+    async def _drive(self, jid, cid, outcome):
         j = self.fs.jobs[jid]
+        bands = self.rec["progress"]["bands"]
         r = self.receivers.get(cid)
         while self.hold:
             await asyncio.sleep(0.01)
@@ -153,23 +164,27 @@ class FakeDeps:
         j["started_at"] = datetime.datetime.now(datetime.timezone.utc)
         if r:
             await r.send_text('{"type":"execution_start","data":{"prompt_id":"%s"}}' % jid)
-            for n in REC["progress"]["bands"][0]["nodes"]:
+            for n in bands[0]["nodes"]:
                 await r.send_text('{"type":"executing","data":{"node":"%s","prompt_id":"%s"}}' % (n, jid))
-            await r.send_text('{"type":"executing","data":{"node":"129:86","prompt_id":"%s"}}' % jid)
-            await r.send_text('{"type":"progress","data":{"node":"129:86","value":2,"max":2,"prompt_id":"%s"}}' % jid)
-            await r.send_text('{"type":"executing","data":{"node":"129:85","prompt_id":"%s"}}' % jid)
-            await r.send_text('{"type":"progress","data":{"node":"129:85","value":2,"max":2,"prompt_id":"%s"}}' % jid)
+            for b in bands:
+                if b.get("sampler"):
+                    for n in b["nodes"]:
+                        await r.send_text('{"type":"executing","data":{"node":"%s","prompt_id":"%s"}}' % (n, jid))
+                        await r.send_text('{"type":"progress","data":{"node":"%s","value":2,"max":2,"prompt_id":"%s"}}' % (n, jid))
         await asyncio.sleep(0.03)
-        if self.outcome == "success":
-            self.fs.outputs[jid] = [{"node_id": "108", "rel_path": "studio/chat/2026-11-12/bob/abcd1234/video_00001_.mp4", "media": "videos"},
-                                    {"node_id": "901", "rel_path": "studio/chat/2026-11-12/bob/abcd1234/check_frame_00001_.png", "media": "images"}]
+        if outcome == "success":
+            if self.rec["action"] == "image":
+                self.fs.outputs[jid] = [{"node_id": "9", "rel_path": "studio/chat/2026-11-12/bob/abcd1234/image_00001_.png", "media": "images"}]
+            else:
+                self.fs.outputs[jid] = [{"node_id": "108", "rel_path": "studio/chat/2026-11-12/bob/abcd1234/video_00001_.mp4", "media": "videos"},
+                                        {"node_id": "901", "rel_path": "studio/chat/2026-11-12/bob/abcd1234/check_frame_00001_.png", "media": "images"}]
             if r:
                 await r.send_text('{"type":"execution_success","data":{"prompt_id":"%s"}}' % jid)
         j["state"] = "cleaning"
         await asyncio.sleep(0.03)
         j["state"] = "finished"
-        j["outcome"] = self.outcome
-        if self.outcome == "error":
+        j["outcome"] = outcome
+        if outcome == "error":
             j["error"] = {"message": "boom"}
         self.queue_rows = []
 
@@ -194,14 +209,19 @@ class FakeDeps:
     async def publish(self, uid, event): self.published.append(event)
 
 
-def new_turn(fs, text="천천히 앞으로 나아가는 영상으로 만들어줘", used_default=False, spec=None, mode=None):
-    att_id = uuid.uuid4()
-    fs.atts[str(att_id)] = {"id": att_id, "media": "image", "input_rel": f"studio/bob/{att_id}.png", "width": 1920, "height": 1080}
-    req = {"text": text, "used_default": used_default, "attachment_ids": [str(att_id)], "spec": spec or {}}
+def new_turn(fs, text="천천히 앞으로 나아가는 영상으로 만들어줘", used_default=False, spec=None, mode=None, rec=None):
+    rec = rec or REC
+    atts = []
+    if rec["action"] != "image":
+        att_id = uuid.uuid4()
+        fs.atts[str(att_id)] = {"id": att_id, "media": "image", "input_rel": f"studio/bob/{att_id}.png", "width": 1920, "height": 1080}
+        atts = [str(att_id)]
+    req = {"text": text, "used_default": used_default, "attachment_ids": atts, "spec": spec or {}}
     if mode:
         req["mode"] = mode
     t = {"id": uuid.uuid4(), "thread_id": uuid.uuid4(), "user_id": 7, "client_ip": "10.0.0.5", "state": "pending",
-         "stage": None, "recipe_id": REC["id"], "recipe_version": 1, "request": req, "work": None, "depends_on": None}
+         "stage": None, "recipe_id": rec["id"], "recipe_version": 1, "request": req, "work": None, "depends_on": None,
+         "action": rec["action"]}
     fs.turns[t["id"]] = t
     return t
 
@@ -435,10 +455,157 @@ async def t_recover_marks_llm_stage_interrupted():
     d = D.Director(deps, {REC["id"]: REC})
     t = new_turn(fs)
     t["state"] = "active"
+    t["work"] = {"resumed": True}         # 이미 한 번 자동 재개했던 요청은 두 번째 재시작에서 멈춘다
     await d.recover()
     assert t["state"] == "interrupted"
     n = [m for m in fs.messages if m["kind"] == "notice"][0]
     assert n["data"]["actions"][0]["id"] == "retry" and "다시 시도" in n["body"]
+
+
+async def t_recover_auto_resumes_llm_stage_once():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    d = D.Director(deps, {REC["id"]: REC})
+    t = new_turn(fs)
+    t["state"] = "active"
+    await d.recover()
+    await settle(d)
+    assert t["state"] == "done", (t["state"], t.get("error"))
+    assert t["work"]["resumed"] is True and ("recovered", {"result": "resumed"}) in fs.events
+    assert [c[0] for c in deps.calls].count("render") == 1
+
+
+async def t_recover_skips_turns_already_running():
+    """허브가 막 열린 사이 pump 가 돌린 요청을 recover 가 다시 돌리면 같은 접수가 두 번 일어난다"""
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    d = D.Director(deps, {REC["id"]: REC})
+    t = new_turn(fs)
+    await d.pump()                     # pump 가 먼저 active 로 옮기고 spawn
+    assert t["state"] == "active" and t["id"] in d.tasks
+    await d.recover()
+    await settle(d)
+    assert t["state"] == "done"
+    names = [c[0] for c in deps.calls]
+    assert names.count("render") == 1 and names.count("submit") == 1, names
+
+
+async def t_new_seed_with_new_aspect_drops_saved_size():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs, rec=IMG)
+    d = D.Director(deps, {IMG["id"]: IMG})
+    src = new_turn(fs, "고양이", rec=IMG)
+    src["state"] = "done"
+    src["work"] = {"prompt": "SAVED", "size": [1024, 1024]}
+    t = new_turn(fs, "하나 더", rec=IMG, mode="new_seed", spec={"aspect": "portrait"})
+    t["request"]["source_turn"] = str(src["id"])
+    await d.pump()
+    await settle(d)
+    p = [c[1] for c in deps.calls if c[0] == "submit"][0]["prompt"]
+    assert p["57:13"]["inputs"]["width"] < p["57:13"]["inputs"]["height"], p["57:13"]["inputs"]
+
+
+async def t_resume_after_prompt_done_skips_llm():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    d = D.Director(deps, {REC["id"]: REC})
+    t = new_turn(fs)
+    t["state"] = "active"
+    t["work"] = {"prompt": "P " * 300, "settings": {"frames": 81, "seconds": 5.0}}
+    await d.recover()
+    await settle(d)
+    assert t["state"] == "done"
+    names = [c[0] for c in deps.calls]
+    assert "render" not in names and "submit" in names, names
+
+
+async def t_image_happy_path():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs, rec=IMG)
+    d = D.Director(deps, {IMG["id"]: IMG})
+    t = new_turn(fs, "비 오는 밤 골목의 작은 카페", rec=IMG)
+    await d.pump()
+    await settle(d)
+    assert t["state"] == "done", (t["state"], t.get("error"), fs.events)
+    names = [c[0] for c in deps.calls]
+    assert names[0] == "expand_image" and "render" not in names and "submit" in names, names
+    body = [c[1] for c in deps.calls if c[0] == "submit"][0]
+    p = body["prompt"]
+    assert p["57:27"]["inputs"]["text"] == "IMG 비 오는 밤 골목의 작은 카페"
+    assert (p["57:13"]["inputs"]["width"], p["57:13"]["inputs"]["height"]) == (1024, 1024)
+    assert p["9"]["inputs"]["filename_prefix"].startswith("bob/" + str(t["id"])[:8] + "/")
+    assert "first_frame" not in IMG["inject"]
+    for k in ("expand", "negative_check", "comfy_submitted", "output", "inspect"):
+        assert k in kinds(fs), (k, kinds(fs))
+    res = [m for m in fs.messages if m["kind"] == "result"][0]
+    assert res["data"]["media"] == "image" and [a["id"] for a in res["data"]["actions"]] == ["to_video", "retry_seed"]
+    a = fs.results[0]
+    assert a["media"] == "image" and a["result_rel"].endswith("image_00001_.png") and "sha256" in a
+    ins = [c[1] for c in deps.calls if c[0] == "inspect"][0]
+    assert ins[0] == "studio" and ins[2] == "image_00001_.png" and ins[3] is None     # 이미지는 결과 파일을 직접 검사
+    stages = [e["progress"]["stage"] for e in deps.published if e["type"] == "turn.progress"]
+    assert "frame" not in stages
+    chips = [e["progress"]["chips"] for e in deps.published if e["type"] == "turn.progress"][0]
+    assert [c["key"] for c in chips] == ["prompt", "generate", "collect"]
+
+
+async def t_image_aspect_and_two_people_notice():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs, rec=IMG)
+    deps.inspect_result = {"ok": True, "issues": [], "traits": [], "people": 1}
+    d = D.Director(deps, {IMG["id"]: IMG})
+    t = new_turn(fs, "세로로 두 사람이 우산을 같이 쓴 그림", spec={"aspect": "portrait"}, rec=IMG)
+    await d.pump()
+    await settle(d)
+    p = [c[1] for c in deps.calls if c[0] == "submit"][0]["prompt"]
+    w, h = p["57:13"]["inputs"]["width"], p["57:13"]["inputs"]["height"]
+    assert w < h and w % 16 == 0 and h % 16 == 0, (w, h)
+    n = [m for m in fs.messages if m["kind"] == "notice"]
+    assert n and "한 몸처럼" in n[0]["body"] and n[0]["data"]["actions"][0]["id"] == "retry_seed",         ([e for e in fs.events if e[0] in ("inspect", "error", "notice")], t["state"])
+
+
+async def t_image_new_seed_reuses_prompt():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs, rec=IMG)
+    d = D.Director(deps, {IMG["id"]: IMG})
+    src = new_turn(fs, "작은 카페", rec=IMG)
+    src["state"] = "done"
+    src["work"] = {"prompt": "SAVED PROMPT", "size": [1024, 1024]}
+    t = new_turn(fs, "작은 카페", rec=IMG, mode="new_seed")
+    t["request"]["source_turn"] = str(src["id"])
+    await d.pump()
+    await settle(d)
+    assert t["state"] == "done"
+    names = [c[0] for c in deps.calls]
+    assert "expand_image" not in names and "submit" in names
+    assert [c[1] for c in deps.calls if c[0] == "submit"][0]["prompt"]["57:27"]["inputs"]["text"] == "SAVED PROMPT"
+
+
+async def t_lost_resubmits_once():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    deps.outcome_seq = ["lost", "success"]
+    d = D.Director(deps, {REC["id"]: REC})
+    t = new_turn(fs)
+    await d.pump()
+    await settle(d)
+    assert t["state"] == "done", (t["state"], t.get("error"))
+    subs = [c[1] for c in deps.calls if c[0] == "submit"]
+    assert len(subs) == 2 and subs[0]["client_id"].endswith("-g1") and subs[1]["client_id"].endswith("-g2")
+    assert "auto_resubmit" in kinds(fs) and t["work"]["lost_retried"] is True
+    assert [c[0] for c in deps.calls].count("render") == 1       # 프롬프트는 다시 쓰지 않는다
+
+
+async def t_lost_twice_fails():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    deps.outcome_seq = ["lost", "lost"]
+    d = D.Director(deps, {REC["id"]: REC})
+    t = new_turn(fs)
+    await d.pump()
+    await settle(d)
+    assert t["state"] == "failed" and t["error"]["code"] == "lost"
+    assert len([c for c in deps.calls if c[0] == "submit"]) == 2
 
 
 def t_unit_helpers():

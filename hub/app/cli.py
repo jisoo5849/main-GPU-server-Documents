@@ -7,6 +7,8 @@
   docker compose exec hub python -m app.cli deactivate alice
   docker compose exec hub python -m app.cli status            # 실행 중·대기 중 작업 수
   docker compose exec hub python -m app.cli restart-editors   # 모든 편집 공간을 새 런타임으로 다시 만들기
+  docker compose exec hub python -m app.cli studio-check      # 채팅 스튜디오 레시피 검사 (V1~V13)
+  docker compose exec hub python -m app.cli studio-import 내보낸파일.json --id 레시피이름 --action image   # Export (API) → 레시피 뼈대
   docker compose exec hub python -m app.cli --by 홍길동 set-password alice --password-stdin   # 실행한 사람 기록
 """
 import argparse
@@ -104,6 +106,9 @@ async def run(args):
         if failed or skipped:
             print(f"실패 {failed}개, 건너뜀 {skipped}개. 나중에 다시: docker compose exec hub python -m app.cli restart-editors")
             sys.exit(1)
+    elif args.cmd == "studio-check":
+        from .studio import admin
+        await admin.studio_check(args)
     elif args.cmd == "deactivate":
         res = await db.execute("UPDATE users SET active=false WHERE username=$1", args.username)
         if res == "UPDATE 0":
@@ -138,7 +143,22 @@ def main():
     c.add_argument("username")
     sub.add_parser("status")
     sub.add_parser("restart-editors")
-    asyncio.run(run(p.parse_args()))
+    c = sub.add_parser("studio-check")
+    c.add_argument("recipes", nargs="*", help="레시피 id (없으면 전부)")
+    c.add_argument("--no-editor", action="store_true", help="편집 공간이 필요한 검사(V11·V12)를 건너뜀")
+    c = sub.add_parser("studio-import")
+    c.add_argument("file", help="ComfyUI 'Export (API)' 로 내보낸 JSON")
+    c.add_argument("--id", required=True, help="레시피 id (영문 소문자·숫자·밑줄 3~48자)")
+    c.add_argument("--action", required=True, choices=["image", "i2v", "t2v", "edit"])
+    c.add_argument("--title")
+    c.add_argument("--out", help="저장 위치 (기본: hub/app/studio/recipes/<id>.json)")
+    c.add_argument("--force", action="store_true", help="이미 있는 파일을 덮어씀")
+    args = p.parse_args()
+    if args.cmd == "studio-import":      # DB 가 필요 없다
+        from .studio import admin
+        admin.studio_import(args)
+        return
+    asyncio.run(run(args))
 
 
 if __name__ == "__main__":

@@ -87,6 +87,29 @@ def write_upload(env: dict, username: str, user_id: int, png: bytes) -> tuple[st
     return att_id, rel, hashlib.sha256(png).hexdigest()
 
 
+def write_sample_png(env: dict) -> str:
+    """레시피 검사(V12)용 64x64 회색 PNG 를 입력 폴더의 studio/_check/sample.png 에 만든다 (Pillow 없이). 경로를 돌려준다"""
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, body: bytes) -> bytes:
+        c = struct.pack(">I", len(body)) + tag + body
+        return c + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF)
+    row = b"\x00" + b"\x80" * 64
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 64, 8, 0, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(row * 64)) + chunk(b"IEND", b""))
+    path = os.path.join(input_dir(env["slug"]), "studio", "_check", "sample.png")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(png)
+    try:
+        os.chmod(path, 0o664)
+        os.chmod(os.path.dirname(path), 0o775)
+    except OSError:
+        pass
+    return path
+
+
 def input_path(env: dict, rel: str) -> str | None:
     base = os.path.realpath(input_dir(env["slug"]))
     p = os.path.realpath(os.path.join(base, rel))
@@ -98,6 +121,38 @@ def result_path(rel: str) -> str | None:
     base = os.path.realpath(settings.results_dir)
     p = os.path.realpath(os.path.join(base, rel))
     return p if p.startswith(base + os.sep) and os.path.isfile(p) else None
+
+
+def fingerprint(rel: str) -> tuple[int | None, str | None]:
+    """결과 파일의 (바이트, sha256). 나중에 파일이 바뀌었는지 비교하려고 결과를 받을 때 남긴다 (5.13, 7.3)"""
+    p = result_path(rel)
+    if p is None:
+        return None, None
+    h = hashlib.sha256()
+    n = 0
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+            n += len(chunk)
+    return n, h.hexdigest()
+
+
+def copy_result_as_input(env: dict, username: str, user_id: int, result_rel: str,
+                         expected_sha: str | None) -> tuple[str, str, str, int, int, int]:
+    """직전 결과 이미지를 입력 폴더로 복사한다 (7.3). (첨부 id, 입력 상대 경로, sha256, 너비, 높이, 바이트).
+    결과 폴더는 누구나 고칠 수 있으므로 결과를 받을 때 남긴 sha256 과 다르면 복사하지 않는다. 다시 인코딩하므로
+    메타데이터도 빠진다."""
+    p = result_path(result_rel)
+    if p is None:
+        raise UploadError("gone", "결과 파일을 찾을 수 없어 이어서 만들 수 없습니다.", 404)
+    with open(p, "rb") as f:
+        data = f.read()
+    if not expected_sha or hashlib.sha256(data).hexdigest() != expected_sha:
+        # 지문이 없는 결과도 바뀌었는지 알 수 없으므로 복사하지 않는다 (결과 폴더는 누구나 고칠 수 있다)
+        raise UploadError("changed", "결과 파일이 바뀌어 이어서 만들 수 없습니다.", 409)
+    png, w, h = process_image(data)
+    att_id, rel, sha = write_upload(env, username, user_id, png)
+    return att_id, rel, sha, w, h, len(png)
 
 
 def mime_of(rel: str) -> str:

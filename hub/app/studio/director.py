@@ -52,7 +52,11 @@ FAIL_TEXT = {
     "no_image": ("사진을 함께 올려 주세요.", []),
     "unavailable": ("이 기능은 지금 준비 중입니다.", []),
     "unsafe": ("이 요청은 만들 수 없습니다.", []),
+    "changed": ("결과 파일이 바뀌어 이어서 만들 수 없습니다.", []),
+    "gone": ("결과 파일을 찾을 수 없어 이어서 만들 수 없습니다.", []),
 }
+TWO_RE = re.compile(r"두\s*(?:사람|명)|둘이|커플|\btwo\b", re.I)
+TO_VIDEO = [{"id": "to_video", "label": "이걸로 영상 만들기"}]
 
 
 class StepError(Exception):
@@ -84,6 +88,8 @@ class Ctx:
         self.client_id: str | None = None
         self.emit_task = None
         self.emit_again = False
+        self.notes: list = []
+        self.req_text = ""          # 사용자가 쓴 요청 글. (text 는 진행 카드에 보이는 글이라 따로 둔다)
 
 
 class Receiver:
@@ -138,6 +144,16 @@ class RealDeps:
     async def render(self, user, ip, env, **kw):
         from .. import video
         return await video.render(user, ip, env["username"], env["slug"], kw.pop("text"), **kw)
+
+    async def expand_image(self, user, ip, text, crew=None):
+        """이미지 프롬프트: 감독이 연 LLM 차례 안에서 제작진 초안 + 확장 (5.5). 차례를 못 얻으면 PromptxError(503)"""
+        from .. import llm, promptx
+        text = promptx.clean_input(text)
+        try:
+            async with llm.llm_turn(user, ip, settings.expand_model, "prompt_expand") as call:
+                return await promptx.expand_in_turn(call, text, "", "", crew)
+        except llm.HelperBusy as e:
+            raise promptx.PromptxError(str(e), 503) from None
 
     async def fix(self, user, ip, env, **kw):
         from .. import video
@@ -390,11 +406,12 @@ class Director:
         ctx = Ctx(turn, user, env, recipe)
         self.ctxs[turn["id"]] = ctx
         req = turn.get("request") or {}
-        ctx.text = req.get("text") or intent.DEFAULT_I2V_TEXT
+        ctx.req_text = req.get("text") or intent.DEFAULT_I2V_TEXT
         ctx.spec = req.get("spec") or {}
-        ctx.first_person = self.deps.pov(ctx.text)
+        ctx.notes = list(req.get("notes") or [])
+        ctx.first_person = self.deps.pov(ctx.req_text)
         ctx.tracker = progress.Tracker(recipe["progress"]["bands"])
-        await store.event(turn["id"], "turn_created", {"chars": len(ctx.text), "attachments": len(req.get("attachment_ids") or []),
+        await store.event(turn["id"], "turn_created", {"chars": len(ctx.req_text), "attachments": len(req.get("attachment_ids") or []),
                                                        "default_text": bool(req.get("used_default"))})
         await store.event(turn["id"], "spec", ctx.spec)
         work = dict(turn.get("work") or {})
@@ -405,23 +422,74 @@ class Director:
         if ctx.job_id is None and resume:
             ctx.job_id = await store.turn_job(turn["id"], "generate")
         if ctx.job_id is None:
-            work = await self._write_prompt(ctx, work)
+            if not (resume and work.get("prompt")):      # 허브 재시작 뒤 자동 재개: 프롬프트가 이미 끝났으면 접수부터 (5.10)
+                if ctx.action == "image":
+                    work = await self._write_image_prompt(ctx, work)
+                else:
+                    work = await self._write_prompt(ctx, work)
             ctx.job_id = await self._submit(ctx, work)
-        await self._watch_job(ctx, work)
+        try:
+            await self._watch_job(ctx, work)
+        except StepError as e:
+            # 실행 공간이 사라져 결과도 없으면 같은 값으로 한 번만 다시 접수한다 (5.10, P2)
+            if e.code != "lost" or work.get("lost_retried") or not work.get("prompt"):
+                raise
+            work["lost_retried"] = True
+            await store.merge_work(turn["id"], {"lost_retried": True})
+            await store.event(turn["id"], "auto_resubmit", {"reason": "lost", "old_job": str(ctx.job_id)})
+            self._release(ctx)
+            ctx.job_id = None
+            ctx.success_signal = False
+            ctx.tracker = progress.Tracker(recipe["progress"]["bands"])
+            ctx.job_id = await self._submit(ctx, work)
+            await self._watch_job(ctx, work)
 
     # ── 프롬프트 만들기 (LLM 차례) ──
-    async def _write_prompt(self, ctx: Ctx, work: dict) -> dict:
+    async def _reuse_prompt(self, ctx: Ctx) -> dict | None:
+        """다시 만들기: 저장된 프롬프트·설정으로 시드만 새로 뽑는다 (LLM 차례 없음)"""
         turn = ctx.turn
         req = turn.get("request") or {}
         if req.get("mode") == "new_seed" and req.get("source_turn"):
             src = await store.get_turn(req["source_turn"], turn["user_id"])
             sw = (src or {}).get("work") or {}
             if sw.get("prompt"):
-                work = {k: sw[k] for k in ("prompt", "parts", "ko", "profile", "length_choice", "settings", "size", "frame_known")
-                        if k in sw}
+                work = {k: sw[k] for k in ("prompt", "parts", "ko", "profile", "length_choice", "settings", "size",
+                                           "frame_known", "crew") if k in sw}
+                new_aspect = (req.get("spec") or {}).get("aspect")
+                if new_aspect and new_aspect != ((src.get("request") or {}).get("spec") or {}).get("aspect"):
+                    work.pop("size", None)      # 다른 비율을 말했으면 크기를 새로 정한다
                 await store.merge_work(turn["id"], work)
                 await store.event(turn["id"], "step_done", {"stage": "prompt", "reused_from": str(req["source_turn"])})
                 return work
+        return None
+
+    async def _write_image_prompt(self, ctx: Ctx, work: dict) -> dict:
+        """이미지: 제작진 초안 + 확장을 LLM 차례 한 번에 (5.5). 27B 한 번이라 첫 화면 읽기는 없다"""
+        turn = ctx.turn
+        reused = await self._reuse_prompt(ctx)
+        if reused:
+            return reused
+        with self.deps.llm_context() as bag:
+            ctx.bag = bag
+            ctx.stage = "prompt"
+            await self.emit(ctx, True)
+            r = await self._guard_llm(ctx, self.deps.expand_image(
+                ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.req_text))
+            for e in bag:
+                await store.event(turn["id"], "llm_job", {k: e.get(k) for k in ("job_id", "purpose", "model", "end")})
+        await store.event(turn["id"], "expand", {"crew": r.get("crew"), "violations": r.get("violations"),
+                                                  "rounds": r.get("rounds"), "advice": r.get("advice"),
+                                                  "people": r.get("people")})
+        work = {"prompt": r["prompt"], "crew": (r.get("crew") or {}).get("category")}
+        await store.merge_work(turn["id"], work)
+        return work
+
+    async def _write_prompt(self, ctx: Ctx, work: dict) -> dict:
+        turn = ctx.turn
+        req = turn.get("request") or {}
+        reused = await self._reuse_prompt(ctx)
+        if reused:
+            return reused
         atts = await store.attachments_of(req.get("attachment_ids") or [])
         img = next((a for a in atts if a["media"] == "image" and a.get("input_rel")), None)
         if img is None:
@@ -436,7 +504,7 @@ class Director:
             ctx.stage = "frame"
             await self.emit(ctx, True)
             r = await self._guard_llm(ctx, self.deps.render(
-                ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.text, notes="", style="",
+                ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text, notes="", style="",
                 profile_id=recipe["video_profile"], seconds=seconds, image=image, image_prompt="",
                 crew=False if used_default else None, read_frame_on=True, auto_length=True))
             f = None
@@ -445,7 +513,7 @@ class Director:
                 ctx.stage = "fix"
                 await self.emit(ctx, True)
                 f = await self._guard_llm(ctx, self.deps.fix(
-                    ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.text, notes="",
+                    ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text, notes="",
                     style="", profile_id=r["profile"], seconds=r["settings"]["seconds"],
                     current={"ko": r["ko"], "parts": r["parts"], "motion": r["motion"]}, frame=r["frame"], scene=""))
             for e in bag:
@@ -527,26 +595,32 @@ class Director:
     async def _submit(self, ctx: Ctx, work: dict) -> str:
         turn, recipe, env = ctx.turn, ctx.recipe, ctx.env
         req = turn.get("request") or {}
-        atts = await store.attachments_of(req.get("attachment_ids") or [])
-        img = next((a for a in atts if a["media"] == "image" and a.get("input_rel")), None)
-        if img is None:
-            raise StepError("no_image")
+        inject = recipe["inject"]
+        img = None
+        if "first_frame" in inject:
+            atts = await store.attachments_of(req.get("attachment_ids") or [])
+            img = next((a for a in atts if a["media"] == "image" and a.get("input_rel")), None)
+            if img is None:
+                raise StepError("no_image")
         settings_ = work.get("settings") or {}
         d = recipe["defaults"]
-        frames = int(settings_.get("frames") or d["frames"])
-        photo = (img.get("width"), img.get("height")) if img.get("width") and img.get("height") else None
+        frames = int(settings_.get("frames") or d.get("frames") or 0) or None
+        photo = (img.get("width"), img.get("height")) if img and img.get("width") and img.get("height") else None
         size = work.get("size")
         if not size:
-            size = list(recipes.default_size(recipe, photo=photo))
-        seed = random.randint(0, recipe["inject"]["seed"].get("max", 2 ** 32))
+            size = list(recipes.default_size(recipe, photo=photo, aspect=(ctx.spec or {}).get("aspect")))
+        seed = random.randint(0, inject["seed"].get("max", 2 ** 32))
         attempt = int((work.get("pending") or {}).get("attempt", 0)) + 1
         client_id = f"studio-{turn['id']}-g{attempt}"
         prefix_slots = recipes.slots_of(recipe, "save_prefix")
-        values = {
-            "prompt": work["prompt"], "first_frame": img["input_rel"], "seed": seed, "frames": frames,
-            "width": size[0], "height": size[1], "check_index": max(0, min(frames // 2, 80)),
-            "save_prefix": [recipes.prefix_value(s, env_user(ctx), ctx.user["id"], str(turn["id"])) for s in prefix_slots],
-        }
+        values = {"prompt": work["prompt"], "seed": seed, "width": size[0], "height": size[1],
+                  "save_prefix": [recipes.prefix_value(s, env_user(ctx), ctx.user["id"], str(turn["id"])) for s in prefix_slots]}
+        if img is not None:
+            values["first_frame"] = img["input_rel"]
+        if "frames" in inject:
+            values["frames"] = frames
+        if "check_index" in inject:
+            values["check_index"] = max(0, min((frames or 0) // 2, 80))
         try:
             prompt = recipes.build(recipe, values)
         except recipes.RecipeError as e:
@@ -559,6 +633,7 @@ class Director:
             raise StepError("submit", problem)
         work["size"], work["seed"] = list(size), seed
         pend = {"client_id": client_id, "attempt": attempt}
+        work["pending"] = pend
         await store.merge_work(turn["id"], {"size": list(size), "seed": seed, "pending": pend})
         ctx.stage = "queue"
         ctx.text = "대기 중"
@@ -601,7 +676,7 @@ class Director:
                                                               "client_id": client_id, "recipe": recipe["id"],
                                                               "version": recipe["version"], "seed": seed,
                                                               "size": list(size), "frames": frames,
-                                                              "first_frame": str(img["id"])})
+                                                              "first_frame": str(img["id"]) if img else None})
         except Exception:  # noqa: BLE001
             log.exception("접수 기록 실패 (작업은 접수됨)")
         tracker = ctx.tracker
@@ -718,14 +793,20 @@ class Director:
         if await store.cancel_requested(turn["id"]):     # 취소 요청 뒤에 끝난 결과는 채팅에 내지 않는다 (5.9)
             await self.finish_state(turn, "cancelled")
             return
-        att_id = await self._add_result(ctx, main)
-        notes = (intent.i2v_notes(ctx.spec) if ctx.spec else [])
+        att_id, media = await self._add_result(ctx, main)
+        notes = list(ctx.notes)
+        if ctx.action == "i2v":
+            notes = intent.i2v_notes(ctx.spec) + notes if ctx.spec else notes
+        elif ctx.action == "image" and ctx.spec.get("aspect") is None:
+            notes = [n for n in notes if n != "영상 비율은 사진 비율을 따릅니다"]
         ctx.stage, ctx.text = "collect", "마무리"
         ctx.tracker.feed("execution_success", {"prompt_id": job_id})
         await self.emit(ctx, True)
-        msg = await self.message(ctx, "assistant", "result", "", {"attachment_ids": [str(att_id)], "notes": notes})
+        actions = (TO_VIDEO if media == "image" else []) + RETRY
+        msg = await self.message(ctx, "assistant", "result", "", {"attachment_ids": [str(att_id)], "notes": notes,
+                                                                  "media": media, "actions": actions})
         await self.finish_state(turn, "done", result={"attachment_ids": [str(att_id)], "message_id": msg["id"],
-                                                      "notices": notes})
+                                                      "notices": notes, "media": media})
         await self._inspect_after(ctx, outs)
 
     async def _add_result(self, ctx: Ctx, main: dict):
@@ -734,18 +815,23 @@ class Director:
         rel = main["rel_path"]
         size = (turn.get("work") or {}).get("size") or []
         frames = ((turn.get("work") or {}).get("settings") or {}).get("frames")
+        media = "video" if main.get("media") in ("video", "videos") or rel.endswith((".mp4", ".webm")) else "image"
+        try:       # 결과 폴더는 누구나 고칠 수 있어, 나중에 바뀌었는지 비교할 지문을 남긴다 (5.13)
+            nbytes, sha = await asyncio.to_thread(files.fingerprint, rel)
+        except OSError:
+            nbytes, sha = None, None
         att = {"id": uuid.uuid4(), "thread_id": turn["thread_id"], "user_id": turn["user_id"], "source": "result",
-               "media": "video" if main.get("media") in ("video", "videos") or rel.endswith((".mp4", ".webm")) else "image",
-               "mime": files.mime_of(rel), "width": size[0] if size else None, "height": size[1] if len(size) > 1 else None,
-               "frames": frames, "result_rel": rel, "job_id": uuid.UUID(str(ctx.job_id)), "meta": None}
+               "media": media, "mime": files.mime_of(rel), "width": size[0] if size else None,
+               "height": size[1] if len(size) > 1 else None, "frames": frames, "bytes": nbytes, "sha256": sha,
+               "result_rel": rel, "job_id": uuid.UUID(str(ctx.job_id)), "meta": None}
         await store.add_attachment(att)
-        return att["id"]
+        return att["id"], media
 
     # ── 결과 검사 (결과를 보낸 뒤, 사용자에게 보이지 않는다) ──
     async def _inspect_after(self, ctx: Ctx, outs: list[dict]):
         mode = settings.studio_inspect
         recipe = ctx.recipe
-        chk = (recipe.get("outputs") or {}).get("check")
+        chk = (recipe.get("outputs") or {}).get((recipe.get("inspect") or {}).get("output") or "check")
         if mode == "off" or not chk or (recipe.get("inspect") or {}).get("when") == "off":
             return
         try:
@@ -766,6 +852,8 @@ class Director:
                     await store.link_job(ctx.tid, e["job_id"], "inspect", e["purpose"])
             await store.event(ctx.tid, "inspect", insp)
             text = notice_for_inspection(insp, ctx.first_person)
+            if text is None and ctx.action == "image" and TWO_RE.search(ctx.req_text) and int(insp.get("people") or 0) < 2:
+                text = "두 사람이 한 몸처럼 붙어 보입니다. 다시 만들어 볼까요?"
             if text:
                 await store.event(ctx.tid, "notice", {"code": "inspect", "text": text})
                 await self.message(ctx.turn, "assistant", "notice", text, {"level": "warn", "actions": RETRY})
@@ -777,6 +865,8 @@ class Director:
         """돌던 요청: ComfyUI 단계에 있었으면 이어서 감시하고, LLM 단계였으면 interrupted. 대기 중 요청은 다시 돌린다 (5.10)"""
         env = await store.studio_env(settings.studio_env_slug)
         for t in await store.active_turns():
+            if t["id"] in self.tasks:      # 허브가 막 열린 사이 pump 가 이미 돌린 요청이다
+                continue
             jid = await store.turn_job(t["id"], "generate")
             if jid is None and env is not None:
                 pend = ((t.get("work") or {}).get("pending") or {}).get("client_id")
@@ -785,6 +875,11 @@ class Director:
                     jid = found["prompt_id"]
                     await store.link_job(t["id"], jid, "generate", t.get("recipe_id"))
             if jid is not None:
+                self.spawn(t, resume=True)
+                continue
+            if not (t.get("work") or {}).get("resumed"):     # P2: 처음 겪는 재시작이면 한 번 자동으로 다시 한다 (5.10)
+                await store.merge_work(t["id"], {"resumed": True})
+                await store.event(t["id"], "recovered", {"result": "resumed"})
                 self.spawn(t, resume=True)
                 continue
             await store.event(t["id"], "recovered", {"result": "interrupted"})

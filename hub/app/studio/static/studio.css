@@ -32,6 +32,7 @@ button { font:inherit; cursor:pointer; }
 .bubble img.thumb { max-height:220px; }
 .notice { border-radius:12px; padding:10px 14px; background:var(--warn-bg); color:var(--warn); }
 .notice.error { background:var(--err-bg); color:var(--err); }
+.bubble .acts { margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; }
 .notice .acts { margin-top:8px; display:flex; gap:8px; }
 .acts button { background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:4px 12px; }
 .note { color:var(--sub); font-size:13px; margin-top:6px; }

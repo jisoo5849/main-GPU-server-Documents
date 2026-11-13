@@ -263,27 +263,95 @@ async def _post_message(request: Request, user: dict, thread: dict):
         return err(429, "too_many_messages", "메시지를 너무 빨리 보내고 있습니다. 잠시 뒤 다시 보내 주세요.")
     shown = "" if used_default else text
     d = state.director
-    # R1 (P1): 첨부가 있으면 i2v. 없으면 정해 둔 안내 (GPU 안 씀)
-    if not att_ids:
-        m = await store.add_message(thread["id"], "user", "text", shown, None, None, cmid)
-        a = await store.add_message(thread["id"], "assistant", "text", "사진을 함께 올려 주세요.", None, None, None)
-        await store.touch_thread(thread["id"], shown[:30] if shown else None)
-        await hub.send(user["id"], {"type": "message.new", "thread_id": str(thread["id"]), "message": _msg(a)})
-        return JSONResponse({"message": _msg(m), "turn": None, "reply": _msg(a)}, status_code=202)
-    recipe = d.recipe_for("i2v") if d else None
-    if recipe is None:
-        return err(503, "studio_not_ready", "이 기능은 지금 준비 중입니다.")
-    m = await store.add_message(thread["id"], "user", "text", shown, {"attachment_ids": att_ids}, None, cmid)
-    got = await store.attach_to_message(att_ids, m["id"], thread["id"], user["id"])
-    if len(got) != len(att_ids):
-        return err(400, "bad_request", "올린 사진을 찾을 수 없습니다. 다시 올려 주세요.")
-    spec = intent.extract_spec(text if not used_default else "")
-    req = {"text": text, "used_default": used_default, "attachment_ids": att_ids, "spec": spec, "mode": "new"}
+    last = await _last_info(thread)
+    dec = intent.decide(text, len(att_ids), last["short"] if last else None, used_default, _video_hint)
+    recipe = d.recipe_for(dec["action"]) if d and dec["action"] != "answer" else None
+    if dec["action"] == "answer" or dec["later"] or recipe is None:
+        # 만들 일이 없거나 아직 없는 기능: 정해 둔 답만 한다 (GPU 안 씀, 5.3·13.1)
+        reply = dec["reply"] if dec["action"] == "answer" else "이 기능은 지금 준비 중입니다."
+        return await _reply_only(user, thread, cmid, shown, att_ids, reply)
+    env = await store.studio_env(settings.studio_env_slug)
+    if env is None:
+        return err(503, "studio_not_ready", state.reason)
+    turn_atts = list(att_ids) if dec["action"] == "i2v" and dec["source"] == "upload" else []
+    if dec["source"] == "last_result":           # R5: 직전 결과 이미지를 입력으로 복사해 첫 화면으로 쓴다 (7.3)
+        try:
+            turn_atts = [await _copy_result_input(env, user, thread, last["att"])]
+        except files.UploadError as ex:
+            return await _reply_only(user, thread, cmid, shown, att_ids, ex.message)
+    if dec["carry"] == "repeat":                 # R6b: 저장된 프롬프트·설정으로 시드만 새로 (다시 만들기와 같다)
+        return await _spawn_retry(request, user, thread, last["turn"], "new_seed", shown or text, cmid,
+                                  {"action": "repeat"}, rule="R6b", spec_over=intent.extract_spec(text))
+    m = await store.add_message(thread["id"], "user", "text", shown,
+                                {"attachment_ids": att_ids} if att_ids and dec["source"] != "last_result" else None, None, cmid)
+    if att_ids and dec["source"] != "last_result":
+        got = await store.attach_to_message(att_ids, m["id"], thread["id"], user["id"])
+        if len(got) != len(att_ids):
+            return err(400, "bad_request", "올린 사진을 찾을 수 없습니다. 다시 올려 주세요.")
+    if turn_atts and dec["source"] == "last_result":
+        await store.attach_to_message(turn_atts, m["id"], thread["id"], user["id"])
+    req_text = text
+    if dec["carry"] == "revise" and last and dec["action"] == "image":     # R6a: 원래 요청 + 이번 말로 다시 확장 (5.8)
+        prev = str(((last["turn"].get("request") or {}).get("text")) or "").strip()
+        req_text = (prev + "\n" + text).strip()[-intent.MAX_TEXT:] if prev else text
+    spec = intent.extract_spec(req_text if not used_default else "")
+    req = {"text": req_text, "used_default": used_default, "attachment_ids": turn_atts, "spec": spec, "mode": "new",
+           "notes": dec["notes"], "rule": dec["rule"], "carry": dec["carry"]}
     turn = await store.create_turn(thread["id"], user["id"], _client_ip(request), req, m["id"], recipe["id"],
-                                   recipe["version"], "i2v")
+                                   recipe["version"], dec["action"])
+    await store.set_decision(turn["id"], {"action": dec["action"], "source": dec["source"], "carry": dec["carry"],
+                                          "by": "rule", "rule": dec["rule"]})
     await store.touch_thread(thread["id"], shown[:30] if shown else None)
     asyncio.ensure_future(d.pump())
     return JSONResponse({"message": _msg(m), "turn": _turn(turn)}, status_code=202)
+
+
+def _video_hint(text: str) -> bool:
+    """카메라·속도·루프 말(crew_lib)과 1인칭 말을 영상 말로 본다 (5.3). 실패해도 규칙은 계속 돈다"""
+    try:
+        from .. import crew_lib, video
+        return bool(crew_lib.query(text).video_demands) or bool(video.pov_wanted(text))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _last_info(thread: dict):
+    """직전 결과: 결과 첨부가 있는 마지막 done 요청 (5.8)"""
+    t = await store.last_result_turn(thread["id"])
+    a = await store.result_attachment(t) if t else None
+    if not t or not a:
+        return None
+    return {"turn": t, "att": a, "short": {"action": t.get("action"), "media": a["media"]}}
+
+
+async def _reply_only(user: dict, thread: dict, cmid, shown: str, att_ids: list, reply: str):
+    """GPU 를 쓰지 않는 답. 사용자 말풍선과 정해 둔 답을 남긴다"""
+    m = await store.add_message(thread["id"], "user", "text", shown, {"attachment_ids": att_ids} if att_ids else None,
+                                None, cmid)
+    if att_ids:
+        await store.attach_to_message(att_ids, m["id"], thread["id"], user["id"])
+    a = await store.add_message(thread["id"], "assistant", "text", reply, None, None, None)
+    await store.touch_thread(thread["id"], shown[:30] if shown else None)
+    await hub.send(user["id"], {"type": "message.new", "thread_id": str(thread["id"]), "message": _msg(a)})
+    return JSONResponse({"message": _msg(m), "turn": None, "reply": _msg(a)}, status_code=202)
+
+
+async def _copy_result_input(env: dict, user: dict, thread: dict, src_att: dict) -> str:
+    """결과 이미지를 입력 폴더로 복사한 새 첨부 id (7.3). 파일이 바뀌었거나 없으면 UploadError"""
+    if not src_att.get("result_rel"):
+        raise files.UploadError("gone", "결과 파일을 찾을 수 없어 이어서 만들 수 없습니다.", 404)
+    att_id, rel, sha, w, h, n = await asyncio.to_thread(files.copy_result_as_input, env, user["username"], user["id"],
+                                                        src_att["result_rel"], src_att.get("sha256"))
+    try:
+        await store.add_attachment({"id": uuid.UUID(att_id), "thread_id": thread["id"], "user_id": user["id"],
+                                    "source": "copy", "media": "image", "mime": "image/png", "width": w, "height": h,
+                                    "bytes": n, "sha256": sha, "input_rel": rel})
+    except Exception:
+        p = files.input_path(env, rel)
+        if p:
+            os.remove(p)
+        raise
+    return att_id
 
 
 async def uploads(request: Request):
@@ -390,11 +458,68 @@ async def turn_retry(request: Request):
         return err(429, "too_many_messages", "잠시 뒤 다시 눌러 주세요.")
     if await store.count_open(user["id"]) >= settings.studio_max_open_per_user:
         return err(429, "too_many_open", "진행 중인 요청이 많습니다. 끝난 뒤 다시 보내 주세요.")
+    thread = await store.get_thread(src["thread_id"], user["id"])
+    if thread is None:
+        return err(404, "not_found", "찾을 수 없습니다.")
+    cmid = None
+    try:
+        cmid = uuid.UUID(str(data["client_msg_id"])) if data.get("client_msg_id") else None
+    except ValueError:
+        cmid = None
+    label = "다시 만들기" if mode == "new_seed" else "다시 시도"
+    return await _spawn_retry(request, user, thread, src, mode, label, cmid, {"action": mode})
+
+
+async def _spawn_retry(request: Request, user: dict, thread: dict, src: dict, mode: str, label: str, cmid,
+                       msg_data: dict, rule: str | None = None, spec_over: dict | None = None):
+    """src 요청을 같은 설정으로 다시 한다 (13.2). mode=new_seed 는 저장된 프롬프트로 시드만 새로, rewrite 는 처음부터"""
     d = state.director
     recipe = d.recipe_for(src.get("action") or "i2v")
     if recipe is None:
         return err(503, "studio_not_ready", "이 기능은 지금 준비 중입니다.")
+    if cmid:
+        dup = await store.find_message_by_client_id(thread["id"], cmid)
+        if dup:
+            return JSONResponse({"message": _msg(dup), "turn": _turn(await store.turn_of_message(dup["id"]))},
+                                status_code=202)
+    m = await store.add_message(thread["id"], "user", "text", label, {**msg_data, "source_turn": str(src["id"])},
+                                None, cmid)
+    sreq = dict(src.get("request") or {})
+    req = {**sreq, "mode": mode, "source_turn": str(src["id"])}
+    if spec_over:      # 이번 글에 비율·길이 지정이 있으면 그것을 따른다
+        req["spec"] = {**(sreq.get("spec") or {}), **{k: v for k, v in spec_over.items() if v and k in ("seconds", "aspect")}}
+    turn = await store.create_turn(thread["id"], user["id"], _client_ip(request), req, m["id"], recipe["id"],
+                                   recipe["version"], src.get("action") or "i2v")
+    await store.set_retry_of(turn["id"], src["id"])
+    if rule:
+        await store.set_decision(turn["id"], {"action": src.get("action"), "source": "none", "carry": "repeat",
+                                              "by": "rule", "rule": rule})
+    asyncio.ensure_future(d.pump())
+    return JSONResponse({"message": _msg(m), "turn": _turn(turn)}, status_code=202)
+
+
+async def turn_to_video(request: Request):
+    """[이걸로 영상 만들기]: 이미지 결과를 입력으로 복사해 이미지→영상을 새로 시작한다 (13.2)"""
+    user, e = await gate(request)
+    if e:
+        return e
+    src = await store.get_turn(request.path_params["id"], user["id"])
+    if src is None:
+        return err(404, "not_found", "찾을 수 없습니다.")
+    a = await store.result_attachment(src) if src["state"] == "done" else None
+    if a is None or a["media"] != "image":
+        return err(409, "state_changed", "이미지 결과에서만 영상으로 이어 만들 수 있습니다.")
+    data = await _json(request) or {}
+    if await store.count_open(user["id"]) >= settings.studio_max_open_per_user:
+        return err(429, "too_many_open", "진행 중인 요청이 많습니다. 끝난 뒤 다시 보내 주세요.")
+    if not _rate_ok(user["id"]):
+        return err(429, "too_many_messages", "잠시 뒤 다시 눌러 주세요.")
+    d = state.director
+    recipe = d.recipe_for("i2v") if d else None
     thread = await store.get_thread(src["thread_id"], user["id"])
+    env = await store.studio_env(settings.studio_env_slug)
+    if recipe is None or env is None:
+        return err(503, "studio_not_ready", "이 기능은 지금 준비 중입니다.")
     if thread is None:
         return err(404, "not_found", "찾을 수 없습니다.")
     cmid = None
@@ -407,14 +532,23 @@ async def turn_retry(request: Request):
         if dup:
             return JSONResponse({"message": _msg(dup), "turn": _turn(await store.turn_of_message(dup["id"]))},
                                 status_code=202)
-    label = "다시 만들기" if mode == "new_seed" else "다시 시도"
-    m = await store.add_message(thread["id"], "user", "text", label, {"action": mode, "source_turn": str(src["id"])},
-                                None, cmid)
-    sreq = dict(src.get("request") or {})
-    req = {**sreq, "mode": mode, "source_turn": str(src["id"])}
+    for x in await store.thread_turns(thread["id"]):     # 같은 결과로 만드는 영상이 이미 도는 중이면 그것을 돌려준다
+        if x["state"] in store.OPEN_STATES and (x.get("request") or {}).get("source_turn") == str(src["id"]) \
+                and x.get("action") == "i2v":
+            return JSONResponse({"message": None, "turn": _turn(x)}, status_code=202)
+    try:
+        att_id = await _copy_result_input(env, user, thread, a)
+    except files.UploadError as ex:
+        return err(ex.status, ex.code, ex.message)
+    m = await store.add_message(thread["id"], "user", "text", "▶ 이걸로 영상 만들기",
+                                {"action": "to_video", "source_turn": str(src["id"])}, None, cmid)
+    await store.attach_to_message([att_id], m["id"], thread["id"], user["id"])
+    req = {"text": intent.DEFAULT_I2V_TEXT, "used_default": True, "attachment_ids": [att_id], "spec": {}, "mode": "new",
+           "source_turn": str(src["id"]), "rule": "button"}
     turn = await store.create_turn(thread["id"], user["id"], _client_ip(request), req, m["id"], recipe["id"],
-                                   recipe["version"], src.get("action") or "i2v")
-    await store.set_retry_of(turn["id"], src["id"])
+                                   recipe["version"], "i2v")
+    await store.set_decision(turn["id"], {"action": "i2v", "source": "last_result", "carry": "new", "by": "button",
+                                          "rule": "to_video"})
     asyncio.ensure_future(d.pump())
     return JSONResponse({"message": _msg(m), "turn": _turn(turn)}, status_code=202)
 

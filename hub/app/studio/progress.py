@@ -6,7 +6,8 @@
 """
 
 # purpose(llm_turn) → 감독 단계 (8.4)
-PURPOSE_STAGE = {"video_frame": "frame", "video_expand": "prompt", "video_fix": "fix", "image_inspect": "inspect"}
+PURPOSE_STAGE = {"video_frame": "frame", "video_expand": "prompt", "video_fix": "fix", "image_inspect": "inspect",
+                 "prompt_expand": "prompt"}
 
 STAGE_TEXT = {
     ("frame", "queued"): "첫 화면 읽기 차례를 기다리는 중",

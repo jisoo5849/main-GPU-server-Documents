@@ -380,3 +380,161 @@ def default_size(recipe: dict, photo: tuple[int, int] | None = None, aspect: str
         a, b = ASPECTS[aspect]
         return size_for(a, b, area, int(d.get("size_step", 16)), int(d.get("max_side", 1024)))
     return int(d["width"]), int(d["height"])
+
+
+# ── 편집 공간이 필요한 검사 V11 (6.4)와 표본 값 V12 ──
+
+SAMPLE_IMAGE = "studio/_check/sample.png"
+EMPTY_LATENTS = {"EmptyLatentImage", "EmptySD3LatentImage", "EmptyHunyuanLatentVideo", "EmptyFlux2LatentImage"}
+
+
+def sample_values(recipe: dict, frames: int | None = None) -> dict:
+    """V12 에 쓰는 표본 값. 검증만 하고 실행하지 않으므로 저장 파일은 생기지 않는다 (6.4)"""
+    d = recipe.get("defaults") or {}
+    f = frames or int(d.get("frames") or 0) or 1
+    inj = recipe.get("inject") or {}
+    vals = {"prompt": "a calm test scene", "seed": 0, "width": int(d.get("width") or 640),
+            "height": int(d.get("height") or 640), "frames": f, "check_index": max(0, min(f // 2, 80)),
+            "first_frame": SAMPLE_IMAGE, "edit_image": SAMPLE_IMAGE}
+    vals["save_prefix"] = [f"_check/00000000/{s['suffix']}" for s in slots_of(recipe, "save_prefix")]
+    return {k: v for k, v in vals.items() if k in inj}
+
+
+def check_object_info(prompt: dict, object_info: dict, accept_missing: bool = True) -> tuple[list, list]:
+    """V11: 모든 class_type 이 /object_info 에 있고 입력 이름이 있는가. (오류, 경고).
+    편집 공간은 CPU 로 떠서 CUDA 가 필요한 노드가 '없는 노드'로 나온다 → accept_missing 이면 경고로 남기고 입력 검사는 건너뛴다.
+    점 이름(format.codec)은 첫 마디가 입력에 있는지만 본다(동적 콤보 안쪽 검사는 하지 않는다 [추정]). API 노드는 거부한다."""
+    errs, warns = [], []
+    for nid, node in prompt.items():
+        ct = node.get("class_type")
+        info = object_info.get(ct)
+        if info is None:
+            (warns if accept_missing else errs).append(
+                f"노드 {nid}: 편집 공간에 {ct} 가 없습니다" + (" (실행 공간에서 확인됩니다)" if accept_missing else ""))
+            continue
+        if info.get("api_node"):
+            errs.append(f"노드 {nid}({ct}) 는 API 노드라 채팅 레시피에 쓸 수 없습니다")
+            continue
+        inputs = info.get("input") or {}
+        known = set((inputs.get("required") or {})) | set((inputs.get("optional") or {}))
+        for name in (node.get("inputs") or {}):
+            if name.split(".")[0] not in known:
+                errs.append(f"노드 {nid}({ct}): 입력 {name} 을 모릅니다")
+    return errs, warns
+
+
+# ── Export (API) 파일에서 레시피 뼈대 만들기 (CLI studio-import, 6.7) ──
+
+def _src_of(prompt: dict, nid: str) -> list[tuple[str, str]]:
+    """nid 노드가 받는 링크 [(입력 이름, 원본 노드 id)]"""
+    return [(k, str(v[0])) for k, v in (prompt[nid].get("inputs") or {}).items() if is_link(v)]
+
+
+def _downstream(prompt: dict, starts: set[str]) -> set[str]:
+    seen, stack = set(), list(starts)
+    while stack:
+        cur = stack.pop()
+        for nid in prompt:
+            if nid not in seen and any(src == cur for _k, src in _src_of(prompt, nid)):
+                seen.add(nid)
+                stack.append(nid)
+    return seen
+
+
+def skeleton_from_api(api: dict, recipe_id: str, action: str, title: str | None = None) -> tuple[dict, list[str]]:
+    """Export (API) JSON 에서 값을 넣을 자리를 찾아 레시피 뼈대를 만든다. (레시피, 사람이 확인할 목록).
+    자동으로 못 찾는 것은 확인 목록에 남긴다. 만든 뒤 check_recipe 로 검사하고 사람이 눈으로 확인해야 한다."""
+    prompt = copy.deepcopy(api)
+    todo: list[str] = []
+    inject: dict = {}
+    fixed: dict = {}
+    texts = [nid for nid, n in prompt.items() if n.get("class_type") in (
+        "CLIPTextEncode", "TextEncodeQwenImageEditPlus", "TextEncodeQwenImageEdit")]
+    pos = [nid for nid in texts if "positive" in roles_of(prompt, nid)]
+    neg = [nid for nid in texts if "negative" in roles_of(prompt, nid) and "positive" not in roles_of(prompt, nid)]
+    zero_out = bool(pos) and "negative_zero" in roles_of(prompt, pos[0])
+    key = "text" if all("text" in prompt[n]["inputs"] for n in pos) else "prompt"
+    if len(pos) == 1:
+        inject["prompt"] = {"node": pos[0], "input": key, "type": "string", "role": "positive", "max_len": 8000}
+    else:
+        todo.append(f"긍정 글 노드를 하나로 정하지 못했습니다 (후보 {pos})")
+    if zero_out:
+        negative_source = "zero_out"
+    else:
+        negative_source = "node"
+        if len(neg) == 1:
+            fixed["negative"] = {"node": neg[0], "input": key, "type": "string", "role": "negative"}
+        else:
+            todo.append(f"부정 글 노드를 하나로 정하지 못했습니다 (후보 {neg})")
+    seeds = [(nid, k) for nid, n in prompt.items() for k in ("noise_seed", "seed")
+             if k in (n.get("inputs") or {}) and not is_link(n["inputs"][k])
+             and str(n["inputs"].get("add_noise", "enable")) != "disable" and "Sampler" in str(n.get("class_type"))]
+    if len(seeds) == 1:
+        inject["seed"] = {"node": seeds[0][0], "input": seeds[0][1], "type": "int", "min": 0, "max": 281474976710655}
+    else:
+        todo.append(f"시드 자리를 하나로 정하지 못했습니다 (후보 {seeds})")
+    sizes = [nid for nid, n in prompt.items() if n.get("class_type") in EMPTY_LATENTS | {"WanImageToVideo"}
+             and all(k in n["inputs"] and not is_link(n["inputs"][k]) for k in ("width", "height"))]
+    defaults = {"size_rule": "keep_aspect_area", "size_step": 16, "max_side": 1024, "fps": 16}
+    if len(sizes) == 1:
+        n = prompt[sizes[0]]["inputs"]
+        inject["width"] = {"node": sizes[0], "input": "width", "type": "int", "min": 256, "max": 1536, "step": 16}
+        inject["height"] = {"node": sizes[0], "input": "height", "type": "int", "min": 256, "max": 1536, "step": 16}
+        defaults.update(width=int(n["width"]), height=int(n["height"]))
+        if action in ("i2v", "t2v"):
+            if "length" in n and not is_link(n["length"]):
+                inject["frames"] = {"node": sizes[0], "input": "length", "type": "int", "min": 5, "max": 81, "step": 4,
+                                    "offset": 1}
+                defaults["frames"] = int(n["length"])
+            else:
+                todo.append("프레임 수(length)가 링크라 자리를 못 만들었습니다. 수식 노드를 지우고 숫자로 바꾸세요")
+    else:
+        todo.append(f"크기 노드를 하나로 정하지 못했습니다 (후보 {sizes})")
+    loads = [nid for nid, n in prompt.items() if n.get("class_type") == "LoadImage"]
+    if action in ("i2v", "edit"):
+        slot = "first_frame" if action == "i2v" else "edit_image"
+        if len(loads) == 1:
+            inject[slot] = {"node": loads[0], "input": "image", "type": "input_image"}
+            prompt[loads[0]]["inputs"]["image"] = SAMPLE_IMAGE
+        else:
+            todo.append(f"LoadImage 를 하나로 정하지 못했습니다 (후보 {loads}). 편집 대상 한 장만 남기세요")
+    saves = [nid for nid, n in prompt.items() if n.get("class_type") in SAVE_NODES]
+    videos = [n for n in saves if prompt[n]["class_type"] == "SaveVideo"]
+    outputs: dict = {}
+    main = videos[0] if len(videos) == 1 else (saves[0] if len(saves) == 1 else None)
+    if main is not None:
+        kind = "video" if prompt[main]["class_type"] == "SaveVideo" else "image"
+        slots = [{"node": main, "input": "filename_prefix", "type": "prefix", "suffix": "video" if kind == "video" else "image"}]
+        outputs = {"main": {"node": main, "kind": kind, "ext": [".mp4", ".webm"] if kind == "video" else [".png"]}}
+        extra = [n for n in saves if n != main]
+        for n in extra:       # 영상 레시피의 검사 프레임 저장 노드 (이미지 저장 노드가 하나일 때만 outputs.check 로 잡는다)
+            slots.append({"node": n, "input": "filename_prefix", "type": "prefix", "suffix": "check_frame"})
+        if len(extra) == 1 and prompt[extra[0]]["class_type"] == "SaveImage":
+            outputs["check"] = {"node": extra[0], "kind": "image", "ext": [".png"]}
+        elif extra:
+            todo.append(f"저장 노드가 더 있습니다 ({extra}). 검사 프레임으로 쓸 하나를 outputs.check 에 정하세요")
+        inject["save_prefix"] = slots
+    else:
+        todo.append(f"저장 노드를 하나로 정하지 못했습니다 (후보 {saves}). main 저장 노드를 정하세요")
+    samplers = [nid for nid, n in prompt.items()
+                if "Sampler" in str(n.get("class_type")) and "Select" not in str(n.get("class_type"))]
+    after = _downstream(prompt, set(samplers)) - set(samplers)
+    bands = [{"key": "load", "label": "준비", "weight": 10, "nodes": [n for n in prompt if n not in set(samplers) | after]}]
+    each = 80 // max(1, len(samplers))
+    for i, nid in enumerate(samplers):
+        bands.append({"key": f"gen{i + 1}", "label": f"생성 {i + 1}/{len(samplers)}" if len(samplers) > 1 else "생성",
+                      "weight": each, "nodes": [nid], "sampler": True})
+    bands.append({"key": "finish", "label": "마무리", "weight": 10, "nodes": sorted(after)})
+    todo += ["limits.max_run_seconds 와 estimate 는 [추정] 값입니다. 메인에서 재서 고치세요",
+             "4스텝 LoRA 같은 빠른 설정은 fixed 에 넣고 prompt 값을 맞추세요 (예: Wan 은 fixed.turbo)"]
+    if action in ("i2v", "t2v"):
+        todo.append("video_profile 을 정하세요 (wan22_i2v_long 등)")
+    recipe = {"schema": "studio-recipe-1", "id": recipe_id, "version": 1, "title": title or recipe_id,
+              "quality_label": "빠름", "action": action, "negative_source": negative_source,
+              "source": {"imported": True, "exported": "studio-import 가 Export (API) 파일에서 만든 뼈대"},
+              "prompt": prompt, "inject": inject, "fixed": fixed, "outputs": outputs, "defaults": defaults,
+              "progress": {"bands": bands}, "inspect": {"output": "main", "when": "after_delivery"},
+              "estimate": {"gpu_seconds": 60, "basis": "[추정]"}, "limits": {"max_run_seconds": 600}}
+    if action in ("i2v", "t2v"):
+        recipe["video_profile"] = "wan22_i2v_long" if action == "i2v" else "wan22_t2v_long"
+    return recipe, todo
