@@ -14,6 +14,13 @@ from ..config import settings
 log = logging.getLogger("mgs.studio")
 
 
+def wants_studio_home(user) -> bool:
+    """로그인 첫 화면을 채팅으로 보낼 사용자인가: users.home 이 'studio' 이고 스튜디오가 켜져 있고 쓸 수 있는 사용자 (D1b)"""
+    if not user or user.get("home") != "studio" or not settings.studio_enabled:
+        return False
+    return not settings.studio_allowed_users or user["username"] in settings.studio_allowed_users or user.get("role") == "admin"
+
+
 def routes() -> list:
     from starlette.routing import Route, WebSocketRoute
 

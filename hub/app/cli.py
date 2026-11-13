@@ -7,6 +7,7 @@
   docker compose exec hub python -m app.cli deactivate alice
   docker compose exec hub python -m app.cli status            # 실행 중·대기 중 작업 수
   docker compose exec hub python -m app.cli restart-editors   # 모든 편집 공간을 새 런타임으로 다시 만들기
+  docker compose exec hub python -m app.cli set-home alice studio   # 로그인 첫 화면을 채팅 스튜디오로 (comfy 면 내 ComfyUI 로 되돌림)
   docker compose exec hub python -m app.cli studio-check      # 채팅 스튜디오 레시피 검사 (V1~V13)
   docker compose exec hub python -m app.cli studio-import 내보낸파일.json --id 레시피이름 --action image   # Export (API) → 레시피 뼈대
   docker compose exec hub python -m app.cli --by 홍길동 set-password alice --password-stdin   # 실행한 사람 기록
@@ -106,6 +107,13 @@ async def run(args):
         if failed or skipped:
             print(f"실패 {failed}개, 건너뜀 {skipped}개. 나중에 다시: docker compose exec hub python -m app.cli restart-editors")
             sys.exit(1)
+    elif args.cmd == "set-home":
+        res = await db.execute("UPDATE users SET home=$2 WHERE username=$1", args.username,
+                               "studio" if args.home == "studio" else None)
+        if res == "UPDATE 0":
+            sys.exit("사용자가 없습니다.")
+        await _log(args, args.username, home=args.home)
+        print(f"{args.username} 의 로그인 첫 화면: {'채팅 스튜디오' if args.home == 'studio' else '내 ComfyUI'}")
     elif args.cmd == "studio-check":
         from .studio import admin
         await admin.studio_check(args)
@@ -143,6 +151,9 @@ def main():
     c.add_argument("username")
     sub.add_parser("status")
     sub.add_parser("restart-editors")
+    c = sub.add_parser("set-home")
+    c.add_argument("username")
+    c.add_argument("home", choices=["studio", "comfy"])
     c = sub.add_parser("studio-check")
     c.add_argument("recipes", nargs="*", help="레시피 id (없으면 전부)")
     c.add_argument("--no-editor", action="store_true", help="편집 공간이 필요한 검사(V11·V12)를 건너뜀")

@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS users (
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 
+-- 로그인 첫 화면: 'studio' 이면 '/' 로 들어와도 채팅 스튜디오로 보낸다 (채팅 스튜디오 설계 D1b). NULL 이면 내 ComfyUI
+ALTER TABLE users ADD COLUMN IF NOT EXISTS home text;
+
 CREATE TABLE IF NOT EXISTS sessions (
     id         text PRIMARY KEY,
     user_id    int NOT NULL REFERENCES users(id),

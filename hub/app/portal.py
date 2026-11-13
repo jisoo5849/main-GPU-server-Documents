@@ -139,6 +139,8 @@ async def root(request: Request):
     user = await current_user(request)
     if user is None:
         return RedirectResponse("/login", 302)
+    if studio.wants_studio_home(user):       # users.home = 'studio': 채팅 스튜디오가 첫 화면 (D1b)
+        return RedirectResponse("/studio", 302)
     env = await default_env(request, user)
     if env is None:
         return back("/portal", "작업공간이 없습니다. 아래에서 새 작업공간을 만드세요.")

@@ -109,6 +109,25 @@ assert sp["seconds"] == 3.0 and sp["aspect"] == "portrait" and sp["sound"] and "
 sp = intent.extract_spec("10초짜리")
 assert sp["seconds"] == 5.0 and any("5초까지" in n for n in sp["notes"])
 
+# ── 로그인 첫 화면 (D1b) ──
+import app.studio as studio_pkg  # noqa: E402
+
+_old = (settings.studio_enabled, settings.studio_allowed_users)
+try:
+    settings.studio_enabled, settings.studio_allowed_users = True, []
+    assert studio_pkg.wants_studio_home({"username": "bob", "role": "user", "home": "studio"})
+    assert not studio_pkg.wants_studio_home({"username": "bob", "role": "user", "home": None})
+    assert not studio_pkg.wants_studio_home({"username": "bob", "role": "user"})       # 열이 없던 옛 행
+    assert not studio_pkg.wants_studio_home(None)
+    settings.studio_allowed_users = ["kim"]
+    assert not studio_pkg.wants_studio_home({"username": "bob", "role": "user", "home": "studio"})   # 시범 사용자가 아니면 ComfyUI
+    assert studio_pkg.wants_studio_home({"username": "kim", "role": "user", "home": "studio"})
+    assert studio_pkg.wants_studio_home({"username": "root", "role": "admin", "home": "studio"})
+    settings.studio_enabled = False
+    assert not studio_pkg.wants_studio_home({"username": "kim", "role": "user", "home": "studio"})   # 스튜디오가 꺼지면 ComfyUI
+finally:
+    settings.studio_enabled, settings.studio_allowed_users = _old
+
 # ── 화면의 길이·비율 칸 (D17) ──
 assert intent.clean_options(None) == {} and intent.clean_options({}) == {}
 assert intent.clean_options({"seconds": "", "aspect": "auto"}) == {}
