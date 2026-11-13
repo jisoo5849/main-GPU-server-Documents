@@ -10,7 +10,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-from . import db, envs, hostops, jobs, models_index, panel, security
+from . import db, envs, hostops, jobs, models_index, panel, security, studio
 from .config import settings
 from .scheduler import scheduler
 
@@ -35,6 +35,9 @@ def env_url(request: Request, port: int) -> str:
 def render(request: Request, name: str, **ctx) -> HTMLResponse:
     ctx.setdefault("user", getattr(request.state, "user", None))
     ctx["host"] = _host(request)
+    u = ctx["user"]
+    ctx["studio_open"] = bool(u) and settings.studio_enabled and (
+        not settings.studio_allowed_users or u["username"] in settings.studio_allowed_users or u["role"] == "admin")
     ctx["flash"] = request.query_params.get("msg")
     return HTMLResponse(_tpl.get_template(name).render(request=request, **ctx))
 
@@ -395,4 +398,5 @@ def build_app() -> Starlette:
         Route("/models", inbox, methods=["GET", "POST"]),
         Route("/admin", admin),
         Route("/admin/{action}", admin_action, methods=["POST"]),
+        *studio.routes(),     # 채팅 스튜디오 (docs/chat-studio-design.md)
     ])

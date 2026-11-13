@@ -50,6 +50,7 @@ code { background:var(--accent-soft); padding:1px 5px; border-radius:4px; font-s
   {% if user %}
   <nav>
     <a href="/">내 ComfyUI</a>
+    {% if studio_open %}<a href="/studio">스튜디오</a>{% endif %}
     <a href="/portal">모델 선택</a>
     <a href="/history">작업 이력</a>
     <a href="/models">모델 추가</a>

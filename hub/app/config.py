@@ -79,6 +79,33 @@ class Settings:
     worker_subnet = _env("WORKER_SUBNET", "172.30.1.0/24")
     worker_name = "mgs-worker"
 
+    # ── 채팅 스튜디오 (docs/chat-studio-design.md 19.3). 기본은 꺼짐 ──
+    studio_enabled = _bool("STUDIO_ENABLED", False)
+    studio_allowed_users = [u.strip() for u in _env("STUDIO_ALLOWED_USERS").split(",") if u.strip()]
+    studio_env_slug = _env("STUDIO_ENV_SLUG", "studio-chat")
+    studio_upload_max_mb = _int("STUDIO_UPLOAD_MAX_MB", 20)
+    studio_upload_max_side = _int("STUDIO_UPLOAD_MAX_SIDE", 4096)
+    studio_upload_store_side = _int("STUDIO_UPLOAD_STORE_SIDE", 2048)
+    studio_upload_quota_mb = _int("STUDIO_UPLOAD_QUOTA_MB", 2048)
+    studio_min_free_gb = _int("STUDIO_MIN_FREE_GB", 50)
+    studio_unsent_hours = _int("STUDIO_UNSENT_HOURS", 24)
+    studio_max_active_per_user = _int("STUDIO_MAX_ACTIVE_PER_USER", 2)
+    studio_max_open_per_user = _int("STUDIO_MAX_OPEN_PER_USER", 5)
+    studio_max_messages_per_min = _int("STUDIO_MAX_MESSAGES_PER_MIN", 10)
+    studio_llm_wait_seconds = _int("STUDIO_LLM_WAIT_SECONDS", 3600)
+    studio_llm_turn_seconds = _int("STUDIO_LLM_TURN_SECONDS", 900)
+    studio_recipe_fail_limit = _int("STUDIO_RECIPE_FAIL_LIMIT", 3)
+    studio_ask_long_seconds = _int("STUDIO_ASK_LONG_SECONDS", 300)
+    studio_plan_ttl_hours = _int("STUDIO_PLAN_TTL_HOURS", 24)
+    studio_inspect = _env("STUDIO_INSPECT", "idle")            # on | idle | off
+    studio_auto_reroll = _int("STUDIO_AUTO_REROLL", 0)
+    studio_progress_min_interval_ms = _int("STUDIO_PROGRESS_MIN_INTERVAL_MS", 500)
+    studio_purge_days = _int("STUDIO_PURGE_DAYS", 30)
+    studio_events_keep_days = _int("STUDIO_EVENTS_KEEP_DAYS", 90)
+    studio_record_events = _bool("STUDIO_RECORD_EVENTS", False)
+    studio_record_dir = _env("STUDIO_RECORD_DIR")
+    studio_llm_hard_wait = 86400                                 # 감독이 차례를 기다리는 절대 상한(코드 상수, 5.6)
+
     session_hours = _int("SESSION_HOURS", 12)
     version_keep_days = _int("VERSION_KEEP_DAYS", 7)
 

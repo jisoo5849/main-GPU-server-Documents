@@ -5,7 +5,7 @@ import socket
 
 import uvicorn
 
-from . import db, dockerctl, envs, gpu, llm, portal, proxy
+from . import db, dockerctl, envs, gpu, llm, portal, proxy, studio
 from .config import settings
 from .scheduler import scheduler
 
@@ -22,7 +22,15 @@ async def startup():
         log.warning("NVML 을 쓸 수 없습니다. GPU 메모리 확인 없이 동작합니다(개발 환경에서만 허용).")
     await dockerctl.ensure_networks()
     await envs.ensure_editors()
+    try:
+        await studio.prepare()      # 스케줄러보다 먼저. 실패해도 허브 시작을 막지 않는다 (5.10)
+    except Exception:  # noqa: BLE001
+        log.exception("스튜디오 준비 실패")
     await scheduler.start()
+    try:
+        await studio.start()
+    except Exception:  # noqa: BLE001
+        log.exception("스튜디오 시작 실패")
     log.info("hub ready: portal :%s, llm :%s, envs :%s-%s", settings.portal_port, settings.llm_port,
              settings.env_port_start, settings.env_port_end)
 

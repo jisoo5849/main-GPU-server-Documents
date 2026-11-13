@@ -140,7 +140,8 @@ async def restart(name: str):
         await asyncio.to_thread(c.restart, timeout=20)
 
 
-def _run_worker(run_path: str, state_path: str, username: str, env_name: str, uid: int, labels: dict):
+def _run_worker(run_path: str, state_path: str, username: str, env_name: str, uid: int, labels: dict,
+                extra_env: dict | None = None):
     _remove(settings.worker_name, timeout=10)
     c = client().containers.run(
         settings.runtime_image,
@@ -148,7 +149,7 @@ def _run_worker(run_path: str, state_path: str, username: str, env_name: str, ui
         name=settings.worker_name,
         detach=True,
         user=f"{uid}:{settings.group_gid}",
-        environment={"MGS_USER": username, "MGS_ENV": env_name},
+        environment={"MGS_USER": username, "MGS_ENV": env_name, **(extra_env or {})},
         volumes=_common_volumes(run_path, state_path),
         network=settings.worker_network,
         extra_hosts={"host.docker.internal": "host-gateway"},
@@ -165,8 +166,8 @@ def _run_worker(run_path: str, state_path: str, username: str, env_name: str, ui
     }
 
 
-async def run_worker(run_path, state_path, username, env_name, uid, labels) -> dict:
-    return await asyncio.to_thread(_run_worker, run_path, state_path, username, env_name, uid, labels)
+async def run_worker(run_path, state_path, username, env_name, uid, labels, extra_env=None) -> dict:
+    return await asyncio.to_thread(_run_worker, run_path, state_path, username, env_name, uid, labels, extra_env)
 
 
 async def is_running(name: str) -> bool:

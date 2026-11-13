@@ -7,6 +7,7 @@
 """
 import asyncio
 import contextlib
+import contextvars
 import ipaddress
 import json
 import logging
@@ -37,6 +38,16 @@ HOP = {"host", "content-length", "connection", "transfer-encoding", "keep-alive"
 
 _client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=10))
 _bg: set = set()
+
+# 채팅 감독(app/studio)이 llm_turn 을 쓸 때만 값이 들어간다. 패널·API 가 부를 때는 비어 있어 동작이 같다 (docs/chat-studio-design.md 9.2)
+STUDIO_JOBS: contextvars.ContextVar = contextvars.ContextVar("studio_jobs", default=None)   # 차례마다 {job_id, purpose, model, end} 를 쌓는 목록
+STUDIO_WAIT: contextvars.ContextVar = contextvars.ContextVar("studio_wait", default=None)   # 차례 기다리는 한도(초). 없으면 helper_wait_seconds
+IN_TURN: contextvars.ContextVar = contextvars.ContextVar("in_turn", default=False)
+
+
+class NestedTurnError(Exception):
+    """차례 안에서 차례를 열려고 함. 자기 차례를 자기가 기다리는 교착이다. RuntimeError 가 아니다:
+    호출부가 RuntimeError 를 Ollama 실패(502)로 바꾸기 때문이다."""
 
 
 def _keep(task):
@@ -249,26 +260,46 @@ async def llm_turn(user, ip: str, model: str, purpose: str, wait_seconds: int | 
     차례가 오면 call(payload) 로 Ollama 를 여러 번 부를 수 있다 (고쳐 쓰기 반복 동안 모델을 다시 올리지 않게).
     끝나면 모델을 내리고 llm_calls 에 한 번 기록한 뒤 대기열을 놓아 준다.
     """
+    if IN_TURN.get():
+        raise NestedTurnError("llm_turn 안에서 llm_turn 을 열 수 없습니다")
     job_id = str(uuid.uuid4())
     waiter = LlmWaiter()
+    entry = {"job_id": job_id, "purpose": purpose, "model": model, "end": None}
+    # 대기자 등록부터 차례 기다리기까지를 한 try 로 묶는다. 어느 길로 빠져나가도 스케줄러가 waiter.done 을 기다리며
+    # 멈추지 않게 한다 (스케줄러는 차례를 넘긴 뒤 done 을 job_max_seconds 동안 기다린다)
     scheduler.llm_waiters[job_id] = waiter
-    async with db.pool.acquire() as conn:
-        await jobs.insert_job(conn, job_id=job_id, kind="llm", user_id=user["id"], client_ip=ip,
-                              api_endpoint="/api/chat", model=model, request={"purpose": purpose})
-    scheduler.wake.set()
-    await jobs.notify_queue_changed()
     try:
-        await asyncio.wait_for(waiter.go.wait(), timeout=wait_seconds or settings.helper_wait_seconds)
-    except (asyncio.TimeoutError, asyncio.CancelledError) as e:
+        async with db.pool.acquire() as conn:
+            await jobs.insert_job(conn, job_id=job_id, kind="llm", user_id=user["id"], client_ip=ip,
+                                  api_endpoint="/api/chat", model=model, request={"purpose": purpose})
+        bag = STUDIO_JOBS.get()
+        if bag is not None:
+            bag.append(entry)
+        scheduler.wake.set()
+        await jobs.notify_queue_changed()
+        await asyncio.wait_for(waiter.go.wait(),
+                               timeout=wait_seconds or STUDIO_WAIT.get() or settings.helper_wait_seconds)
+    except BaseException as e:
+        # 첫 await 전에 스케줄러를 풀어 준다. 이미 차례를 넘겼어도 done 을 보고 바로 정리로 간다
         waiter.cancelled = True
         scheduler.llm_waiters.pop(job_id, None)
+        waiter.result = {"status": 499}
+        waiter.done.set()
+        entry["end"] = ("timeout" if isinstance(e, asyncio.TimeoutError)
+                        else "caller_cancelled" if isinstance(e, asyncio.CancelledError) else "error")
         await asyncio.shield(jobs.cancel_queued(None, [job_id]))
-        if isinstance(e, asyncio.CancelledError):
-            raise
-        raise HelperBusy("GPU 대기열이 길어 차례를 받지 못했습니다. 잠시 뒤 다시 시도하세요.") from None
-    if waiter.cancelled:
+        if isinstance(e, asyncio.TimeoutError):
+            raise HelperBusy("GPU 대기열이 길어 차례를 받지 못했습니다. 잠시 뒤 다시 시도하세요.") from None
+        raise
+    if waiter.cancelled:      # release_waiter 로 깨어남: 관리자 취소 또는 사전 확인 거부
+        msg = waiter.result.get("message", "요청이 취소되었습니다.")    # 499 로 덮기 전에 꺼낸다 (패널 안내 그대로)
         scheduler.llm_waiters.pop(job_id, None)
-        raise HelperBusy(waiter.result.get("message", "요청이 취소되었습니다."))
+        waiter.result = {"status": 499}
+        waiter.done.set()
+        entry["end"] = "cancelled"
+        if await db.fetchval("SELECT outcome FROM jobs WHERE id=$1", uuid.UUID(job_id)) == "rejected":
+            entry["end"] = "rejected"      # 그 밖(NULL·cancelled·error)은 관리자 취소로 본다
+        raise HelperBusy(msg)
 
     t0 = time.monotonic()
     counts = {"prompt_eval_count": 0, "eval_count": 0}
@@ -299,12 +330,18 @@ async def llm_turn(user, ip: str, model: str, purpose: str, wait_seconds: int | 
             counts[k] += int(data.get(k) or 0)
         return data
 
+    token = IN_TURN.set(True)
     try:
         yield call
-    except BaseException:
+    except BaseException as e:
         status = status if status >= 400 else 500
+        if isinstance(e, asyncio.CancelledError):
+            entry["end"] = "caller_cancelled"   # 감독의 실행 기한·사용자 취소·대화 삭제
         raise
     finally:
+        IN_TURN.reset(token)
+        if entry["end"] is None:
+            entry["end"] = "done" if status < 400 else "error"
         # 끝나면 바로 모델을 내린다 (scheduler 의 메모리 해제 확인이 기다리지 않게). 실패해도 대기열은 놓아 준다.
         try:
             await asyncio.shield(_client.post(f"{settings.ollama_upstream}/api/generate",
