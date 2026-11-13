@@ -145,6 +145,17 @@ class RealDeps:
         from .. import video
         return await video.render(user, ip, env["username"], env["slug"], kw.pop("text"), **kw)
 
+    async def write_edit(self, user, ip, text, frame=None):
+        """편집 지시문: 감독이 연 LLM 차례 안에서 영문 한두 문장 (5.5)"""
+        from .. import llm, promptx
+        from . import edit
+        text = promptx.clean_input(text)
+        try:
+            async with llm.llm_turn(user, ip, settings.expand_model, "edit_prompt") as call:
+                return await edit.write_edit_in_turn(call, text, frame)
+        except llm.HelperBusy as e:
+            raise promptx.PromptxError(str(e), 503) from None
+
     async def expand_image(self, user, ip, text, crew=None):
         """이미지 프롬프트: 감독이 연 LLM 차례 안에서 제작진 초안 + 확장 (5.5). 차례를 못 얻으면 PromptxError(503)"""
         from .. import llm, promptx
@@ -425,6 +436,8 @@ class Director:
             if not (resume and work.get("prompt")):      # 허브 재시작 뒤 자동 재개: 프롬프트가 이미 끝났으면 접수부터 (5.10)
                 if ctx.action == "image":
                     work = await self._write_image_prompt(ctx, work)
+                elif ctx.action == "edit":
+                    work = await self._write_edit_prompt(ctx, work)
                 else:
                     work = await self._write_prompt(ctx, work)
             ctx.job_id = await self._submit(ctx, work)
@@ -484,18 +497,46 @@ class Director:
         await store.merge_work(turn["id"], work)
         return work
 
+    async def _write_edit_prompt(self, ctx: Ctx, work: dict) -> dict:
+        """편집: 영문 편집 지시문을 LLM 차례 한 번에 쓴다 (5.5)"""
+        turn = ctx.turn
+        reused = await self._reuse_prompt(ctx)
+        if reused:
+            return reused
+        with self.deps.llm_context() as bag:
+            ctx.bag = bag
+            ctx.stage = "prompt"
+            await self.emit(ctx, True)
+            r = await self._guard_llm(ctx, self.deps.write_edit(
+                ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.req_text))
+            for e in bag:
+                await store.event(turn["id"], "llm_job", {k: e.get(k) for k in ("job_id", "purpose", "model", "end")})
+        await store.event(turn["id"], "edit_prompt", {"violations": r.get("violations"), "rounds": r.get("rounds")})
+        if not (r.get("prompt") or "").strip():
+            raise StepError("llm_error", "편집 지시문을 만들지 못했습니다")
+        work = {"prompt": r["prompt"]}
+        await store.merge_work(turn["id"], work)
+        return work
+
     async def _write_prompt(self, ctx: Ctx, work: dict) -> dict:
         turn = ctx.turn
         req = turn.get("request") or {}
         reused = await self._reuse_prompt(ctx)
         if reused:
             return reused
-        atts = await store.attachments_of(req.get("attachment_ids") or [])
-        img = next((a for a in atts if a["media"] == "image" and a.get("input_rel")), None)
-        if img is None:
-            raise StepError("no_image")
-        image = {"filename": img["input_rel"].split("/")[-1], "subfolder": "/".join(img["input_rel"].split("/")[:-1]),
-                 "type": "input"}
+        image = None
+        if ctx.action == "i2v":
+            atts = await store.attachments_of(req.get("attachment_ids") or [])
+            img = next((a for a in atts if a["media"] == "image" and a.get("input_rel")), None)
+            if img is None:
+                raise StepError("no_image")
+            image = {"filename": img["input_rel"].split("/")[-1],
+                     "subfolder": "/".join(img["input_rel"].split("/")[:-1]), "type": "input"}
+        reuse_frame = None
+        if req.get("reuse_frame_of"):       # 영상 고치기: 앞 요청이 읽어 둔 첫 화면을 다시 쓴다 (8B 차례를 아낀다)
+            src = await store.get_turn(req["reuse_frame_of"], turn["user_id"])
+            fr = ((src or {}).get("work") or {}).get("frame")
+            reuse_frame = fr if fr and self.deps.frame_known(fr) else None     # 읽기에 실패한 빈 결과는 다시 읽는다
         seconds = (ctx.spec or {}).get("seconds")
         used_default = bool(req.get("used_default"))
         recipe = ctx.recipe
@@ -506,7 +547,7 @@ class Director:
             r = await self._guard_llm(ctx, self.deps.render(
                 ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text, notes="", style="",
                 profile_id=recipe["video_profile"], seconds=seconds, image=image, image_prompt="",
-                crew=False if used_default else None, read_frame_on=True, auto_length=True))
+                crew=False if used_default else None, read_frame_on=True, auto_length=True, frame=reuse_frame))
             f = None
             if needs_fix(r.get("violations")):
                 ctx.has_fix = True
@@ -515,7 +556,8 @@ class Director:
                 f = await self._guard_llm(ctx, self.deps.fix(
                     ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text, notes="",
                     style="", profile_id=r["profile"], seconds=r["settings"]["seconds"],
-                    current={"ko": r["ko"], "parts": r["parts"], "motion": r["motion"]}, frame=r["frame"], scene=""))
+                    current={"ko": r["ko"], "parts": r["parts"], "motion": r["motion"]}, frame=r["frame"],
+                    scene=r.get("scene") or ""))
             for e in bag:
                 await store.event(turn["id"], "llm_job", {k: e.get(k) for k in ("job_id", "purpose", "model", "end")})
         final = f["prompt"] if f and f.get("changed") else r["prompt"]
@@ -528,7 +570,8 @@ class Director:
             await store.event(turn["id"], "fix", {k: f.get(k) for k in ("before_ko", "violations", "words_before",
                                                                         "words_after", "rounds", "changed", "fixed")})
         work = {"prompt": final, "parts": (f or r).get("parts"), "ko": (f or r).get("ko"), "profile": r.get("profile"),
-                "length_choice": r.get("length_choice"), "settings": r.get("settings"), "frame_known": frame_ok}
+                "length_choice": r.get("length_choice"), "settings": r.get("settings"), "frame_known": frame_ok,
+                "frame": r.get("frame")}
         await store.merge_work(turn["id"], work)
         return work
 
@@ -597,7 +640,8 @@ class Director:
         req = turn.get("request") or {}
         inject = recipe["inject"]
         img = None
-        if "first_frame" in inject:
+        img_slot = "first_frame" if "first_frame" in inject else ("edit_image" if "edit_image" in inject else None)
+        if img_slot:
             atts = await store.attachments_of(req.get("attachment_ids") or [])
             img = next((a for a in atts if a["media"] == "image" and a.get("input_rel")), None)
             if img is None:
@@ -607,16 +651,20 @@ class Director:
         frames = int(settings_.get("frames") or d.get("frames") or 0) or None
         photo = (img.get("width"), img.get("height")) if img and img.get("width") and img.get("height") else None
         size = work.get("size")
-        if not size:
+        if "width" not in inject:
+            size = []        # 편집은 입력 사진 크기를 따른다 (크기 자리가 없다)
+        elif not size:
             size = list(recipes.default_size(recipe, photo=photo, aspect=(ctx.spec or {}).get("aspect")))
         seed = random.randint(0, inject["seed"].get("max", 2 ** 32))
         attempt = int((work.get("pending") or {}).get("attempt", 0)) + 1
         client_id = f"studio-{turn['id']}-g{attempt}"
         prefix_slots = recipes.slots_of(recipe, "save_prefix")
-        values = {"prompt": work["prompt"], "seed": seed, "width": size[0], "height": size[1],
+        values = {"prompt": work["prompt"], "seed": seed,
                   "save_prefix": [recipes.prefix_value(s, env_user(ctx), ctx.user["id"], str(turn["id"])) for s in prefix_slots]}
+        if size:
+            values["width"], values["height"] = size[0], size[1]
         if img is not None:
-            values["first_frame"] = img["input_rel"]
+            values[img_slot] = img["input_rel"]
         if "frames" in inject:
             values["frames"] = frames
         if "check_index" in inject:

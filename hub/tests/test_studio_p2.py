@@ -42,9 +42,9 @@ assert (r["rule"], r["action"], r["attachment_role"]) == ("R2b", "image", "refer
 # R3: 첨부 + 영상 말, R10: 첨부 + 모호한 말은 i2v (D19 기본값)
 assert rule("영상으로 만들어줘", 1) == "R3" and rule("그냥 이렇게", 1) == "R10"
 assert d("그냥 이렇게", 1)["action"] == "i2v"
-# R4: 첨부 + 편집 말 (P3)
+# R4: 첨부 + 편집 말. 레시피가 없으면 api 가 '준비 중' 으로 끝낸다 (later 는 쓰지 않는다)
 r = d("이 사진을 수채화 스타일로 바꿔줘", 1)
-assert (r["rule"], r["action"], r["later"]) == ("R4", "edit", True)
+assert (r["rule"], r["action"], r["source"], r["later"]) == ("R4", "edit", "upload", False)
 # R5: 이미지 결과 + 가리키는 말 + 영상 말 → i2v·last_result. 영상 결과 뒤는 아님
 r = d("이걸로 영상 만들어줘", 0, IMG)
 assert (r["rule"], r["action"], r["source"], r["later"]) == ("R5", "i2v", "last_result", False)
@@ -58,17 +58,17 @@ assert d("하나 더", 0, IMG)["action"] == "image" and d("한 번 더", 0, VID)
 r = d("더 밝게", 0, IMG)
 assert (r["rule"], r["action"], r["carry"], r["later"]) == ("R6a", "image", "revise", False)
 r = d("더 천천히", 0, VID)
-assert (r["rule"], r["carry"], r["later"]) == ("R6", "revise", True)
+assert (r["rule"], r["action"], r["carry"], r["later"]) == ("R6", "i2v", "revise", False)
 # R7: 이미지 결과 + 편집 말 → P3. R7b: 영상 결과 + 편집 말 → i2v 면 정해 둔 답, t2v 면 revise(P3)
 r = d("배경만 노을로 바꿔줘", 0, IMG)
-assert (r["rule"], r["action"], r["later"]) == ("R7", "edit", True)
+assert (r["rule"], r["action"], r["source"], r["later"]) == ("R7", "edit", "last_result", False)
 r = d("배경 바꿔줘", 0, VID)
 assert (r["rule"], r["action"], r["reply"]) == ("R7b", "answer", intent.ANSWER_I2V_EDIT)
 r = d("배경 바꿔줘", 0, VID_T2V)
-assert (r["rule"], r["action"], r["later"]) == ("R7b", "t2v", True)
+assert (r["rule"], r["action"], r["carry"], r["later"]) == ("R7b", "t2v", "revise", False)
 # R8: 첨부 없음 + 영상 말 → t2v (P3). R9: 그 밖 → image
 r = d("바다 위를 나는 드론 영상")
-assert (r["rule"], r["action"], r["later"]) == ("R8", "t2v", True)
+assert (r["rule"], r["action"], r["later"]) == ("R8", "t2v", False)
 for t in ("비 오는 밤 골목의 작은 카페", "향수병 광고 사진", "니키가 나침반을 들고 있는 그림"):
     r = d(t)
     assert (r["rule"], r["action"], r["later"]) == ("R9", "image", False), t
@@ -93,6 +93,15 @@ assert rule("영상으로 다시 만들어줘", 0, IMG) == "R5"                 
 assert rule("배경에 벚꽃을 넣어서 그려줘", 0, IMG) == "R9"                          # 새 그림 요청이지 편집이 아니다
 assert rule("배경에 벚꽃을 넣어줘", 0, IMG) == "R7"
 assert rule("배경만 노을로 바꿔서 그려줘", 0, IMG) == "R7"                         # 강한 편집 말은 그려줘 가 있어도 편집
+
+# P3 검토: 영상 뒤의 새 그림 요청을 고치기로 가로채지 않는다
+VIDI = {"media": "video", "action": "i2v"}
+assert rule("더 큰 파도가 치는 바다 그림 그려줘", 0, VIDI) == "R9"
+assert rule("고양이 그림 다시 그려줘 더 귀엽게", 0, VIDI) == "R9"
+assert rule("새로 고양이 영상 만들어줘 더 빠르게", 0, VIDI) == "R8"
+assert rule("배경을 바꿔서 그려줘", 0, VIDI) == "R9"
+assert rule("더 천천히", 0, VIDI) == "R6" and rule("더 천천히 만들어줘", 0, VIDI) == "R6"
+assert rule("새로 더 밝게 그려줘", 0, IMG) == "R9"
 
 # 글에 든 길이·비율·소리
 sp = intent.extract_spec("세로로 3초 동안 소리 있게")
@@ -175,4 +184,41 @@ try:
     raise AssertionError("없는 파일은 거부")
 except files.UploadError as e:
     assert e.code == "gone"
+# ── 편집 지시문 (5.5) ──
+import asyncio  # noqa: E402
+import json  # noqa: E402
+
+from app.studio import edit  # noqa: E402
+
+GOOD = "Replace the background with a warm sunset sky and keep the person, pose and lighting on the person unchanged."
+assert edit.check(GOOD) == []
+assert any("English only" in p for p in edit.check("배경을 노을로 바꾸기. Replace the background with a warm sunset sky now"))
+assert any("negative" in p for p in edit.check("Replace the background with a sunset sky and do not change the person at all"))
+assert any("text" in p.lower() for p in edit.check("Replace the background with a sunset sky and add a big text logo on the wall"))
+assert any("words" in p for p in edit.check("Make it warm."))
+assert any("words" in p for p in edit.check(" ".join(["word"] * 70)))
+assert edit.check("") == ["The instruction is empty."]
+SIGN = "Replace the sign on the shop with a wooden plank and keep the shop front unchanged."
+assert any("text" in p.lower() for p in edit.check(SIGN, "가게를 더 예쁘게 바꿔줘"))
+assert edit.check(SIGN, "간판을 나무판으로 바꿔줘") == []                  # 사용자가 간판을 말했으면 허용
+m = edit.build_messages("배경만 노을로", {"subject": "a girl", "environment": "street"})
+assert "a girl" in m[1]["content"] and "배경만 노을로" in m[1]["content"] and m[0]["role"] == "system"
+
+
+async def run_edit(replies):
+    seen = []
+
+    async def call(payload):
+        seen.append(payload)
+        return {"message": {"content": json.dumps({"prompt": replies[min(len(seen) - 1, len(replies) - 1)]})}}
+    return await edit.write_edit_in_turn(call, "배경만 노을로 바꿔줘"), seen
+
+
+r, seen = asyncio.run(run_edit([GOOD]))
+assert r["prompt"] == GOOD and r["violations"] == [] and r["rounds"] == 1 and len(seen) == 1
+r, seen = asyncio.run(run_edit(["배경 노을", GOOD]))                 # 걸리면 한 번 고쳐 쓴다
+assert r["prompt"] == GOOD and r["violations"] == [] and r["rounds"] == 2 and len(seen) == 2
+assert "Fix these problems" in seen[1]["messages"][-1]["content"]
+r, seen = asyncio.run(run_edit(["배경 노을", "여전히 한글"]))         # 그래도 걸리면 위반만 남기고 끝낸다
+assert r["violations"] and r["rounds"] == 2 and len(seen) == 2
 print("ok studio_p2")

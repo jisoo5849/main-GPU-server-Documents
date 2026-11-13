@@ -80,6 +80,7 @@ VIDEO_RE = re.compile(r"동영상|영상|비디오|움직이게|움직이는(?!\
 STRONG_EDIT_RE = re.compile(r"바꿔|바꾸|지워|지우|없애|빼줘|빼고|고쳐|편집|배경만|색만")
 WEAK_EDIT_RE = re.compile(r"추가해|넣어")      # "배경에 벚꽃을 넣어서 그려줘" 는 새 그림 요청이다
 DRAW_RE = re.compile(r"그려|그리|만들어|생성")
+NEWPIC_RE = re.compile(r"그려|그리|새로")      # 영상 뒤에 이 말이 있으면 고치기가 아니라 새 요청이다 ("더 큰 파도가 치는 바다 그림 그려줘")
 MAKE_RE = re.compile(r"만들|그려|그리|바꿔|바꾸|생성")
 GREET_RE = re.compile(r"안녕|고마워|고맙|감사|도움말|뭐\s*할\s*수\s*있")
 ASK_RE = re.compile(r"[?？]|왜|어떻게|뭐야|보여\s*줘|알려\s*줘")
@@ -122,23 +123,23 @@ def decide(text: str, n_attachments: int, last: dict | None = None, used_default
     if att and is_video_word:                                                 # R3
         return out("R3", "i2v", "upload", role="first_frame")
     if att and is_edit_word:                                                  # R4 (P3)
-        return out("R4", "edit", "upload", role="edit_target", later=True)
+        return out("R4", "edit", "upload", role="edit_target")
     if not att and is_video_word and last_media == "image" and (POINT_RE.search(t) or REPEAT_RE.search(t)):   # R5
         return out("R5", "i2v", "last_result", role="first_frame")
     if not att and last and REPEAT_RE.search(t):                              # R6b
         return out("R6b", last.get("action") or "image", "none", "repeat")
-    if not att and last_media == "video" and REVISE_RE.search(t) and not is_edit_word:   # R6 (P3)
-        return out("R6", last.get("action") or "i2v", "none", "revise", later=True)
-    if not att and last_media == "image" and REVISE_RE.search(t) and not is_edit_word:   # R6a
+    if not att and last_media == "video" and REVISE_RE.search(t) and not is_edit_word and not NEWPIC_RE.search(t):   # R6
+        return out("R6", last.get("action") or "i2v", "none", "revise")
+    if not att and last_media == "image" and REVISE_RE.search(t) and not is_edit_word and "새로" not in t:   # R6a
         return out("R6a", "image", "none", "revise")
     if not att and last_media == "image" and is_edit_word:                    # R7 (P3)
-        return out("R7", "edit", "last_result", role="edit_target", later=True)
-    if not att and last_media == "video" and is_edit_word:                    # R7b
+        return out("R7", "edit", "last_result", role="edit_target")
+    if not att and last_media == "video" and is_edit_word and not NEWPIC_RE.search(t):   # R7b
         if last.get("action") == "t2v":
-            return out("R7b", "t2v", "none", "revise", later=True)
+            return out("R7b", "t2v", "none", "revise")
         return out("R7b", "answer", reply=ANSWER_I2V_EDIT)
     if not att and is_video_word:                                             # R8 (P3)
-        return out("R8", "t2v", later=True)
+        return out("R8", "t2v")
     if not att:                                                               # R9
         return out("R9", "image")
     return out("R10", "i2v", "upload", role="first_frame")                    # R10 기본값 (D19)

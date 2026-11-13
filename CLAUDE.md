@@ -53,7 +53,7 @@
 | `hub/app/crew.py` + `crew_knowledge.json` | 제작진 모드(B2): 제품·공간·풍경 요청에 분야별 전문가 지식 초안을 도우미 앞에 붙임. `docs/crew-mode.md` |
 | `hub/app/crew_lib.py` + `crew_library/` + `crew_intent.json` | 선택지 라이브러리(12,744항목) 메뉴 뽑기, 사용자 의도(반드시 지킬 말) 추출. 제작진·도우미·영상 렌더러 공용 |
 | `hub/app/video.py` + `video_knowledge.json` | 영상 렌더러: 요청 + 첫 화면(시각 모델) → 영상 모델용 프롬프트와 프레임 제안 (Wan 2.2 I2V·T2V). 기본은 장문 프로필(러다이트식 네 단락), 움직임만 프로필도 남김. `docs/video-renderer.md` |
-| `hub/app/studio/` | 채팅 스튜디오(러다이트식 채팅 화면 + 백그라운드 자동화). `director.py`(감독: 요청 → 영상 렌더러 → 레시피 값 넣기 → 접수 → 진행 감시 → 결과), `recipes.py`·`recipes/*.json`(API 형식 워크플로우 + 값 넣을 자리, 검증), `progress.py`(진행 % 계산), `api.py`·`ws.py`(REST·WebSocket), `store.py`(DB), `files.py`(업로드·결과 파일), `intent.py`(의도 규칙 R0~R10·길이 지정), `admin.py`(CLI `studio-check`·`studio-import`), `static/`(채팅 화면). 설계 `docs/chat-studio-design.md`(chat-studio-design 브랜치). P1 메인 시험 통과, P2(이미지 생성·이걸로 영상) 구현 중, 기본은 꺼짐(`STUDIO_ENABLED`) |
+| `hub/app/studio/` | 채팅 스튜디오(러다이트식 채팅 화면 + 백그라운드 자동화). `director.py`(감독: 요청 → 영상 렌더러 → 레시피 값 넣기 → 접수 → 진행 감시 → 결과), `recipes.py`·`recipes/*.json`(API 형식 워크플로우 + 값 넣을 자리, 검증), `progress.py`(진행 % 계산), `api.py`·`ws.py`(REST·WebSocket), `store.py`(DB), `files.py`(업로드·결과 파일), `intent.py`(의도 규칙 R0~R10·길이 지정), `admin.py`(CLI `studio-check`·`studio-import`), `static/`(채팅 화면). 설계 `docs/chat-studio-design.md`(chat-studio-design 브랜치). P1 메인 시험 통과, P2(이미지 생성·이걸로 영상) 구현 완료, P3(글→영상·이미지 편집·영상 고치기) 코드 구현(`edit.py`), T2V·편집 레시피는 메인 Export 대기, 기본은 꺼짐(`STUDIO_ENABLED`) |
 | `hub/app/envs.py` | 작업공간 생성·복제·되돌리기, 스냅샷 버전, Manager 설치 중 감지, 오래된 버전 정리 |
 | `hub/app/dockerctl.py` | 편집 공간(GPU 없음)·실행 공간(GPU, 최대 1개) 컨테이너, 네트워크(icc=false) |
 | `hub/app/gpu.py` | NVML 측정, PID → 컨테이너 매핑 |

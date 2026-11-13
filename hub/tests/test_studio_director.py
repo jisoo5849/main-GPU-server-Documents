@@ -4,6 +4,7 @@
 """
 import asyncio
 import contextlib
+import copy
 import datetime
 import inspect
 import os
@@ -32,6 +33,16 @@ settings.studio_inspect = "idle"
 
 REC = recipes.load_all()["wan22_i2v_14b_fast"]
 IMG = recipes.load_all()["zimage_turbo_t2i"]
+# P3 레시피는 메인에서 내보낸 파일이 오기 전이라 기존 레시피를 고쳐 시험용으로 만든다 (감독 코드만 본다)
+T2V = copy.deepcopy(REC)
+T2V.update(id="wan22_t2v_test", action="t2v", video_profile="wan22_t2v_long")
+del T2V["inject"]["first_frame"], T2V["prompt"]["97"]
+del T2V["prompt"]["129:98"]["inputs"]["start_image"]
+EDIT = copy.deepcopy(IMG)
+EDIT.update(id="qwen_edit_test", action="edit")
+EDIT["prompt"]["41"] = {"class_type": "LoadImage", "inputs": {"image": "studio/_check/sample.png"}}
+EDIT["inject"]["edit_image"] = {"node": "41", "input": "image", "type": "input_image"}
+del EDIT["inject"]["width"], EDIT["inject"]["height"]
 USER = {"id": 7, "username": "bob", "active": True}
 ENV = {"id": 3, "slug": "studio-chat", "name": "chat", "username": "studio", "linux_uid": 2001}
 
@@ -118,6 +129,12 @@ class FakeDeps:
                 "settings": {"frames": 81, "seconds": 5.0}, "frame": {"subject": "cockpit"}, "violations": self.violations,
                 "length_choice": {"tier": "long", "reason": "자세해서", "by": "rule"}, "crew": None, "rounds": 0}
 
+    async def write_edit(self, user, ip, text, frame=None):
+        self.calls.append(("write_edit", text))
+        await asyncio.sleep(0.02)
+        return {"prompt": "Replace the background with a warm sunset sky and keep the person unchanged", "violations": [],
+                "rounds": 1}
+
     async def expand_image(self, user, ip, text, crew=None):
         self.calls.append(("expand_image", text))
         await asyncio.sleep(0.02)
@@ -173,7 +190,7 @@ class FakeDeps:
                         await r.send_text('{"type":"progress","data":{"node":"%s","value":2,"max":2,"prompt_id":"%s"}}' % (n, jid))
         await asyncio.sleep(0.03)
         if outcome == "success":
-            if self.rec["action"] == "image":
+            if self.rec["action"] in ("image", "edit"):
                 self.fs.outputs[jid] = [{"node_id": "9", "rel_path": "studio/chat/2026-11-12/bob/abcd1234/image_00001_.png", "media": "images"}]
             else:
                 self.fs.outputs[jid] = [{"node_id": "108", "rel_path": "studio/chat/2026-11-12/bob/abcd1234/video_00001_.mp4", "media": "videos"},
@@ -212,7 +229,7 @@ class FakeDeps:
 def new_turn(fs, text="천천히 앞으로 나아가는 영상으로 만들어줘", used_default=False, spec=None, mode=None, rec=None):
     rec = rec or REC
     atts = []
-    if rec["action"] != "image":
+    if rec["action"] in ("i2v", "edit"):
         att_id = uuid.uuid4()
         fs.atts[str(att_id)] = {"id": att_id, "media": "image", "input_rel": f"studio/bob/{att_id}.png", "width": 1920, "height": 1080}
         atts = [str(att_id)]
@@ -503,6 +520,97 @@ async def t_new_seed_with_new_aspect_drops_saved_size():
     await settle(d)
     p = [c[1] for c in deps.calls if c[0] == "submit"][0]["prompt"]
     assert p["57:13"]["inputs"]["width"] < p["57:13"]["inputs"]["height"], p["57:13"]["inputs"]
+
+
+async def t_t2v_flow_has_no_image():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs, rec=T2V)
+    d = D.Director(deps, {T2V["id"]: T2V})
+    t = new_turn(fs, "바다 위를 나는 드론 영상", rec=T2V, spec={"aspect": "portrait"})
+    await d.pump()
+    await settle(d)
+    assert t["state"] == "done", (t["state"], t.get("error"), fs.events)
+    r = [c[1] for c in deps.calls if c[0] == "render"][0]
+    assert r["image"] is None and r["profile_id"] == "wan22_t2v_long" and r["frame"] is None
+    p = [c[1] for c in deps.calls if c[0] == "submit"][0]["prompt"]
+    w, h = p["129:98"]["inputs"]["width"], p["129:98"]["inputs"]["height"]
+    assert w < h and "start_image" not in p["129:98"]["inputs"], (w, h)
+    assert fs.results[0]["media"] == "video"
+
+
+async def t_edit_flow_uses_edit_image_and_keeps_input_size():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs, rec=EDIT)
+    d = D.Director(deps, {EDIT["id"]: EDIT})
+    t = new_turn(fs, "배경만 노을로 바꿔줘", rec=EDIT)
+    await d.pump()
+    await settle(d)
+    assert t["state"] == "done", (t["state"], t.get("error"), fs.events)
+    names = [c[0] for c in deps.calls]
+    assert names[0] == "write_edit" and "render" not in names and "expand_image" not in names
+    body = [c[1] for c in deps.calls if c[0] == "submit"][0]
+    p = body["prompt"]
+    assert p["57:27"]["inputs"]["text"].startswith("Replace the background")
+    assert p["41"]["inputs"]["image"].startswith("studio/bob/") and p["41"]["inputs"]["image"].endswith(".png")
+    assert p["57:13"]["inputs"]["width"] == 1024          # 크기 자리가 없으니 레시피 값 그대로
+    assert "edit_prompt" in kinds(fs) and "comfy_submitted" in kinds(fs)
+    res = [m for m in fs.messages if m["kind"] == "result"][0]
+    assert res["data"]["media"] == "image" and fs.results[0]["width"] is None
+
+
+async def t_video_revise_reuses_frame_and_saves_it():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    d = D.Director(deps, {REC["id"]: REC})
+    src = new_turn(fs)
+    src["state"] = "done"
+    src["work"] = {"prompt": "OLD", "frame": {"subject": "cockpit", "environment": "night"}}
+    t = new_turn(fs, "비행기를 운항하는 영상\n더 천천히")
+    t["request"]["reuse_frame_of"] = str(src["id"])
+    await d.pump()
+    await settle(d)
+    assert t["state"] == "done"
+    r = [c[1] for c in deps.calls if c[0] == "render"][0]
+    assert r["frame"] == {"subject": "cockpit", "environment": "night"}      # 8B 차례를 다시 쓰지 않는다
+    assert r["text"] == "비행기를 운항하는 영상\n더 천천히" if "text" in r else True
+    assert t["work"]["frame"] == {"subject": "cockpit"}                         # 이번에 읽은 결과도 저장
+
+
+async def t_video_revise_rereads_frame_when_saved_one_is_empty():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    d = D.Director(deps, {REC["id"]: REC})
+    src = new_turn(fs)
+    src["state"] = "done"
+    src["work"] = {"prompt": "OLD", "frame": {}}            # 앞 요청의 첫 화면 읽기가 실패해 빈 값이 저장된 경우
+    t = new_turn(fs, "비행기를 운항하는 영상\n더 천천히")
+    t["request"]["reuse_frame_of"] = str(src["id"])
+    await d.pump()
+    await settle(d)
+    r = [c[1] for c in deps.calls if c[0] == "render"][0]
+    assert r["frame"] is None                               # 빈 결과는 다시 읽게 한다
+
+
+async def t_all_shipped_recipes_pass_checks_and_build():
+    """저장소의 모든 레시피가 파일 검사를 통과하고, 표본 값으로 값을 넣을 수 있으며, 접수 직전 부정 자리 확인도 통과한다"""
+    rs = recipes.load_all()
+    assert {"wan22_i2v_14b_fast", "zimage_turbo_t2i", "wan22_t2v_14b_fast", "qwen_image_edit"} <= set(rs), list(rs)
+    for rid, r in rs.items():
+        rep = recipes.check_recipe(r, {"wan22_i2v_long", "wan22_t2v_long"})
+        assert recipes.recipe_ok(rep), (rid, [x for x in rep if not x["ok"]])
+        p = recipes.build(r, recipes.sample_values(r))
+        assert D.negative_problem(r, p) is None, (rid, D.negative_problem(r, p))
+    assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit"}
+    # 4스텝 LoRA 는 레시피가 켠 채로 고정한다
+    assert rs["wan22_t2v_14b_fast"]["prompt"]["128:129"]["inputs"]["value"] is True
+    assert rs["qwen_image_edit"]["prompt"]["170:168"]["inputs"]["value"] is True
+    # 편집 레시피는 두 번째 이미지(예시 무늬)를 쓰지 않는다
+    q = rs["qwen_image_edit"]["prompt"]
+    assert "83" not in q and "image2" not in q["170:151"]["inputs"] and "image2" not in q["170:149"]["inputs"]
+    # recipe_for 는 action 마다 레시피 하나를 고른다
+    d = D.Director(FakeDeps(FakeStore()), rs)
+    assert {a: d.recipe_for(a)["id"] for a in ("i2v", "t2v", "image", "edit")} == {
+        "i2v": "wan22_i2v_14b_fast", "t2v": "wan22_t2v_14b_fast", "image": "zimage_turbo_t2i", "edit": "qwen_image_edit"}
 
 
 async def t_resume_after_prompt_done_skips_llm():

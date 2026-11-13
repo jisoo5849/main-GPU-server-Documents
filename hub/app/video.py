@@ -828,8 +828,11 @@ async def draft(call, text: str, notes: str, profile: dict, seconds: float, fram
 
 async def render(user, ip: str, username: str, slug: str, text: str, notes: str = "", style: str = "",
                  profile_id: str | None = None, seconds=None, image: dict | None = None, image_prompt: str = "",
-                 crew=None, read_frame_on: bool = True, rng=None, auto_length: bool = False) -> dict:
+                 crew=None, read_frame_on: bool = True, rng=None, auto_length: bool = False,
+                 frame: dict | None = None) -> dict:
     """요청 → (첫 화면 읽기) → (T2V 장면) → 움직임 초안 → 최종 영상 프롬프트와 설정 제안.
+
+    frame 은 이미 읽은 첫 화면 결과다. 주면 첫 화면을 다시 읽지 않는다(채팅의 영상 고치기). 패널은 넘기지 않는다.
 
     auto_length 이면 장문 프로필을 받아도 요청에 맞춰 장문·보통 중 하나로 정한다(decide_length). 사용자가 고르지 않는다."""
     from . import llm   # llm → scheduler 를 불러오므로 순환을 피해 여기서
@@ -847,7 +850,10 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
         advice.append(f"이 모델은 한 번에 약 {suggested['seconds']}초({suggested['frames']}프레임)까지라 그 길이로 맞췄습니다. "
                       "더 긴 영상은 클립을 나눠 이어 붙여야 합니다.")
     b64 = None
-    if mode == "i2v" and isinstance(image, dict) and image.get("filename") and read_frame_on:
+    frame_in = parse_frame(frame) if isinstance(frame, dict) else None
+    if frame_in is not None:
+        pass      # 읽어 둔 결과를 쓴다
+    elif mode == "i2v" and isinstance(image, dict) and image.get("filename") and read_frame_on:
         try:   # 첫 화면을 못 찾거나 못 열어도 글만 보고 계속 쓴다
             b64 = await asyncio.to_thread(frame_b64, frame_file(username, slug, image))
         except (PromptxError, OSError) as e:
@@ -858,7 +864,7 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
     advice += [a.replace("제작진 모드를", "영상 제작진 단계를") for a in crew_advice]
     cat = rt["category"] if rt else None
     model, frame_model = settings.expand_model, settings.video_frame_model
-    frame, scene_info, crew_info, menus = None, None, None, None
+    frame, scene_info, crew_info, menus = frame_in, None, None, None
     length = None
     result, rounds, left = {}, 0, []
     try:

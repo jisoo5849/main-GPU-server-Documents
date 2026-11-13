@@ -266,15 +266,15 @@ async def _post_message(request: Request, user: dict, thread: dict):
     last = await _last_info(thread)
     dec = intent.decide(text, len(att_ids), last["short"] if last else None, used_default, _video_hint)
     recipe = d.recipe_for(dec["action"]) if d and dec["action"] != "answer" else None
-    if dec["action"] == "answer" or dec["later"] or recipe is None:
+    if dec["action"] == "answer" or recipe is None:
         # 만들 일이 없거나 아직 없는 기능: 정해 둔 답만 한다 (GPU 안 씀, 5.3·13.1)
         reply = dec["reply"] if dec["action"] == "answer" else "이 기능은 지금 준비 중입니다."
         return await _reply_only(user, thread, cmid, shown, att_ids, reply)
     env = await store.studio_env(settings.studio_env_slug)
     if env is None:
         return err(503, "studio_not_ready", state.reason)
-    turn_atts = list(att_ids) if dec["action"] == "i2v" and dec["source"] == "upload" else []
-    if dec["source"] == "last_result":           # R5: 직전 결과 이미지를 입력으로 복사해 첫 화면으로 쓴다 (7.3)
+    turn_atts = list(att_ids) if dec["action"] in ("i2v", "edit") and dec["source"] == "upload" else []
+    if dec["source"] == "last_result":           # R5·R7: 직전 결과 이미지를 입력으로 복사해 첫 화면·편집 대상으로 쓴다 (7.3)
         try:
             turn_atts = [await _copy_result_input(env, user, thread, last["att"])]
         except files.UploadError as ex:
@@ -291,12 +291,18 @@ async def _post_message(request: Request, user: dict, thread: dict):
     if turn_atts and dec["source"] == "last_result":
         await store.attach_to_message(turn_atts, m["id"], thread["id"], user["id"])
     req_text = text
-    if dec["carry"] == "revise" and last and dec["action"] == "image":     # R6a: 원래 요청 + 이번 말로 다시 확장 (5.8)
-        prev = str(((last["turn"].get("request") or {}).get("text")) or "").strip()
+    reuse = {}
+    if dec["carry"] == "revise" and last and dec["action"] in ("image", "i2v", "t2v"):
+        # R6a·R6·R7b: 원래 요청 + 이번 말로 다시 쓴다 (5.8). 영상은 같은 첫 화면과 읽어 둔 결과를 다시 쓴다
+        lreq = last["turn"].get("request") or {}
+        prev = str(lreq.get("text") or "").strip()
         req_text = (prev + "\n" + text).strip()[-intent.MAX_TEXT:] if prev else text
+        if dec["action"] == "i2v":
+            turn_atts = list(lreq.get("attachment_ids") or [])
+            reuse = {"reuse_frame_of": str(last["turn"]["id"])}
     spec = intent.extract_spec(req_text if not used_default else "")
     req = {"text": req_text, "used_default": used_default, "attachment_ids": turn_atts, "spec": spec, "mode": "new",
-           "notes": dec["notes"], "rule": dec["rule"], "carry": dec["carry"]}
+           "notes": dec["notes"], "rule": dec["rule"], "carry": dec["carry"], **reuse}
     turn = await store.create_turn(thread["id"], user["id"], _client_ip(request), req, m["id"], recipe["id"],
                                    recipe["version"], dec["action"])
     await store.set_decision(turn["id"], {"action": dec["action"], "source": dec["source"], "carry": dec["carry"],
