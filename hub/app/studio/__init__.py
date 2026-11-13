@@ -17,8 +17,8 @@ log = logging.getLogger("mgs.studio")
 def routes() -> list:
     from starlette.routing import Route, WebSocketRoute
 
-    from . import api
-    return [
+    from . import api, opview
+    return opview.routes() + [
         Route("/studio", api.page),
         Route("/studio/static/{name}", api.static),
         Route("/studio/logout", api.logout, methods=["POST"]),

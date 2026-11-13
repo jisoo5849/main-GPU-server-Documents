@@ -195,6 +195,10 @@
     try {
       if (!state.thread) await newThread();
       const body = { text: textEl.value, attachment_ids: state.attachment ? [state.attachment.id] : [], client_msg_id: uuid() };
+      const options = {};
+      if ($("opt-seconds").value) options.seconds = Number($("opt-seconds").value);
+      if ($("opt-aspect").value) options.aspect = $("opt-aspect").value;
+      if (Object.keys(options).length) body.options = options;
       const r = await api("/studio/api/threads/" + state.thread + "/messages", { method: "POST", json: body });
       textEl.value = ""; textEl.style.height = ""; state.attachment = null; renderAttach();
       renderMessage(r.message);

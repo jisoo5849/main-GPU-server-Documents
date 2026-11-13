@@ -109,6 +109,24 @@ assert sp["seconds"] == 3.0 and sp["aspect"] == "portrait" and sp["sound"] and "
 sp = intent.extract_spec("10초짜리")
 assert sp["seconds"] == 5.0 and any("5초까지" in n for n in sp["notes"])
 
+# ── 화면의 길이·비율 칸 (D17) ──
+assert intent.clean_options(None) == {} and intent.clean_options({}) == {}
+assert intent.clean_options({"seconds": "", "aspect": "auto"}) == {}
+assert intent.clean_options({"seconds": 3, "aspect": "portrait"}) == {"seconds": 3.0, "aspect": "portrait"}
+assert intent.clean_options({"seconds": "4"}) == {"seconds": 4.0}
+for bad_opt in ({"seconds": 10 ** 400}, {"seconds": 7}, {"seconds": 1}, {"seconds": "abc"}, {"seconds": True}, {"aspect": "wide"}, "x", [1]):
+    try:
+        intent.clean_options(bad_opt)
+        raise AssertionError(bad_opt)
+    except intent.InputError as ex:
+        assert ex.code == "bad_request"
+base = intent.extract_spec("10초 세로로")                      # 글: 5초 넘음 안내 + 세로
+assert base["seconds"] == 5.0 and base["aspect"] == "portrait" and base["notes"]
+sp = intent.apply_options(base, {"seconds": 3.0, "aspect": "landscape"})   # 칸이 글보다 우선, 낡은 안내는 뺀다
+assert sp["seconds"] == 3.0 and sp["aspect"] == "landscape" and not any("5초까지" in n for n in sp["notes"])
+assert intent.apply_options(base, {}) == base
+assert base["seconds"] == 5.0                                  # 원본은 바뀌지 않는다
+
 # ── Z-Image 이미지 레시피 ──
 rs = R.load_all()
 zi = rs["zimage_turbo_t2i"]

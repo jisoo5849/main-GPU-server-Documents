@@ -65,6 +65,46 @@ def extract_spec(text: str) -> dict:
     return {"seconds": seconds, "aspect": aspect, "sound": sound, "notes": notes}
 
 
+SECONDS_CHOICES = (2.0, 3.0, 4.0, 5.0)
+ASPECT_CHOICES = ("portrait", "landscape", "square")
+
+
+def clean_options(options) -> dict:
+    """화면의 길이·비율 칸 (D17). {"seconds": 2~5 중 하나, "aspect": portrait|landscape|square} 중 고른 것만 돌려준다.
+    자동(없음·null·"auto")은 뺀다. 모르는 값은 InputError. 글에 쓴 지정보다 칸이 우선한다"""
+    if options is None:
+        return {}
+    if not isinstance(options, dict):
+        raise InputError("bad_request", "요청 형식이 올바르지 않습니다.")
+    out = {}
+    sec = options.get("seconds")
+    if sec not in (None, "", "auto"):
+        try:
+            v = float(sec)
+        except (TypeError, ValueError, OverflowError):
+            raise InputError("bad_request", "요청 형식이 올바르지 않습니다.") from None
+        if isinstance(sec, bool) or v not in SECONDS_CHOICES:
+            raise InputError("bad_request", "길이는 2~5초 중에서 고를 수 있습니다.")
+        out["seconds"] = v
+    asp = options.get("aspect")
+    if asp not in (None, "", "auto"):
+        if asp not in ASPECT_CHOICES:
+            raise InputError("bad_request", "비율은 가로·세로·정사각 중에서 고를 수 있습니다.")
+        out["aspect"] = asp
+    return out
+
+
+def apply_options(spec: dict, options: dict) -> dict:
+    """글에서 뽑은 spec 에 칸에서 고른 값을 덮어쓴다 (칸이 우선). 글의 '5초 넘음' 안내는 칸이 덮으면 뺀다"""
+    s = dict(spec or {})
+    if "seconds" in options:
+        s["seconds"] = options["seconds"]
+        s["notes"] = [n for n in s.get("notes") or [] if "5초까지" not in n]
+    if "aspect" in options:
+        s["aspect"] = options["aspect"]
+    return s
+
+
 def i2v_notes(spec: dict) -> list[str]:
     """i2v 는 사진 비율을 따르므로 비율 지정이 있으면 알린다"""
     notes = list(spec.get("notes") or [])

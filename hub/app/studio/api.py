@@ -255,6 +255,7 @@ async def _post_message(request: Request, user: dict, thread: dict):
                                 status_code=202)
     try:
         text, used_default = intent.resolve_text(data.get("text"), len(att_ids))
+        options = intent.clean_options(data.get("options"))
     except intent.InputError as ex:
         return err(400, ex.code, ex.message)
     if await store.count_open(user["id"]) >= settings.studio_max_open_per_user:
@@ -281,7 +282,8 @@ async def _post_message(request: Request, user: dict, thread: dict):
             return await _reply_only(user, thread, cmid, shown, att_ids, ex.message)
     if dec["carry"] == "repeat":                 # R6b: 저장된 프롬프트·설정으로 시드만 새로 (다시 만들기와 같다)
         return await _spawn_retry(request, user, thread, last["turn"], "new_seed", shown or text, cmid,
-                                  {"action": "repeat"}, rule="R6b", spec_over=intent.extract_spec(text))
+                                  {"action": "repeat"}, rule="R6b",
+                                  spec_over=intent.apply_options(intent.extract_spec(text), options))
     m = await store.add_message(thread["id"], "user", "text", shown,
                                 {"attachment_ids": att_ids} if att_ids and dec["source"] != "last_result" else None, None, cmid)
     if att_ids and dec["source"] != "last_result":
@@ -300,7 +302,7 @@ async def _post_message(request: Request, user: dict, thread: dict):
         if dec["action"] == "i2v":
             turn_atts = list(lreq.get("attachment_ids") or [])
             reuse = {"reuse_frame_of": str(last["turn"]["id"])}
-    spec = intent.extract_spec(req_text if not used_default else "")
+    spec = intent.apply_options(intent.extract_spec(req_text if not used_default else ""), options)
     req = {"text": req_text, "used_default": used_default, "attachment_ids": turn_atts, "spec": spec, "mode": "new",
            "notes": dec["notes"], "rule": dec["rule"], "carry": dec["carry"], **reuse}
     turn = await store.create_turn(thread["id"], user["id"], _client_ip(request), req, m["id"], recipe["id"],

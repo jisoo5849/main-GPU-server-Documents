@@ -465,6 +465,12 @@ class Director:
         if req.get("mode") == "new_seed" and req.get("source_turn"):
             src = await store.get_turn(req["source_turn"], turn["user_id"])
             sw = (src or {}).get("work") or {}
+            new_sec = (req.get("spec") or {}).get("seconds")
+            old_sec = ((src or {}).get("request") or {}).get("spec", {}).get("seconds") if src else None
+            if sw.get("prompt") and new_sec and new_sec != old_sec and ctx.action in ("i2v", "t2v"):
+                await store.event(turn["id"], "reuse_skipped", {"reason": "길이가 바뀌어 프롬프트를 새로 씁니다",
+                                                                 "old": old_sec, "new": new_sec})
+                return None
             if sw.get("prompt"):
                 work = {k: sw[k] for k in ("prompt", "parts", "ko", "profile", "length_choice", "settings", "size",
                                            "frame_known", "crew") if k in sw}

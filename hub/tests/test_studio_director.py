@@ -613,6 +613,23 @@ async def t_all_shipped_recipes_pass_checks_and_build():
         "i2v": "wan22_i2v_14b_fast", "t2v": "wan22_t2v_14b_fast", "image": "zimage_turbo_t2i", "edit": "qwen_image_edit"}
 
 
+async def t_new_seed_with_new_seconds_rewrites_prompt():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    d = D.Director(deps, {REC["id"]: REC})
+    src = new_turn(fs, spec={"seconds": None})
+    src["state"] = "done"
+    src["work"] = {"prompt": "SAVED", "settings": {"frames": 81, "seconds": 5.0}, "size": [848, 480]}
+    t = new_turn(fs, mode="new_seed", spec={"seconds": 3.0})
+    t["request"]["source_turn"] = str(src["id"])
+    await d.pump()
+    await settle(d)
+    assert t["state"] == "done"
+    names = [c[0] for c in deps.calls]
+    assert "render" in names and "reuse_skipped" in kinds(fs), (names, kinds(fs))       # 길이가 바뀌면 새로 쓴다
+    assert [c[1] for c in deps.calls if c[0] == "render"][0]["seconds"] == 3.0
+
+
 async def t_resume_after_prompt_done_skips_llm():
     fs = FakeStore(); fs.patch()
     deps = FakeDeps(fs)
