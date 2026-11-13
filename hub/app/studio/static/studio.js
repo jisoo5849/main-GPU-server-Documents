@@ -50,6 +50,53 @@
     const i = document.createElement("img"); i.src = url; i.className = "thumb"; i.alt = ""; return i;
   }
 
+  const PLAN_STATUS = { approved: "승인함", cancelled: "취소됨", expired: "시간이 지나 취소됨", replanned: "바꿔서 다시 계획함" };
+
+  function setPlanStatus(card, status) {
+    const acts = card.querySelector(".acts"); if (acts) acts.remove();
+    let s = card.querySelector(".status");
+    if (!s) { s = el("div", "status"); card.append(s); }
+    s.textContent = PLAN_STATUS[status] || "";
+  }
+
+  function planCard(m, data) {
+    const p = data.plan || {};
+    const card = el("div", "plan");
+    card.append(el("h4", null, "영상 만들기 계획 (승인하면 시작합니다)"));
+    if (p.attachment_ids && p.attachment_ids[0]) card.append(attachmentNode(p.attachment_ids[0], "image"));
+    const dl = el("dl");
+    const row = (k, v) => { if (v) { dl.append(el("dt", null, k), el("dd", null, v)); } };
+    row("종류", p.action === "t2v" ? "글→영상" : "이미지→영상");
+    row("길이", p.seconds ? p.seconds + "초 (" + p.frames + "프레임, " + p.fps + "fps)" : (p.frames ? p.frames + "프레임" : ""));
+    row("크기", p.size && p.size.length ? p.size[0] + "×" + p.size[1] : "사진 크기를 따릅니다");
+    row("품질", p.quality);
+    row("프롬프트", (p.words ? p.words + "낱말" : "") + (p.length_reason ? " · " + p.length_reason : ""));
+    row("완료까지", p.estimate_s ? "약 " + Math.max(1, Math.round(p.estimate_s / 60)) + "분 (예상)" : "");
+    card.append(dl);
+    const ko = Object.values(p.ko || {}).filter(Boolean).join("\n");
+    if (ko) card.append(el("div", "ko", ko));
+    if (data.status && data.status !== "pending") { setPlanStatus(card, data.status); return card; }
+    const acts = el("div", "acts");
+    const ok = el("button", "primary", "승인"); ok.type = "button";
+    const no = el("button", null, "취소"); no.type = "button";
+    const lock = (v) => { ok.disabled = v; no.disabled = v; };
+    ok.addEventListener("click", async () => {
+      lock(true); showError("");
+      try {
+        const r = await api("/studio/api/turns/" + m.turn_id + "/approve", { method: "POST", json: {} });
+        setPlanStatus(card, r.replanned ? "replanned" : "approved");
+        if (r.turn && !r.replanned) cardFor(r.turn.id);
+      } catch (ex) { showError(ex.message); lock(false); }
+    });
+    no.addEventListener("click", async () => {
+      lock(true); showError("");
+      try { await api("/studio/api/turns/" + m.turn_id + "/cancel", { method: "POST", json: {} }); setPlanStatus(card, "cancelled"); }
+      catch (ex) { showError(ex.message); lock(false); }
+    });
+    acts.append(ok, no); card.append(acts);
+    return card;
+  }
+
   function actionButtons(turnId, actions) {
     const acts = el("div", "acts");
     for (const a of actions) {
@@ -71,7 +118,9 @@
     const wrap = el("div", "msg " + m.role);
     wrap.dataset.mid = m.id;
     const data = m.data || {};
-    if (m.kind === "notice") {
+    if (m.kind === "plan") {
+      wrap.append(planCard(m, data));
+    } else if (m.kind === "notice") {
       const n = el("div", "notice" + ((data.level === "error") ? " error" : ""), m.body);
       if (Array.isArray(data.actions) && data.actions.length) n.append(actionButtons(m.turn_id, data.actions));
       wrap.append(n);
@@ -85,7 +134,7 @@
       wrap.append(b);
     }
     feed.append(wrap);
-    if (m.kind === "result" || m.kind === "notice") dropCard(m.turn_id);
+    if (m.kind === "result" || m.kind === "notice" || m.kind === "plan") dropCard(m.turn_id);
     scrollDown();
   }
 
@@ -133,6 +182,11 @@
     }));
   }
 
+  function syncAsk() {
+    const t = state.threads.find((x) => x.id === state.thread);
+    $("ask-long").checked = !!t && t.settings && t.settings.ask === "ask_long";
+  }
+
   async function openThread(id) {
     state.thread = id; state.unread.delete(id); state.shown = new Set(); state.lastId = 0;
     for (const c of state.cards.values()) c.box.remove();
@@ -141,15 +195,19 @@
     document.body.classList.remove("menu");
     await loadMessages();
     await loadThreads();
+    syncAsk();
     emptyState();
   }
 
   async function loadMessages() {
     const r = await api("/studio/api/threads/" + state.thread + "/messages?after=" + state.lastId);
     for (const m of r.messages) renderMessage(m);
-    for (const t of r.turns) if (t.progress) updateProgress(t.id, t.progress); else cardFor(t.id);
+    for (const t of r.turns) {
+      if (t.state === "awaiting_approval") continue;          // 계획 카드가 대신한다
+      if (t.progress) updateProgress(t.id, t.progress); else cardFor(t.id);
+    }
     // 이미 끝난 요청의 카드는 지운다 (놓친 이벤트 보정)
-    const open = new Set(r.turns.map((t) => t.id));
+    const open = new Set(r.turns.filter((t) => t.state !== "awaiting_approval").map((t) => t.id));
     for (const id of [...state.cards.keys()]) if (!open.has(id)) dropCard(id);
   }
 
@@ -241,6 +299,9 @@
       else if (m.type === "message.new") {
         if (m.thread_id === state.thread) renderMessage(m.message);
         else { state.unread.add(m.thread_id); loadThreads().catch(() => {}); }
+      } else if (m.type === "message.update") {
+        const w = feed.querySelector('[data-mid="' + String(m.message_id).replace(/[^0-9]/g, "") + '"] .plan');
+        if (w && m.data && m.data.status) setPlanStatus(w, m.data.status);
       } else if (m.type === "turn.state") {
         if (["failed", "cancelled", "interrupted"].includes(m.state)) dropCard(m.turn_id);
       }
@@ -264,6 +325,16 @@
     }
     $("new-thread").addEventListener("click", () => { newThread().catch((e) => showError(e.message)); });
     $("composer").addEventListener("submit", send);
+    $("ask-long").addEventListener("change", async (e) => {
+      const box = e.target; showError("");
+      const want = box.checked;           // 새 대화를 만들면 스위치가 새 대화의 값으로 돌아가므로 먼저 읽어 둔다
+      try {
+        if (!state.thread) await newThread();
+        box.checked = want;
+        const r = await api("/studio/api/threads/" + state.thread, { method: "PATCH", json: { settings: { ask: want ? "ask_long" : "auto" } } });
+        const t = state.threads.find((x) => x.id === state.thread); if (t) t.settings = r.thread.settings;
+      } catch (ex) { box.checked = !box.checked; showError(ex.message); }
+    });
     textEl.addEventListener("input", () => { textEl.style.height = "auto"; textEl.style.height = Math.min(160, textEl.scrollHeight) + "px"; refreshSend(); });
     textEl.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("composer").requestSubmit(); } });
     fileEl.addEventListener("change", onFile);

@@ -53,6 +53,7 @@ class FakeStore:
         self.jobs, self.outputs, self.by_client = {}, {}, {}
         self.results = []
         self.stages = []
+        self.thread_cfg = {}
 
     def patch(self):
         fs = self
@@ -96,6 +97,24 @@ class FakeStore:
             return None
         async def add_attachment(att): fs.results.append(att); fs.atts[str(att["id"])] = att; return att
         async def set_stage(tid, stage): fs.stages.append(stage)
+        async def thread_settings(thread_id): return fs.thread_cfg
+        async def set_message_data(mid, patch):
+            for m in fs.messages:
+                if m["id"] == mid:
+                    m["data"] = {**(m["data"] or {}), **patch}
+        async def expired_plans(hours): return [t for t in fs.turns.values() if t["state"] == "awaiting_approval" and t.get("stale")]
+        async def approve_turn(tid, stage="queue"):
+            t = fs.turns[tid]
+            if t["state"] != "awaiting_approval":
+                return False
+            t.update(state="pending", stage=stage, work={**(t.get("work") or {}), "approved": True})
+            return True
+        async def replan_turn(tid, stage, rid, ver):
+            t = fs.turns[tid]
+            if t["state"] != "awaiting_approval":
+                return False
+            t.update(state="pending", stage=stage, work={}, plan=None, recipe_id=rid, recipe_version=ver)
+            return True
 
         for k, v in list(locals().items()):
             if k != "fs" and callable(v):
@@ -112,6 +131,7 @@ class FakeDeps:
         self.queue_rows = []
         self.settings = {}
         self.published = []
+        self.median = {"comfy": None, "llm": None}
         self.cancel_ret = 0
         self.hold = False       # True 면 작업이 queued 에 머문다
         self.inspect_result = {"ok": True, "issues": [], "traits": [], "people": 0}
@@ -219,6 +239,7 @@ class FakeDeps:
         j = self.fs.jobs[job_id]
         j["state"], j["outcome"] = "finished", "cancelled"
 
+    async def medians(self): return self.median
     async def queue(self): return self.queue_rows
     async def setting(self, key): return self.settings.get(key)
 
@@ -652,6 +673,262 @@ async def t_first_stage_matches_action():
     await settle(d)
 
 
+def plan_msgs(fs):
+    return [m for m in fs.messages if m["kind"] == "plan"]
+
+
+async def t_plan_card_waits_for_approval_then_submits_once():
+    fs = FakeStore(); fs.patch()
+    fs.thread_cfg = {"ask": "ask_long"}
+    old = settings.studio_ask_long_seconds
+    settings.studio_ask_long_seconds = 60              # 예상 90초(레시피 추정)가 기준 이상
+    try:
+        deps = FakeDeps(fs)
+        d = D.Director(deps, {REC["id"]: REC})
+        t = new_turn(fs)
+        await d.pump()
+        await settle(d)
+        assert t["state"] == "awaiting_approval" and t["stage"] == "plan", (t["state"], t.get("error"))
+        names = [c[0] for c in deps.calls]
+        assert "render" in names and "submit" not in names, names            # 프롬프트는 쓰고 접수는 하지 않는다
+        pm = plan_msgs(fs)
+        assert len(pm) == 1 and pm[0]["data"]["status"] == "pending" and [a["id"] for a in pm[0]["data"]["actions"]] == ["approve", "cancel"]
+        plan = t["plan"]
+        assert plan["seconds"] == 5.0 and plan["frames"] == 81 and plan["size"] == [848, 480] and plan["quality"] == "빠름"
+        assert plan["estimate_s"] >= 90 and plan["message_id"] == pm[0]["id"] and plan["attachment_ids"]
+        assert not deps.receivers and "plan" in kinds(fs)
+        # 승인: 한 번만 접수. 두 번째는 충돌
+        r1 = await d.approve(t)
+        r2 = await d.approve(t)
+        assert (r1, r2) == ("ok", "conflict"), (r1, r2)
+        assert t["state"] == "pending" and t["work"]["approved"] is True       # 승인과 approved 기록은 한 번에
+        await d.pump()                                                          # 시작은 pump 가 한도를 지켜 한다
+        await settle(d)
+        assert t["state"] == "done", (t["state"], t.get("error"))
+        names = [c[0] for c in deps.calls]
+        assert names.count("submit") == 1 and names.count("render") == 1, names      # LLM 은 다시 쓰지 않는다
+        assert pm[0]["data"]["status"] == "approved" and pm[0]["data"]["actions"] == []
+        assert t["work"]["approved"] is True
+    finally:
+        settings.studio_ask_long_seconds = old
+
+
+async def t_plan_not_shown_when_auto_short_or_not_video():
+    old = settings.studio_ask_long_seconds
+    try:
+        for cfg, thr, rec, expect in (({}, 60, REC, False), ({"ask": "auto"}, 60, REC, False),
+                                      ({"ask": "ask_long"}, 600, REC, False),       # 예상 시간이 기준 미만
+                                      ({"ask": "ask_long"}, 0, IMG, False),           # 이미지는 계획 카드가 없다
+                                      ({"ask": "ask_long"}, 0, REC, True)):          # 0 이면 모든 영상에 카드
+            fs = FakeStore(); fs.patch()
+            fs.thread_cfg = cfg
+            settings.studio_ask_long_seconds = thr
+            deps = FakeDeps(fs, rec=rec)
+            d = D.Director(deps, {rec["id"]: rec})
+            t = new_turn(fs, rec=rec)
+            await d.pump()
+            await settle(d)
+            assert (t["state"] == "awaiting_approval") is expect, (cfg, thr, rec["id"], t["state"])
+    finally:
+        settings.studio_ask_long_seconds = old
+
+
+async def t_plan_estimate_counts_the_queue():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    deps.queue_rows = [{"id": "a", "kind": "comfy", "state": "running"}, {"id": "b", "kind": "llm", "state": "queued"}]
+    deps.median = {"comfy": 100.0, "llm": 20.0}
+    d = D.Director(deps, {REC["id"]: REC})
+    ctx = D.Ctx(new_turn(fs), USER, ENV, REC)
+    assert await d.estimate_seconds(ctx) == 100 + 20 + 90          # 앞 ComfyUI 1건 + 앞 LLM 1건 + 내 작업(레시피 추정 90)
+    deps.median = {"comfy": None, "llm": None}
+    assert await d.estimate_seconds(ctx) == 90 + 30 + 90
+
+
+async def t_cancel_and_supersede_and_expire_plan():
+    fs = FakeStore(); fs.patch()
+    fs.thread_cfg = {"ask": "ask_long"}
+    old = settings.studio_ask_long_seconds
+    settings.studio_ask_long_seconds = 0
+    try:
+        deps = FakeDeps(fs)
+        d = D.Director(deps, {REC["id"]: REC})
+        # 취소: ComfyUI 줄 없이 끝나고 카드가 '취소됨'
+        t = new_turn(fs); await d.pump(); await settle(d)
+        assert t["state"] == "awaiting_approval"
+        await d.cancel(t)
+        assert t["state"] == "cancelled" and plan_msgs(fs)[-1]["data"]["status"] == "cancelled"
+        assert "submit" not in [c[0] for c in deps.calls]
+        # 새 메시지가 오면 접는다 (5.7)
+        t2 = new_turn(fs); await d.pump(); await settle(d)
+        assert t2["state"] == "awaiting_approval"
+        assert await d.supersede(t2) and t2["state"] == "cancelled" and plan_msgs(fs)[-1]["data"]["status"] == "replanned"
+        assert not await d.supersede(t2)                                   # 이미 접힌 계획은 다시 접지 않는다
+        # 만료
+        t3 = new_turn(fs); await d.pump(); await settle(d)
+        t3["stale"] = True
+        assert await d.expire_plans() == 1 and t3["state"] == "cancelled" and plan_msgs(fs)[-1]["data"]["status"] == "expired"
+        # 승인 대기는 활성 한도에 세지 않는다
+        assert await store.count_active(7) == 0
+    finally:
+        settings.studio_ask_long_seconds = old
+
+
+async def t_approve_with_new_recipe_version_replans():
+    fs = FakeStore(); fs.patch()
+    fs.thread_cfg = {"ask": "ask_long"}
+    old = settings.studio_ask_long_seconds
+    settings.studio_ask_long_seconds = 0
+    try:
+        deps = FakeDeps(fs)
+        d = D.Director(deps, {REC["id"]: REC})
+        t = new_turn(fs); await d.pump(); await settle(d)
+        assert t["state"] == "awaiting_approval"
+        t["recipe_version"] = 0                # 계획한 뒤 레시피 판이 바뀐 것처럼
+        assert await d.approve(t) == "replan"
+        await d.pump()
+        await settle(d)
+        assert t["state"] == "awaiting_approval" and t["recipe_version"] == REC["version"]     # 새 판으로 다시 계획했다
+        assert [c[0] for c in deps.calls].count("render") == 2 and "submit" not in [c[0] for c in deps.calls]
+        assert plan_msgs(fs)[0]["data"]["status"] == "replanned" and len(plan_msgs(fs)) == 2
+    finally:
+        settings.studio_ask_long_seconds = old
+
+
+async def parked(fs, deps=None, action_rec=None):
+    """계획 대기까지 보낸 요청과 감독"""
+    fs.thread_cfg = {"ask": "ask_long"}
+    deps = deps or FakeDeps(fs)
+    d = D.Director(deps, {REC["id"]: REC})
+    t = new_turn(fs)
+    await d.pump()
+    await settle(d)
+    assert t["state"] == "awaiting_approval"
+    return d, deps, t
+
+
+async def t_plan_races_never_cancel_or_double_submit_an_approved_turn():
+    old = settings.studio_ask_long_seconds
+    settings.studio_ask_long_seconds = 0
+    try:
+        # 승인한 뒤 supersede·만료가 와도 취소하지 않는다 (이미 승인돼 대기 중)
+        fs = FakeStore(); fs.patch()
+        d, deps, t = await parked(fs)
+        assert await d.approve(t) == "ok"
+        assert not await d.supersede(t) and t["state"] == "pending"
+        t["stale"] = True
+        assert await d.expire_plans() == 0 and t["state"] == "pending"
+        await d.pump(); await settle(d)
+        assert t["state"] == "done" and [c[0] for c in deps.calls].count("submit") == 1
+        # 승인 뒤 취소: pending 이라 시작하지 않고, 접수도 없다. 카드는 '승인함' 그대로
+        fs = FakeStore(); fs.patch()
+        d, deps, t = await parked(fs)
+        assert await d.approve(t) == "ok"
+        await d.cancel(dict(t, state="awaiting_approval"))          # 오래된 화면이 awaiting 으로 알고 보낸 취소
+        assert t["state"] == "cancelled"
+        await d.pump(); await settle(d)
+        assert "submit" not in [c[0] for c in deps.calls] and plan_msgs(fs)[-1]["data"]["status"] == "approved"
+        # 취소가 먼저면 승인은 충돌
+        fs = FakeStore(); fs.patch()
+        d, deps, t = await parked(fs)
+        await d.cancel(t)
+        assert await d.approve(t) == "conflict" and t["state"] == "cancelled"
+    finally:
+        settings.studio_ask_long_seconds = old
+
+
+async def t_approve_respects_active_limit_and_survives_restart():
+    old, old_max = settings.studio_ask_long_seconds, settings.studio_max_active_per_user
+    settings.studio_ask_long_seconds = 0
+    try:
+        fs = FakeStore(); fs.patch()
+        d, deps, t = await parked(fs)
+        settings.studio_max_active_per_user = 0                       # 활성 한도가 찼다
+        assert await d.approve(t) == "ok"
+        await d.pump()
+        assert t["state"] == "pending" and not d.tasks                # 한도를 우회해 바로 시작하지 않는다
+        settings.studio_max_active_per_user = old_max
+        # 허브가 승인 직후 죽었다가 다시 열려도 계획으로 되돌아가지 않고 접수까지 간다
+        d2 = D.Director(FakeDeps(fs), {REC["id"]: REC})
+        await d2.recover()
+        await settle(d2)
+        assert t["state"] == "done" and len(plan_msgs(fs)) == 1, (t["state"], len(plan_msgs(fs)))
+        assert [c[0] for c in d2.deps.calls].count("render") == 0     # 프롬프트는 다시 쓰지 않았다
+    finally:
+        settings.studio_ask_long_seconds, settings.studio_max_active_per_user = old, old_max
+
+
+async def t_plan_does_not_block_later_requests_and_old_card_is_folded():
+    old = settings.studio_ask_long_seconds
+    settings.studio_ask_long_seconds = 0
+    try:
+        fs = FakeStore(); fs.patch()
+        d, deps, t = await parked(fs)
+        later = new_turn(fs, "다른 요청")
+        later["depends_on"] = t["id"]                                  # 계획 대기 요청을 기다리도록 걸려 있다
+        fs.thread_cfg = {}
+        await d.pump(); await settle(d)
+        assert later["state"] == "done", later["state"]                # 승인 대기 요청은 뒤 요청을 막지 않는다
+        # 카드를 만든 뒤 상태를 바꾸기 전에 멈췄다가 다시 계획되면 낡은 카드는 접는다
+        fs = FakeStore(); fs.patch()
+        d, deps, t = await parked(fs)
+        first_mid = t["work"]["plan_message_id"]
+        t["state"] = "active"                                          # 복구가 active 로 되살린 것처럼
+        fs.thread_cfg = {"ask": "ask_long"}
+        d.spawn(t, resume=True)
+        await settle(d)
+        assert [m["data"]["status"] for m in plan_msgs(fs)] == ["replanned", "pending"], [m["data"] for m in plan_msgs(fs)]
+        assert [m for m in plan_msgs(fs)][0]["id"] == first_mid
+    finally:
+        settings.studio_ask_long_seconds = old
+
+
+async def t_plan_judgement_failure_proceeds_without_plan_and_reuse_skips_plan():
+    old = settings.studio_ask_long_seconds
+    settings.studio_ask_long_seconds = 0
+    try:
+        fs = FakeStore(); fs.patch()
+        fs.thread_cfg = {"ask": "ask_long"}
+        deps = FakeDeps(fs)
+
+        real_queue, hit = deps.queue, {"n": 0}
+
+        async def boom():
+            hit["n"] += 1
+            if hit["n"] == 1:               # 계획 카드 판단에서 한 번만 실패한다 (감시에서는 정상)
+                raise RuntimeError("db down")
+            return await real_queue()
+        deps.queue = boom
+        d = D.Director(deps, {REC["id"]: REC})
+        t = new_turn(fs)
+        await d.pump(); await settle(d)
+        assert t["state"] == "done", (t["state"], t.get("error"))      # 예상 시간을 못 구해도 요청이 죽지 않는다
+        # 다시 만들기(저장된 프롬프트 재사용)는 계획을 건너뛴다. 길이가 바뀌어 새로 쓰면 계획한다
+        fs = FakeStore(); fs.patch()
+        fs.thread_cfg = {"ask": "ask_long"}
+        deps = FakeDeps(fs)
+        d = D.Director(deps, {REC["id"]: REC})
+        src = new_turn(fs, spec={"seconds": None}); src["state"] = "done"
+        src["work"] = {"prompt": "SAVED", "settings": {"frames": 81, "seconds": 5.0}, "size": [848, 480]}
+        t = new_turn(fs, mode="new_seed"); t["request"]["source_turn"] = str(src["id"])
+        await d.pump(); await settle(d)
+        assert t["state"] == "done"
+        t2 = new_turn(fs, mode="new_seed", spec={"seconds": 3.0}); t2["request"]["source_turn"] = str(src["id"])
+        await d.pump(); await settle(d)
+        assert t2["state"] == "awaiting_approval"
+    finally:
+        settings.studio_ask_long_seconds = old
+
+
+def t_approve_words():
+    ok = ("응", "네", "네 진행해줘", "ok", "좋아요!", "승인", "ㅇㅇ", "진행", "시작해줘")
+    no = ("더 천천히", "응 근데 더 밝게", "네 구름을 더 많이", "고마워", "")
+    for t in ok:
+        assert intent.APPROVE_RE.match(t), t
+    for t in no:
+        assert not intent.APPROVE_RE.match(t), t
+
+
 async def t_resume_after_prompt_done_skips_llm():
     fs = FakeStore(); fs.patch()
     deps = FakeDeps(fs)
@@ -778,6 +1055,8 @@ def t_unit_helpers():
 async def main():
     t_unit_helpers()
     print("ok t_unit_helpers")
+    t_approve_words()
+    print("ok t_approve_words")
     for name, fn in sorted(globals().items()):
         if name.startswith("t_") and inspect.iscoroutinefunction(fn):
             await asyncio.wait_for(asyncio.ensure_future(fn()), timeout=20)

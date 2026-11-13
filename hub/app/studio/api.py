@@ -102,6 +102,11 @@ def _msg(m: dict) -> dict:
             if m.get("created_at") else None}
 
 
+def _thread_settings(t: dict) -> dict:
+    s = t.get("settings")
+    return {"ask": s.get("ask") if isinstance(s, dict) and s.get("ask") in ("auto", "ask_long") else "auto"}
+
+
 def _turn(t: dict | None) -> dict | None:
     if t is None:
         return None
@@ -174,11 +179,11 @@ async def threads(request: Request):
         return e
     if request.method == "POST":
         t = await store.create_thread(user["id"])
-        return JSONResponse({"thread": {"id": str(t["id"]), "title": t["title"], "updated_at": _iso(t["updated_at"])}},
-                            status_code=201)
+        return JSONResponse({"thread": {"id": str(t["id"]), "title": t["title"], "updated_at": _iso(t["updated_at"]),
+                                        "settings": _thread_settings(t)}}, status_code=201)
     rows = await store.list_threads(user["id"])
-    return JSONResponse({"threads": [{"id": str(r["id"]), "title": r["title"], "updated_at": _iso(r["updated_at"])}
-                                     for r in rows]})
+    return JSONResponse({"threads": [{"id": str(r["id"]), "title": r["title"], "updated_at": _iso(r["updated_at"]),
+                                      "settings": _thread_settings(r)} for r in rows]})
 
 
 async def thread_item(request: Request):
@@ -194,7 +199,14 @@ async def thread_item(request: Request):
                 await state.director.cancel(turn)
         await store.soft_delete_thread(t["id"])
         return Response(status_code=204)
-    return JSONResponse({"thread": {"id": str(t["id"]), "title": t["title"]}})
+    if request.method == "PATCH":      # 대화 설정: 긴 영상은 먼저 계획 확인 (5.7)
+        data = await _json(request)
+        ask = ((data or {}).get("settings") or {}).get("ask") if isinstance((data or {}).get("settings"), dict) else None
+        if data is None or ask not in ("auto", "ask_long"):
+            return err(400, "bad_request", "요청 형식이 올바르지 않습니다.")
+        await store.set_thread_settings(t["id"], {"ask": ask})
+        t = await store.get_thread(t["id"], user["id"])
+    return JSONResponse({"thread": {"id": str(t["id"]), "title": t["title"], "settings": _thread_settings(t)}})
 
 
 async def messages(request: Request):
@@ -258,14 +270,36 @@ async def _post_message(request: Request, user: dict, thread: dict):
         options = intent.clean_options(data.get("options"))
     except intent.InputError as ex:
         return err(400, ex.code, ex.message)
-    if await store.count_open(user["id"]) >= settings.studio_max_open_per_user:
+    d = state.director
+    waiting = await store.awaiting_turn(thread["id"]) if d else None
+    if waiting is None and await store.count_open(user["id"]) >= settings.studio_max_open_per_user:
+        # 승인 대기 계획을 고치는 메시지는 열린 요청을 늘리지 않으니 한도에서 뺀다
         return err(429, "too_many_open", "진행 중인 요청이 많습니다. 끝난 뒤 다시 보내 주세요.")
     if not _rate_ok(user["id"]):
         return err(429, "too_many_messages", "메시지를 너무 빨리 보내고 있습니다. 잠시 뒤 다시 보내 주세요.")
     shown = "" if used_default else text
-    d = state.director
     last = await _last_info(thread)
-    dec = intent.decide(text, len(att_ids), last["short"] if last else None, used_default, _video_hint)
+    if waiting is not None and waiting.get("action") in ("i2v", "t2v") and not att_ids:
+        if intent.APPROVE_RE.match(text):
+            # "응", "네 진행해줘" 는 계획 수정이 아니라 승인이다
+            res = await d.approve(waiting)
+            m = await store.add_message(thread["id"], "user", "text", shown, None, None, cmid)
+            a = await store.add_message(thread["id"], "assistant", "text",
+                                        "승인했습니다. 만들기를 시작합니다." if res == "ok" else "이미 처리된 계획입니다.", None, None, None)
+            await hub.send(user["id"], {"type": "message.new", "thread_id": str(thread["id"]), "message": _msg(a)})
+            return JSONResponse({"message": _msg(m), "turn": _turn(await store.get_turn(waiting["id"], user["id"])),
+                                 "reply": _msg(a)}, status_code=202)
+        base = intent.decide(text, 0, None, used_default, _video_hint)
+        if base["action"] == "answer":
+            waiting, dec = None, base                  # "고마워" 같은 말은 계획을 접지 않고 답만 한다
+        else:
+            # 승인 대기 중에 온 새 메시지는 계획을 고쳐 달라는 말이다: 계획을 접고 원래 요청 + 이번 말로 다시 계획한다 (5.7)
+            last = {"turn": waiting, "att": None, "short": {"action": waiting["action"], "media": "video"}}
+            dec = {"rule": "plan_revise", "action": waiting["action"], "source": "none", "carry": "revise",
+                   "attachment_role": "none", "reply": None, "notes": [], "later": False}
+    else:
+        waiting = None       # 새 사진이 붙은 메시지 등은 새 요청이다. 계획은 그대로 두고 승인·취소·만료를 기다린다
+        dec = intent.decide(text, len(att_ids), last["short"] if last else None, used_default, _video_hint)
     recipe = d.recipe_for(dec["action"]) if d and dec["action"] != "answer" else None
     if dec["action"] == "answer" or recipe is None:
         # 만들 일이 없거나 아직 없는 기능: 정해 둔 답만 한다 (GPU 안 씀, 5.3·13.1)
@@ -274,6 +308,9 @@ async def _post_message(request: Request, user: dict, thread: dict):
     env = await store.studio_env(settings.studio_env_slug)
     if env is None:
         return err(503, "studio_not_ready", state.reason)
+    if waiting is not None and not await d.supersede(waiting):
+        # 그 사이 승인돼 돌고 있다: 새 요청을 만들어 두 번 접수하지 않는다
+        return err(409, "state_changed", "그 계획은 이미 처리됐습니다. 진행 상황을 보고 다시 보내 주세요.")
     turn_atts = list(att_ids) if dec["action"] in ("i2v", "edit") and dec["source"] == "upload" else []
     if dec["source"] == "last_result":           # R5·R7: 직전 결과 이미지를 입력으로 복사해 첫 화면·편집 대상으로 쓴다 (7.3)
         try:
@@ -504,6 +541,24 @@ async def _spawn_retry(request: Request, user: dict, thread: dict, src: dict, mo
                                               "by": "rule", "rule": rule})
     asyncio.ensure_future(d.pump())
     return JSONResponse({"message": _msg(m), "turn": _turn(turn)}, status_code=202)
+
+
+async def turn_approve(request: Request):
+    """[승인]: 계획 카드를 승인해 접수를 진행한다. 이미 처리된 요청이면 409 (두 번 눌러도 접수는 한 번)"""
+    user, e = await gate(request)
+    if e:
+        return e
+    t = await store.get_turn(request.path_params["id"], user["id"])
+    if t is None:
+        return err(404, "not_found", "찾을 수 없습니다.")
+    if t["state"] != "awaiting_approval":
+        return err(409, "state_changed", "이미 처리된 요청입니다.")
+    res = await state.director.approve(t)
+    if res == "conflict":
+        return err(409, "state_changed", "이미 처리된 요청입니다.")
+    if res == "gone":
+        return err(503, "studio_not_ready", "이 기능은 지금 준비 중입니다.")
+    return JSONResponse({"turn": _turn(await store.get_turn(t["id"], user["id"])), "replanned": res == "replan"})
 
 
 async def turn_to_video(request: Request):

@@ -24,7 +24,7 @@ def routes() -> list:
         Route("/studio/logout", api.logout, methods=["POST"]),
         Route("/studio/api/me", api.me),
         Route("/studio/api/threads", api.threads, methods=["GET", "POST"]),
-        Route("/studio/api/threads/{id}", api.thread_item, methods=["GET", "DELETE"]),
+        Route("/studio/api/threads/{id}", api.thread_item, methods=["GET", "PATCH", "DELETE"]),
         Route("/studio/api/threads/{id}/messages", api.messages, methods=["GET", "POST"]),
         Route("/studio/api/uploads", api.uploads, methods=["POST"]),
         Route("/studio/api/files/{id}", api.file_get),
@@ -32,6 +32,7 @@ def routes() -> list:
         Route("/studio/api/turns/{id}/cancel", api.turn_cancel, methods=["POST"]),
         Route("/studio/api/turns/{id}/retry", api.turn_retry, methods=["POST"]),
         Route("/studio/api/turns/{id}/to_video", api.turn_to_video, methods=["POST"]),
+        Route("/studio/api/turns/{id}/approve", api.turn_approve, methods=["POST"]),
         Route("/studio/api/queue", api.queue_counts),
         WebSocketRoute("/studio/ws", api.ws_endpoint),
     ]
@@ -122,10 +123,12 @@ async def start():
 
 async def _cleanup_loop():
     """보내지 않은 업로드를 지운다 (9.4). 1시간마다"""
-    from . import files, store
+    from . import api, files, store
     while True:
         try:
             env = await store.studio_env(settings.studio_env_slug)
+            if api.state.director is not None:
+                await api.state.director.expire_plans()
             for a in await store.unsent_uploads(settings.studio_unsent_hours):
                 if env and a.get("input_rel"):
                     p = files.input_path(env, a["input_rel"])

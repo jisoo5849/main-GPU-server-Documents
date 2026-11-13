@@ -46,9 +46,49 @@ async def get_thread(thread_id, user_id: int):
 
 async def list_threads(user_id: int) -> list[dict]:
     rows = await db.fetch(
-        "SELECT id, title, updated_at FROM chat_threads WHERE user_id=$1 AND deleted_at IS NULL "
+        "SELECT id, title, updated_at, settings FROM chat_threads WHERE user_id=$1 AND deleted_at IS NULL "
         "ORDER BY updated_at DESC LIMIT 100", user_id)
     return [dict(r) for r in rows]
+
+
+async def thread_settings(thread_id) -> dict:
+    v = await db.fetchval("SELECT settings FROM chat_threads WHERE id=$1", thread_id)
+    return v if isinstance(v, dict) else {}
+
+
+async def set_thread_settings(thread_id, patch: dict):
+    await db.execute("UPDATE chat_threads SET settings = COALESCE(settings,'{}'::jsonb) || $2::jsonb WHERE id=$1",
+                     thread_id, _j(patch))
+
+
+async def set_message_data(message_id, patch: dict):
+    """메시지의 data 에 값을 합친다 (계획 카드의 승인·취소 상태 등)"""
+    await db.execute("UPDATE chat_messages SET data = COALESCE(data,'{}'::jsonb) || $2::jsonb WHERE id=$1",
+                     message_id, _j(patch))
+
+
+async def awaiting_turn(thread_id):
+    """이 대화에서 승인을 기다리는 요청 (한 대화에 하나뿐이다)"""
+    return _row(await db.fetchrow("SELECT * FROM chat_turns WHERE thread_id=$1 AND state='awaiting_approval' "
+                                  "ORDER BY created_at DESC LIMIT 1", thread_id))
+
+
+async def expired_plans(hours: int) -> list[dict]:
+    rows = await db.fetch("SELECT * FROM chat_turns WHERE state='awaiting_approval' "
+                          "AND updated_at < now() - make_interval(hours => $1)", hours)
+    return [dict(r) for r in rows]
+
+
+async def recent_medians() -> dict:
+    """최근 끝난 GPU 작업 50건의 걸린 시간 중앙값(초). 종류별 {comfy, llm}. 없으면 None (8.5)"""
+    out = {}
+    for kind, expr in (("comfy", "COALESCE(cold_start_ms,0) + COALESCE(run_ms,0) + COALESCE(cleanup_ms,0)"),
+                       ("llm", "COALESCE(run_ms,0) + COALESCE(cleanup_ms,0)")):
+        v = await db.fetchval(
+            f"SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY t) FROM (SELECT {expr} AS t FROM jobs "
+            "WHERE kind=$1 AND state='finished' AND outcome='success' ORDER BY seq DESC LIMIT 50) x", kind)
+        out[kind] = None if v is None else float(v) / 1000
+    return out
 
 
 async def touch_thread(thread_id, title: str | None = None):
@@ -291,6 +331,24 @@ async def last_result_turn(thread_id):
 async def turn_of_message(message_id: int):
     return _row(await db.fetchrow("SELECT * FROM chat_turns WHERE message_id=$1 ORDER BY created_at DESC LIMIT 1",
                                   message_id))
+
+
+async def approve_turn(turn_id, stage: str = "queue") -> bool:
+    """승인: awaiting_approval 인 요청만 pending 으로 되돌리고 같은 UPDATE 에서 work.approved 를 남긴다.
+    그러면 승인과 approved 기록 사이에 허브가 죽어도 다시 계획하지 않고, 시작은 pump 가 한도를 지켜 한다"""
+    r = await db.fetchval(
+        "UPDATE chat_turns SET state='pending', stage=$2, updated_at=now(), "
+        "work = COALESCE(work,'{}'::jsonb) || '{\"approved\": true}'::jsonb "
+        "WHERE id=$1 AND state='awaiting_approval' RETURNING 1", turn_id, stage)
+    return r == 1
+
+
+async def replan_turn(turn_id, stage: str, recipe_id: str, version: int) -> bool:
+    """레시피 판이 바뀐 뒤의 승인: 새 판으로 처음부터 다시 계획한다 (work 와 plan 을 비운다)"""
+    r = await db.fetchval(
+        "UPDATE chat_turns SET state='pending', stage=$2, work='{}'::jsonb, plan=NULL, recipe_id=$3, recipe_version=$4, "
+        "updated_at=now() WHERE id=$1 AND state='awaiting_approval' RETURNING 1", turn_id, stage, recipe_id, version)
+    return r == 1
 
 
 async def set_decision(turn_id, decision: dict):

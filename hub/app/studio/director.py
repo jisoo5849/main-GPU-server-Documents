@@ -55,6 +55,8 @@ FAIL_TEXT = {
     "changed": ("결과 파일이 바뀌어 이어서 만들 수 없습니다.", []),
     "gone": ("결과 파일을 찾을 수 없어 이어서 만들 수 없습니다.", []),
 }
+PLAN_ACTIONS = [{"id": "approve", "label": "승인"}, {"id": "cancel", "label": "취소"}]
+PLAN_STATUS_TEXT = {"approved": "승인함", "cancelled": "취소됨", "expired": "시간이 지나 취소됨", "replanned": "바꿔서 다시 계획함"}
 TWO_RE = re.compile(r"두\s*(?:사람|명)|둘이|커플|\btwo\b", re.I)
 TO_VIDEO = [{"id": "to_video", "label": "이걸로 영상 만들기"}]
 
@@ -95,6 +97,7 @@ class Ctx:
         self.emit_again = False
         self.notes: list = []
         self.saved_stage = None
+        self.reused = False           # 저장된 프롬프트를 다시 쓴 요청(다시 만들기)이면 계획 카드를 건너뛴다
         self.node_log: list = []      # 노드별 걸린 시간 [{"node", "ms"}] (운영자 기록 node_timing, 12절)
         self._node_cur: tuple | None = None
         self.req_text = ""          # 사용자가 쓴 요청 글. (text 는 진행 카드에 보이는 글이라 따로 둔다)
@@ -231,6 +234,9 @@ class RealDeps:
         from .. import jobs
         return await jobs.global_queue()
 
+    async def medians(self):
+        return await store.recent_medians()
+
     async def setting(self, key):
         from .. import db
         return await db.get_setting(key, None)
@@ -357,12 +363,12 @@ class Director:
                 dep = t.get("depends_on")
                 if dep:
                     d = await store.get_turn(dep)
-                    if d and d["state"] in store.OPEN_STATES:
-                        continue
+                    if d and d["state"] in store.OPEN_STATES and d["state"] != "awaiting_approval":
+                        continue       # 승인 대기 요청은 GPU 를 쓰지 않으니 뒤 요청을 막지 않는다
                 if await store.count_active(t["user_id"]) >= settings.studio_max_active_per_user:
                     continue
                 if await store.move(t["id"], "pending", "active", stage=first_stage(t.get("action"))):
-                    self.spawn(t)
+                    self.spawn(t, resume=bool((t.get("work") or {}).get("approved") and (t.get("work") or {}).get("prompt")))
 
     def spawn(self, turn: dict, resume: bool = False):
         task = asyncio.ensure_future(self._run_guarded(turn, resume))
@@ -376,6 +382,11 @@ class Director:
 
     async def cancel(self, turn: dict) -> bool:
         """사용자 취소. 아직 시작 전이면 바로 끝내고, 돌고 있으면 작업을 취소해 정리하게 한다"""
+        if turn.get("state") == "awaiting_approval":
+            if await self._cancel_awaiting(turn):
+                await self._plan_status(turn, "cancelled")
+                return True
+            turn = await store.get_turn(turn["id"]) or turn      # 그 사이 승인됐다: 아래 일반 취소로 처리한다
         await store.request_cancel(turn["id"])
         task = self.tasks.get(turn["id"])
         ctx = self.ctxs.get(turn["id"])
@@ -476,6 +487,9 @@ class Director:
                     work = await self._write_edit_prompt(ctx, work)
                 else:
                     work = await self._write_prompt(ctx, work)
+            if not work.get("approved") and await self._needs_plan(ctx, work):
+                await self._park_for_approval(ctx, work)
+                return
             ctx.job_id = await self._submit(ctx, work)
         try:
             await self._watch_job(ctx, work)
@@ -513,10 +527,134 @@ class Director:
                 new_aspect = (req.get("spec") or {}).get("aspect")
                 if new_aspect and new_aspect != ((src.get("request") or {}).get("spec") or {}).get("aspect"):
                     work.pop("size", None)      # 다른 비율을 말했으면 크기를 새로 정한다
+                ctx.reused = True
                 await store.merge_work(turn["id"], work)
                 await store.event(turn["id"], "step_done", {"stage": "prompt", "reused_from": str(req["source_turn"])})
                 return work
         return None
+
+    # ── Ask 계획 카드 (5.7) ──
+    async def estimate_seconds(self, ctx: Ctx) -> int:
+        """완료까지 예상 시간(초) [추정]: 내 앞 줄마다 종류별 중앙값 + 내 ComfyUI 작업 (8.5)"""
+        try:
+            med = await self.deps.medians() or {}
+        except Exception:  # noqa: BLE001
+            med = {}
+        own = float((ctx.recipe.get("estimate") or {}).get("gpu_seconds") or med.get("comfy") or 60)
+        frames = ((ctx.turn.get("work") or {}).get("settings") or {}).get("frames")
+        if frames:
+            own *= max(0.4, min(1.0, float(frames) / 81))      # 짧은 영상은 덜 걸린다 [추정]
+        comfy = med.get("comfy") or own
+        llm = med.get("llm") or 30
+        q = await self.deps.queue()
+        ahead_c = sum(1 for j in q if j.get("kind") == "comfy")
+        ahead_l = sum(1 for j in q if j.get("kind") == "llm")
+        return int(ahead_c * comfy + ahead_l * llm + own)
+
+    async def _needs_plan(self, ctx: Ctx, work: dict) -> bool:
+        """긴 영상은 먼저 계획을 보여 준다: 대화 설정이 ask_long 이고 영상이며 예상 시간이 기준 이상 (다시 만들기는 건너뜀)"""
+        if ctx.action not in ("i2v", "t2v") or ctx.reused:
+            return False
+        try:       # 예상 시간을 못 구해도 요청이 죽지 않게 한다: 계획 없이 진행한다
+            if (await store.thread_settings(ctx.turn["thread_id"])).get("ask") != "ask_long":
+                return False
+            return await self.estimate_seconds(ctx) >= settings.studio_ask_long_seconds
+        except Exception:  # noqa: BLE001
+            log.exception("계획 카드 판단 실패 (계획 없이 진행)")
+            return False
+
+    async def _park_for_approval(self, ctx: Ctx, work: dict):
+        """계획 카드를 보내고 승인을 기다리는 상태로 둔다. 감독 작업은 여기서 끝난다 (GPU 차례를 갖지 않는다)"""
+        turn, recipe = ctx.turn, ctx.recipe
+        req = turn.get("request") or {}
+        atts = await store.attachments_of(req.get("attachment_ids") or [])
+        photo = next(((a.get("width"), a.get("height")) for a in atts if a.get("width") and a.get("height")), None)
+        size = work.get("size")
+        if "width" in recipe["inject"] and not size:
+            size = list(recipes.default_size(recipe, photo=photo, aspect=(ctx.spec or {}).get("aspect")))
+            work["size"] = size
+            await store.merge_work(turn["id"], {"size": size})
+        st = work.get("settings") or {}
+        lc = work.get("length_choice") or {}
+        plan = {"action": ctx.action, "attachment_ids": list(req.get("attachment_ids") or [])[:1],
+                "seconds": st.get("seconds"), "frames": st.get("frames") or recipe["defaults"].get("frames"),
+                "fps": recipe["defaults"].get("fps"), "size": size, "quality": recipe.get("quality_label"),
+                "words": len(str(work.get("prompt") or "").split()),
+                "length_reason": lc.get("reason") or ("첫 화면을 읽지 못해 움직임만 썼습니다" if work.get("frame_known") is False else ""),
+                "ko": work.get("ko") or {}, "estimate_s": await self.estimate_seconds(ctx),
+                "recipe_version": recipe["version"], "ttl_hours": settings.studio_plan_ttl_hours}
+        old_mid = (turn.get("work") or {}).get("plan_message_id")
+        if old_mid:       # 카드를 만든 뒤 상태를 바꾸기 전에 멈췄던 요청이다: 낡은 카드는 접는다
+            await store.set_message_data(old_mid, {"status": "replanned", "actions": []})
+        m = await self.message(turn, "assistant", "plan", "", {"plan": plan, "status": "pending", "actions": PLAN_ACTIONS})
+        plan["message_id"] = m["id"]
+        await store.merge_work(turn["id"], {"plan_message_id": m["id"]})
+        ctx.stage = "plan"
+        await store.event(turn["id"], "plan", {k: plan[k] for k in ("seconds", "frames", "size", "estimate_s")})
+        if not await self.finish_state(turn, "awaiting_approval", stage="plan", plan=plan):
+            await store.set_message_data(m["id"], {"status": "cancelled"})   # 그 사이 취소됐다
+            return
+
+    async def _plan_status(self, turn: dict, status: str):
+        """계획 카드의 상태(승인함·취소됨·만료·다시 계획)를 메시지에 남기고 화면에 알린다"""
+        mid = (turn.get("plan") or {}).get("message_id")
+        if not mid:
+            return
+        try:
+            await store.set_message_data(mid, {"status": status, "actions": []})
+            await self.push(turn["user_id"], {"type": "message.update", "thread_id": str(turn["thread_id"]),
+                                              "message_id": mid, "data": {"status": status, "actions": []}})
+        except Exception:  # noqa: BLE001
+            log.exception("계획 카드 상태 갱신 실패")
+
+    async def _cancel_awaiting(self, turn: dict) -> bool:
+        """승인 대기 상태에서만 취소로 바꾼다. 그 사이 승인돼 돌고 있는 요청은 건드리지 않는다"""
+        if not await store.move(turn["id"], "awaiting_approval", "cancelled"):
+            return False
+        await self.push(turn["user_id"], {"type": "turn.state", "thread_id": str(turn["thread_id"]),
+                                          "turn_id": str(turn["id"]), "state": "cancelled"})
+        return True
+
+    async def approve(self, turn: dict) -> str:
+        """[승인]. 'ok' 접수 진행 / 'replan' 레시피 판이 바뀌어 계획을 다시 만듦 / 'conflict' 이미 처리됨 / 'gone' 레시피 없음.
+        상태 바꾸기가 조건부(awaiting_approval → pending, work.approved 를 같은 UPDATE 로)라 두 번 눌러도 한 번만 진행하고,
+        시작은 pump 가 사용자 활성 한도를 지켜 한다 (5.2)"""
+        turn = dict(turn)           # 상태를 바꾸기 전의 값(plan.message_id)으로 카드 상태를 갱신한다
+        recipe = self.recipe_for(turn.get("action") or "i2v")
+        if recipe is None:
+            if await self._cancel_awaiting(turn):
+                await self._plan_status(turn, "cancelled")
+                await store.event(turn["id"], "plan_dropped", {"reason": "레시피 없음"})
+                return "gone"
+            return "conflict"
+        stale = recipe["version"] != turn.get("recipe_version") or recipe["id"] != turn.get("recipe_id")
+        if stale:
+            if not await store.replan_turn(turn["id"], first_stage(turn.get("action")), recipe["id"], recipe["version"]):
+                return "conflict"
+            await self._plan_status(turn, "replanned")
+            asyncio.ensure_future(self.pump())
+            return "replan"
+        if not await store.approve_turn(turn["id"], "queue"):
+            return "conflict"
+        await self._plan_status(turn, "approved")
+        asyncio.ensure_future(self.pump())
+        return "ok"
+
+    async def supersede(self, turn: dict) -> bool:
+        """승인 대기 중 같은 대화에 새 메시지가 오면 그 계획은 접고 새 요청이 다시 계획한다 (5.7). 이미 승인돼 돌면 False"""
+        if not await self._cancel_awaiting(turn):
+            return False
+        await self._plan_status(turn, "replanned")
+        return True
+
+    async def expire_plans(self) -> int:
+        """승인 없이 STUDIO_PLAN_TTL_HOURS 가 지난 계획을 취소한다 (승인돼 돌고 있는 요청은 건드리지 않는다)"""
+        n = 0
+        for t in await store.expired_plans(settings.studio_plan_ttl_hours):
+            if await self._cancel_awaiting(t):
+                await self._plan_status(t, "expired")
+                n += 1
+        return n
 
     async def _write_image_prompt(self, ctx: Ctx, work: dict) -> dict:
         """이미지: 제작진 초안 + 확장을 LLM 차례 한 번에 (5.5). 27B 한 번이라 첫 화면 읽기는 없다"""

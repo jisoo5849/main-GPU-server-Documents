@@ -134,6 +134,10 @@ ANSWER_I2V_EDIT = "영상의 배경과 모습은 첫 화면 사진에서 정해�
 NOTE_REFERENCE = "참고 이미지는 아직 쓰지 못해 글만 보고 그렸습니다"
 
 
+# 승인 대기 중에 이 말만 오면 계획 수정이 아니라 승인이다 ("응", "네 진행해줘", "ok")
+APPROVE_RE = re.compile(r"^\s*(?:응|네|예|넵|좋아|좋아요|승인|진행|시작|오케이|ok|okay|ㅇㅇ)(?:[\s,.!~]*(?:진행|시작)?(?:해줘|해주세요|해)?)[\s.!~]*$", re.I)
+
+
 def decide(text: str, n_attachments: int, last: dict | None = None, used_default: bool = False,
            video_hint=None) -> dict:
     """규칙 R0~R10 으로 정한다. last 는 직전 결과 {"action": "image"|"i2v"|..., "media": "image"|"video"} 또는 None.

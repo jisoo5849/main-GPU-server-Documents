@@ -18,6 +18,16 @@ button { font:inherit; cursor:pointer; }
 #threads li:hover { background:var(--bg); }
 #threads li.on { background:var(--bg); font-weight:600; }
 #threads li.dot::after { content:""; position:absolute; right:8px; top:50%; width:8px; height:8px; margin-top:-4px; border-radius:50%; background:var(--accent); }
+.side-opt { display:flex; align-items:center; gap:6px; padding:8px 14px; border-top:1px solid var(--line); font-size:13px; color:var(--sub); cursor:pointer; }
+.plan { background:var(--panel); border:1px solid var(--accent); border-radius:14px; padding:12px 14px; max-width:min(520px, 92vw); }
+.plan h4 { margin:0 0 8px; font-size:15px; }
+.plan img.thumb { max-height:140px; border-radius:10px; margin-bottom:8px; display:block; }
+.plan dl { margin:0; display:grid; grid-template-columns:auto 1fr; gap:2px 12px; font-size:13.5px; }
+.plan dt { color:var(--sub); } .plan dd { margin:0; word-break:break-word; }
+.plan .ko { color:var(--sub); font-size:13px; margin-top:8px; white-space:pre-wrap; }
+.plan .acts { margin-top:10px; display:flex; gap:8px; }
+.plan .acts button.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+.plan .status { margin-top:10px; font-size:13px; color:var(--sub); }
 .ghost { background:none; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:4px 10px; }
 #main { flex:1; min-width:0; display:flex; flex-direction:column; position:relative; }
 #banner { background:var(--bg); border-bottom:1px solid var(--line); color:var(--sub); padding:8px 16px; font-size:13px; text-align:center; }
