@@ -38,7 +38,7 @@
 |---|---|---|
 | `wan22_i2v_14b_fast` | 사진 → 영상 | Wan 2.2 14B Image to Video, 4스텝 LoRA |
 | `wan22_t2v_14b_fast` | 글 → 영상 | Wan 2.2 14B Text to Video, 4스텝 LoRA |
-| `zimage_turbo_t2i` | 이미지 | Z-Image Turbo (개발 PC 템플릿을 옮긴 안: 메인 Export 로 바꾸면 더 안전하다) |
+| `zimage_turbo_t2i` | 이미지 | Z-Image Turbo, 8스텝 (메인 Export 기준, 판 2) |
 | `qwen_image_edit` | 이미지 편집 | Qwen Image Edit 2511, 4스텝 LoRA |
 
 새 레시피나 새 판을 넣는 법: studio-chat 의 ComfyUI(포트는 `create-env` 가 알려 준다)에서 템플릿을 열고 **내보내기 (API)** 로 JSON 을 받는다 → `app.cli studio-import 파일.json --id 이름 --action image|i2v|t2v|edit` 로 뼈대를 만들고 "사람이 확인할 것" 목록을 처리한다 → `version` 을 올리고 `studio-check` 로 검사 → 허브 재시작.

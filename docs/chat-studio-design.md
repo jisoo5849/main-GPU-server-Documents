@@ -2617,7 +2617,7 @@ main 에는 `chat-studio-p1`~`p4` 가 PR #1 로 합쳐졌다(커밋 19개, 제�
 10. **계획 카드의 예상 시간**(8.5): 최근 끝난 GPU 작업 50건의 종류별(comfy·llm) 중앙값으로 내 앞 줄을 더하고, 내 작업은 레시피 `estimate.gpu_seconds`(프레임 수로 보정)로 한다. 계산에 실패하면 계획 없이 진행한다.
 
 레시피
-11. **레시피 3개는 메인의 Export (API) 파일 기준**이다(I2V·T2V·편집). 길이를 계산하는 수식 노드(`ComfyMathExpression`)는 지우고 `frames` 를 숫자로 넣는다. 4스텝 LoRA 스위치(`PrimitiveBoolean`)는 `fixed` 로 켠 채 고정한다. 편집 레시피는 두 번째 LoadImage 와 `image2` 입력을 지운다. **Z-Image 이미지 레시피는 개발 PC 템플릿을 API 형식으로 옮긴 안**이고 메인 Export 로 바꾸지 않았다 [TBD].
+11. **레시피 4개 모두 메인의 Export (API) 파일 기준**이다(I2V·T2V·편집·Z-Image 이미지, Z-Image 는 2026-11-13 에 개발 PC 안을 메인 Export 로 바꿨다: 차이는 `ModelSamplingAuraFlow` 의 `sampling: flow` 입력 하나였다). 길이를 계산하는 수식 노드(`ComfyMathExpression`)는 지우고 `frames` 를 숫자로 넣는다. 4스텝 LoRA 스위치(`PrimitiveBoolean`)는 `fixed` 로 켠 채 고정한다. 편집 레시피는 두 번째 LoadImage 와 `image2` 입력을 지운다.
 12. **V11 은 화면 전용 입력을 건너뛴다**: Export 파일에 들어 있지만 ComfyUI 백엔드는 모르는 입력(`video-preview` 등, `FRONTEND_ONLY_INPUTS`)은 입력 이름 검사에서 뺀다. 점 이름(`format.codec`)은 첫 마디만 본다.
 13. `studio-import` 는 저장 노드가 둘이면 `SaveVideo` 를 main, 이미지 저장 노드를 검사 프레임(`check`)으로 잡는다. 길이가 수식 링크면 프레임 자리를 만들지 못하고 사람에게 알린다.
 
@@ -2656,4 +2656,4 @@ main 에는 `chat-studio-p1`~`p4` 가 PR #1 로 합쳐졌다(커밋 19개, 제�
 - **미구현**: LLM 의도 판단(R10)·첨부 역할 판단·대화 제목 자동(P4), `render_in_turn` 한 차례 묶기(P3), 검사 차례 꺼내기(D22 ③), 시각 라벨·시간대.
 - **사용자 결정 대기**: D11 콘텐츠 안전 낱말 목록(권장안은 "넣음"인데 낱말 규칙이 비어 있다), D20 허브 시간대(`.env` 의 `TZ=KST-9` 한 줄이면 되고, 지금은 UTC 라 한국 오전 9시 전 결과가 전날 폴더에 들어간다).
 - **결정 상태**: D1a 작업공간 없는 사용자는 받지 않음, D1b 로그인 첫 화면(`users.home`, CLI `set-home`) 구현, D8 자동 재생성은 하지 않음, D17 길이·비율 칸 구현, D18 프롬프트 숨김(영상 확인).
-- **레시피 유지**: Z-Image 레시피를 메인 Export 로 교체, 노드를 설치하면 `studio-check` 를 다시 돌린다. 템플릿 판이 바뀌면 안쪽 노드 id 가 바뀔 수 있어 `studio-import` 로 다시 만든다(6.7).
+- **레시피 유지**: 노드를 설치하면 `studio-check` 를 다시 돌린다. 템플릿 판이 바뀌면 안쪽 노드 id 가 바뀔 수 있어 `studio-import` 로 다시 만든다(6.7).
