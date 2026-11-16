@@ -23,7 +23,18 @@
 
 {% if d.frame %}<h2>첫 화면 읽기</h2><div class="card small"><pre style="margin:0;white-space:pre-wrap;">{{ pretty(d.frame) }}</pre></div>{% endif %}
 
-<h2>프롬프트</h2>
+{% if d.systems %}<h2>시스템 프롬프트 <span class="muted small">(LLM 에게 실제로 보낸 규칙 글, 사용자 글 제외)</span></h2>
+<div class="card small">{% for s in d.systems %}{% for t in s.texts %}<details><summary>{{ s.purpose }} · {{ s.model }}</summary><pre style="white-space:pre-wrap;">{{ t }}</pre></details>{% endfor %}{% endfor %}</div>{% endif %}
+
+{% if d.scene %}<h2>장면 이미지 프롬프트 <span class="muted small">(글→영상의 첫 단계, 이미지 모델에 들어간 글)</span></h2>
+<div class="card small">
+  <div class="muted">크기 {{ d.scene.size }}</div>
+  <pre style="white-space:pre-wrap;">{{ d.scene.prompt }}</pre>
+  {% if d.scene.expand %}<pre style="white-space:pre-wrap;">{{ pretty(d.scene.expand) }}</pre>{% endif %}
+  {% if d.scene.events %}<pre style="white-space:pre-wrap;">{{ pretty(d.scene.events) }}</pre>{% endif %}
+</div>{% endif %}
+
+<h2>영상 프롬프트</h2>
 <div class="card small">
   <div class="muted">프로필 {{ d.prompt.profile }} · 길이 선택 {{ d.length.tier }} ({{ d.length.by }}): {{ d.length.reason }}</div>
   <pre style="white-space:pre-wrap;">{{ d.prompt.text }}</pre>

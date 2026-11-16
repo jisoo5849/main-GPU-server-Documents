@@ -30,6 +30,7 @@ ISSUE_KO = {"extra_head": "머리가 하나 더 있는 것처럼", "detached_hea
             "extra_limb": "팔다리가 하나 더 있는 것처럼", "floating_limb": "팔다리가 몸에서 떨어져 떠 있는 것처럼"}
 FIRST_PERSON_TRAIT = "The view is first-person: no head, back or shoulders of the viewer are visible"
 CHIP_OF_STAGE = {"queue": "generate", "prepare": "generate", "plan": "prompt", "inspect": "collect"}
+LLM_JOB_KEYS = ("job_id", "purpose", "model", "end", "systems")      # llm_job 기록에 남기는 값 (systems: 보낸 시스템 지시문)
 RETRY = [{"id": "retry_seed", "label": "다시 만들기"}]
 RETRY_FULL = [{"id": "retry", "label": "다시 시도"}]
 
@@ -594,7 +595,7 @@ class Director:
                     r = await self._guard_llm(ctx, self.deps.expand_image(
                         ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.req_text + "\n" + hint))
                     for e in bag:
-                        await store.event(turn["id"], "llm_job", {k: e.get(k) for k in ("job_id", "purpose", "model", "end")})
+                        await store.event(turn["id"], "llm_job", {k: e.get(k) for k in LLM_JOB_KEYS})
                 await store.event(turn["id"], "expand", {"crew": r.get("crew"), "violations": r.get("violations"),
                                                           "rounds": r.get("rounds"), "advice": r.get("advice"),
                                                           "people": r.get("people"), "scene": True})
@@ -813,7 +814,7 @@ class Director:
             r = await self._guard_llm(ctx, self.deps.expand_image(
                 ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.req_text))
             for e in bag:
-                await store.event(turn["id"], "llm_job", {k: e.get(k) for k in ("job_id", "purpose", "model", "end")})
+                await store.event(turn["id"], "llm_job", {k: e.get(k) for k in LLM_JOB_KEYS})
         await store.event(turn["id"], "expand", {"crew": r.get("crew"), "violations": r.get("violations"),
                                                   "rounds": r.get("rounds"), "advice": r.get("advice"),
                                                   "people": r.get("people")})
@@ -834,7 +835,7 @@ class Director:
             r = await self._guard_llm(ctx, self.deps.write_edit(
                 ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.req_text))
             for e in bag:
-                await store.event(turn["id"], "llm_job", {k: e.get(k) for k in ("job_id", "purpose", "model", "end")})
+                await store.event(turn["id"], "llm_job", {k: e.get(k) for k in LLM_JOB_KEYS})
         await store.event(turn["id"], "edit_prompt", {"violations": r.get("violations"), "rounds": r.get("rounds")})
         if not (r.get("prompt") or "").strip():
             raise StepError("llm_error", "편집 지시문을 만들지 못했습니다")
@@ -895,10 +896,10 @@ class Director:
                 await self.emit(ctx, True)
             else:
                 for e in bag:
-                    await store.event(turn["id"], "llm_job", {k: e.get(k) for k in ("job_id", "purpose", "model", "end")})
+                    await store.event(turn["id"], "llm_job", {k: e.get(k) for k in LLM_JOB_KEYS})
                 raise StepError("bad_prompt", "; ".join(blocking)[:300])
             for e in bag:
-                await store.event(turn["id"], "llm_job", {k: e.get(k) for k in ("job_id", "purpose", "model", "end")})
+                await store.event(turn["id"], "llm_job", {k: e.get(k) for k in LLM_JOB_KEYS})
         final = f["prompt"] if f and f.get("changed") else r["prompt"]
         frame_ok = self.deps.frame_known(r.get("frame"))
         await store.event(turn["id"], "render", {

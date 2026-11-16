@@ -84,6 +84,22 @@ def repro_prompt(turn: dict, events: list[dict], atts: dict[str, dict]) -> dict 
         return None
 
 
+PURPOSE_KO = {"prompt_expand": "이미지 프롬프트 확장", "video_frame": "첫 화면 읽기", "video_expand": "영상 프롬프트 작성",
+              "video_fix": "영상 프롬프트 고치기", "edit_prompt": "편집 지시문", "image_inspect": "결과 검사"}
+
+
+def system_prompts(llm_jobs: list) -> list[dict]:
+    """이 요청의 LLM 차례마다 실제로 보낸 시스템 지시문 [{purpose, model, texts}]. 사용자 글은 들어 있지 않다.
+    같은 글이 되풀이되면 한 번만 보인다 (이 기록이 생기기 전 요청은 비어 있다)"""
+    out, seen = [], set()
+    for d in llm_jobs:
+        texts = [t for t in (d or {}).get("systems") or [] if isinstance(t, str) and t not in seen]
+        seen.update(texts)
+        if texts:
+            out.append({"purpose": PURPOSE_KO.get(d.get("purpose"), d.get("purpose")), "model": d.get("model"), "texts": texts})
+    return out
+
+
 def build_detail(turn: dict, events: list[dict], jobs: list[dict], llm_calls: list[dict], messages: list[dict],
                  atts: list[dict], recipe_check: dict | None) -> dict:
     """상세 화면(12절 상세 표)용 값. 믿지 않는 글은 문자열 그대로 두고 이스케이프는 템플릿이 한다"""
@@ -116,6 +132,12 @@ def build_detail(turn: dict, events: list[dict], jobs: list[dict], llm_calls: li
                                     if str(i) in atts_by_id]},
         "decision": {"column": turn.get("decision"), "events": by_kind.get("decision", [])},
         "frame": work.get("frame"),
+        "systems": system_prompts(by_kind.get("llm_job", [])),
+        # 글→영상을 장면 이미지 → 영상으로 만든 요청의 장면 이미지 단계 (이미지 모델에 들어간 프롬프트와 그 기록)
+        "scene": ({"prompt": work.get("scene_prompt"), "size": work.get("scene_size"),
+                   "events": [e.get("detail") for e in events if e.get("kind") in ("scene_start", "scene_done", "scene_resumed", "scene_node_timing")],
+                   "expand": [d for d in by_kind.get("expand", []) if d and d.get("scene")]}
+                  if work.get("scene_prompt") else None),
         "prompt": {"text": work.get("prompt"), "parts": work.get("parts"), "ko": work.get("ko"), "profile": work.get("profile")},
         "length": {"tier": lc.get("tier"), "reason": lc.get("reason"), "by": LENGTH_BY_KO.get(lc.get("by"), lc.get("by"))},
         "crew": {"work": work.get("crew"), "events": [d.get("crew") for d in by_kind.get("render", []) + by_kind.get("expand", [])
