@@ -121,7 +121,8 @@
       "max_frames": 81,
       "frame_step": 4,
       "default_seconds": 5,
-      "words": [320, 500],
+      "words": [320, 600],
+      "target": 410,
       "style": "Wan text-to-video: long, detailed cinematic prose with the look and the motion in one prompt, about as dense as the example.",
       "models": ["wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors", "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"],
       "tested": ""

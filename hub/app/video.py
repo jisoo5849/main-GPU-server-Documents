@@ -149,6 +149,16 @@ def part_min(profile: dict) -> int:
     return int(profile.get("part_min_words") or long_spec()["part_min_words"])
 
 
+def aim_words(profile: dict) -> int:
+    """모델에게 알리는 목표 낱말 수. 보통은 범위의 가운데이고, 프로필이 정하면 그 값이다.
+
+    27B 는 목표보다 25~60% 길게 쓴다(11-12·11-16 메인). T2V 장문은 상한을 600 으로 넓히되 목표는 410 에 두어
+    넓어진 상한이 '더 길게 쓰라' 는 뜻이 되지 않게 한다.
+    """
+    lo, hi = profile["words"]
+    return int(profile.get("target") or (lo + hi) // 2)
+
+
 def owns_look(profile: dict) -> bool:
     """T2V 장문은 장면 글을 앞에 붙이지 않으므로 이 글이 외형의 전부다 (사용자의 장르·색·조명·분위기 말도 이 글에 있어야 한다)."""
     return is_long(profile) and profile["mode"] == "t2v"
@@ -507,7 +517,7 @@ def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: 
                    f"({', '.join(spec.get('example_words') or [])[:120]}) unless the request itself names them; "
                    "take the medium and finish from the request, the LOOK REFERENCE and the STYLE line):\n"
                    + "\n".join(f'- "{p["key"]}": {ex[p["key"]]}' for p in spec["parts"])) if ex else ""
-        target = (lo + hi) // 2
+        target = aim_words(profile)
         system = SYSTEM_LONG.format(
             model=model_name(profile), seconds=seconds, mode_rule=spec["modes"][mode],
             rules="\n".join(f"- {r}" for r in kn["global_rules"] + spec["rules"]), field=field,
@@ -823,13 +833,15 @@ PRECIP_RE = re.compile(r"\b(?:rain(?:y|fall|drops?|ing)?|drizzle|downpour|snow(?
 _DEPTH_NEAR = re.compile(r"\b(?:near|nearer|nearest|close|closer|foreground|front)\b", re.I)
 _DEPTH_FAR = re.compile(r"\b(?:far|farther|further|distant|distance|background|haze|hazy)\b", re.I)
 _DEPTH_MID = re.compile(r"\b(?:mid|middle|midground|midway)\b", re.I)
-_DEPTH_WORD = re.compile(r"\b(?:(?:different|varying|several|multiple|separate)(?: \w+)? (?:depths?|layers?)|at (?:\w+ )?depths?"
+_DEPTH_WORD = re.compile(r"\b(?:(?:different|varying|several|multiple|separate|distinct|many|three|two)(?: \w+)? (?:depths?|layers?)|at (?:\w+ )?depths?"
                          r"|(?:layers?|layered) of (?:rain|snow|drizzle|mist)|depth layers?)\b", re.I)
 
 
 def weather_depth_problems(prompt: str) -> list[str]:
     """비·눈이 나오는 글은 어느 한 문장에서 깊이별(가까이·중간·멀리, 또는 '다른 깊이')로 나눠 써야 한다."""
-    sents = re.split(r"(?<=[.!?;])\s+", prompt or "")
+    # 세미콜론에서 자르지 않는다: 'Rain falls in distinct layers: near the lens, …; in the middle, …; and far away, …' 는 한 문장이다
+    # (메인 I2V 시험 11-16: 모델이 세 층으로 정확히 썼는데 앞 토막만 보고 '배경 효과' 로 걸렸다)
+    sents = re.split(r"(?<=[.!?])\s+", prompt or "")
     hit = [s for s in sents if PRECIP_RE.search(s)]
     if not hit:
         return []
@@ -923,7 +935,7 @@ AMBIENT_LINK_RE = re.compile(
 
 def ambient_link_problems(prompt: str) -> list[str]:
     """주변 입자(김·연기·먼지·불똥·꽃잎·물보라)가 나오면 어느 한 문장에서 빛이나 표면과 이어져야 한다."""
-    sents = [s for s in re.split(r"(?<=[.!?;])\s+", prompt or "") if AMBIENT_RE.search(s)]
+    sents = [s for s in re.split(r"(?<=[.!?])\s+", prompt or "") if AMBIENT_RE.search(s)]
     if not sents or any(AMBIENT_LINK_RE.search(s) for s in sents):
         return []
     return ["The atmosphere (mist, steam, smoke, dust, sparks, petals, spray) floats unconnected. Tie it to the light and the surfaces "
@@ -1023,7 +1035,7 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
         msg = f"The prompt has {n} words; write {lo} to {hi} words."
         if long:
             # 모델은 낱말 수를 잘 세지 못해 '줄여라' 만으로는 못 줄인다. 단락마다 지금과 목표를 알려 준다
-            aim = (lo + hi) // 2
+            aim = aim_words(profile)
             now = ", ".join(f'"{p["key"]}" {len(str(result.get(p["key"]) or "").split())}' for p in long_spec()["parts"])
             msg += (f" {'Cut' if n > hi else 'Expand'} it to about {aim} words in total, about {aim // 4} words per part "
                     f"(now: {now}); keep every part's key details and drop only repetition and filler.")
