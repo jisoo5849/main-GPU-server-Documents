@@ -818,6 +818,27 @@ def test_pov_operating_request_shows_the_viewers_hands_on_the_controls():
     assert not any("first-person view of operating" in p for p in walk)
 
 
+def test_extra_aircraft_and_crew_are_flagged_when_the_request_names_none():
+    # 11-16 재시험 a7ddf778 후속 80fdf0b6: 글에 'distant co-pilot's silhouette' 가 들어 있었고 영상 창밖에는 비행기가 한 대 더 나왔다
+    said = "비행기를 운항하는 파일럿의 1인칭 시점 영상으로 만들어줘"
+    p = video.extra_subject_problems("keeping the control surfaces and the distant co-pilot’s silhouette sharp", said)
+    assert p and "co-pilot" in p[0] and "only clouds and open sky" in p[0]
+    assert video.extra_subject_problems("another aircraft passes far off beyond the windshield", said)
+    assert video.extra_subject_problems("a thin contrail crosses the sky", said)
+    # 요청이 그것을 이름 붙였으면 허용한다
+    assert not video.extra_subject_problems("another aircraft passes far off", "다른 비행기가 지나가는 영상")
+    assert not video.extra_subject_problems("a co-pilot sits beside", "부기장과 함께 비행하는 파일럿 1인칭 시점")
+    # 조종하는 1인칭이 아니면 부기장·승객을 막지 않는다 (승객 이야기일 수 있다)
+    assert not video.extra_subject_problems("a passenger looks out of the window", "비행기 안 풍경 영상")
+    # 정상 조종석 글은 걸리지 않고, check_video 에도 들어간다
+    assert not video.extra_subject_problems(video.assemble(PILOT_GOOD), said)
+    bad = dict(PILOT_GOOD, shot=PILOT_GOOD["shot"].replace("The view looks straight ahead", "The distant co-pilot is a silhouette as the view looks straight ahead"))
+    assert any("co-pilot" in x for x in video.check_video(bad, T2V_LONG, said, None, PILOT_SCENE))
+    # 규칙은 모델에게도 알려 준다: 창 너머에 보이는 것은 그것뿐이라고 긍정 문장으로 쓴다
+    sys_msg = video.build_messages(said, "", T2V_LONG, 5.0, scene=PILOT_SCENE)[0]["content"]
+    assert "holds only those things" in sys_msg and "Never add vehicles, aircraft" in sys_msg
+
+
 def test_pov_check_targets_only_the_viewer():
     rx = video.SELF_BODY_RE
     for bad in ("an over-the-shoulder view", "the pilot's headset", "the pilot’s head", "a view of a seated pilot",
