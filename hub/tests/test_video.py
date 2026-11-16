@@ -936,6 +936,40 @@ def test_walking_person_needs_a_physical_gait():
     assert video.gait_problems("The viewer walks along a forest path.", "1인칭 시점으로 숲길을 걷는 영상") == []   # 1인칭은 보지 않는다
 
 
+# ── 사람이 아닌 요청에도 같은 구체성 규칙이 적용된다 (동물·탈것·김·연기·안개) ──
+def test_animals_and_vehicles_need_physical_motion_too():
+    dog = ("A golden dog trots across the meadow; each front paw plants and takes the weight, the leg swings through to the next "
+           "stride, and the spine, shoulders and tail answer the rhythm.")
+    eagle = ("An eagle flies over the valley as its wings rise, sweep down and fold, the body lifting with each beat, the tail steering.")
+    car = ("A red car drives along a wet road: the tires bite, the body settles on its suspension into the curve, and spray trails behind it.")
+    assert video.mover_problems(dog) == [] and video.mover_problems(eagle) == [] and video.mover_problems(car) == []
+    for flat, head in (("A golden dog runs across a meadow toward the camera.", "Describe the animal's motion"),
+                       ("An eagle soars over the valley.", "Describe the animal's motion"),
+                       ("A red car drives along a coastal road at dusk.", "Describe the vehicle's motion")):
+        p = video.mover_problems(flat)
+        assert len(p) == 1 and p[0].startswith(head), (flat, p)
+    assert video.mover_problems("A cat sleeps on the windowsill and its tail flicks once.") == []    # 이동하지 않는 동물은 묻지 않는다
+    assert video.mover_problems("An eagle soars over the valley.", "1인칭 시점으로 날아가는 영상") == []   # 1인칭은 보지 않는다
+    # 걷는 동물·탈것의 방향 모순과 출발·정지도 사람과 같이 본다
+    assert video.blocking_problems("A dog runs away from the camera while the camera moves backward, keeping a constant distance.")
+    assert video.travel_problems("The dog stops at the gate.", "", "t2v") and video.travel_problems("The boat slows to a halt.", "", "t2v")
+    assert video.travel_problems("The boat glides on at the same pace while the camera settles.", "", "t2v") == []
+
+
+def test_ambient_particles_and_fog_need_light_surfaces_or_depth():
+    assert video.ambient_link_problems("Steam rises from the cup and curls through the beam of window light, catching the backlight.") == []
+    assert video.ambient_link_problems(video.assemble(LONG)) == []                                  # 향수 병 글의 안개·먼지는 빛과 이어져 있다
+    for flat in ("Steam rises slowly and fine dust drifts around.", "Smoke drifts across the clearing."):
+        assert len(video.ambient_link_problems(flat)) == 1 and "floats unconnected" in video.ambient_link_problems(flat)[0]
+    assert video.ambient_link_problems("A man walks down a clear street.") == []
+    # 안개는 비·눈처럼 깊이별로 나눠 쓴다
+    assert len(video.weather_depth_problems("A thick fog fills the valley.")) == 1
+    assert video.weather_depth_problems("Fog lies thick near the lens and thins into pale layers across the middle valley, fading "
+                                        "the far ridges into haze.") == []
+    ko = video.explain_ko(video.mover_problems("A red car drives along a coastal road.") + video.ambient_link_problems("Smoke drifts."))
+    assert "탈것" in ko[0] and "빛이나 표면" in ko[1]
+
+
 def test_detail_rules_apply_to_long_but_not_to_the_compact_profile():
     flat = dict(LONG,
                 shot="Live-action cinematic shot of a man who walks down a street while heavy rain falls in visible streaks.",
@@ -958,7 +992,7 @@ def test_detail_rules_apply_to_long_but_not_to_the_compact_profile():
                    video.check_video(flat, mid, "비 오는 거리를 걷는 남자", None, SCENE))
     # 지시문에도 항목표·깊이별 날씨·물리 묘사가 들어간다
     rules = video.build_messages("남자가 걷는 영상", "", T2V_LONG, 5.0, scene=SCENE)[0]["content"]
-    for key in ("Camera sheet:", "Weather and atmosphere in depth:", "Body motion in physical terms:", "what the camera keeps constant"):
+    for key in ("Camera sheet:", "Weather and atmosphere in depth:", "Subject motion in physical terms:", "what the camera keeps constant"):
         assert key in rules, key
 
 
