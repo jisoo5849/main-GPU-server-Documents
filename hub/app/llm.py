@@ -264,7 +264,7 @@ async def llm_turn(user, ip: str, model: str, purpose: str, wait_seconds: int | 
         raise NestedTurnError("llm_turn 안에서 llm_turn 을 열 수 없습니다")
     job_id = str(uuid.uuid4())
     waiter = LlmWaiter()
-    entry = {"job_id": job_id, "purpose": purpose, "model": model, "end": None}
+    entry = {"job_id": job_id, "purpose": purpose, "model": model, "end": None, "systems": []}
     # 대기자 등록부터 차례 기다리기까지를 한 try 로 묶는다. 어느 길로 빠져나가도 스케줄러가 waiter.done 을 기다리며
     # 멈추지 않게 한다 (스케줄러는 차례를 넘긴 뒤 done 을 job_max_seconds 동안 기다린다)
     scheduler.llm_waiters[job_id] = waiter
@@ -308,6 +308,9 @@ async def llm_turn(user, ip: str, model: str, purpose: str, wait_seconds: int | 
     async def call(payload: dict, endpoint: str = "/api/chat") -> dict:
         nonlocal status
         body = {**payload, "model": model, "stream": False, "keep_alive": "2m"}
+        for m in payload.get("messages") or []:       # 운영자 화면에 보일 시스템 지시문(이 차례에서 실제로 보낸 글, 서로 다른 것만)
+            if m.get("role") == "system" and isinstance(m.get("content"), str) and m["content"] not in entry["systems"]                     and len(entry["systems"]) < 6:
+                entry["systems"].append(m["content"][:20000])
         if settings.helper_num_ctx > 0:   # 긴 지시문이 잘리지 않게, 한 차례 안의 호출은 같은 문맥 길이로 (docs/video-renderer.md 13절)
             body["options"] = {"num_ctx": settings.helper_num_ctx, **(payload.get("options") or {})}
         try:

@@ -143,4 +143,23 @@ if jinja2 is not None:
         d=opview.build_detail(turn(work={}, request={"text": "x"}), [], [], [], [], [], None), pretty=opview.pretty,
         short=opview.short, job_prompt=None, **ctx)                      # 기록이 거의 없는 요청도 그려진다
     assert "GPU 작업이 없습니다" in html and "다시 만들 접수 기록이 없습니다" in html
+    # 글→영상을 장면 이미지로 만든 요청: 장면 프롬프트 칸이 보이고 글은 이스케이프된다. 일반 요청에는 칸이 없다
+    w = {"prompt": "A calm scene.", "scene_prompt": "SCENE " + XSS, "scene_size": [1024, 576],
+         "length_choice": {"tier": "long", "reason": "r", "by": "rule"}}
+    dv = opview.build_detail(turn(work=w), [{"kind": "scene_done", "ts": NOW, "detail": {"attachment": "a"}},
+                                            {"kind": "expand", "ts": NOW, "detail": {"scene": True, "rounds": 1}}], [], [], [], [], None)
+    assert dv["scene"]["prompt"].startswith("SCENE") and dv["scene"]["events"] and dv["scene"]["expand"]
+    html = env.get_template("admin_studio_turn.html").render(d=dv, pretty=opview.pretty, short=opview.short, job_prompt=None, **ctx)
+    assert "장면 이미지 프롬프트" in html and "SCENE" in html and XSS not in html
+    assert "장면 이미지 프롬프트" not in env.get_template("admin_studio_turn.html").render(
+        d=opview.build_detail(turn(), [], [], [], [], [], None), pretty=opview.pretty, short=opview.short, job_prompt=None, **ctx)
+    # 시스템 프롬프트 칸: 차례마다 보낸 규칙 글, 같은 글은 한 번만, 이스케이프됨. 기록이 없는 옛 요청에는 칸이 없다
+    sj = [{"kind": "llm_job", "ts": NOW, "detail": {"purpose": "video_expand", "model": "m", "systems": ["RULES " + XSS]}},
+          {"kind": "llm_job", "ts": NOW, "detail": {"purpose": "video_fix", "model": "m", "systems": ["RULES " + XSS, "FIX RULES"]}},
+          {"kind": "llm_job", "ts": NOW, "detail": {"purpose": "image_inspect", "model": "m"}}]
+    dv = opview.build_detail(turn(), sj, [], [], [], [], None)
+    assert [x["purpose"] for x in dv["systems"]] == ["영상 프롬프트 작성", "영상 프롬프트 고치기"] and dv["systems"][1]["texts"] == ["FIX RULES"]
+    html = env.get_template("admin_studio_turn.html").render(d=dv, pretty=opview.pretty, short=opview.short, job_prompt=None, **ctx)
+    assert "시스템 프롬프트" in html and "FIX RULES" in html and XSS not in html
+    assert opview.build_detail(turn(), [], [], [], [], [], None)["systems"] == []
 print("ok studio_opview")
