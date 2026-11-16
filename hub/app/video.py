@@ -791,6 +791,77 @@ def travel_problems(prompt: str, said: str, mode: str) -> list[str]:
     return [f'Travel keeps one steady pace for the whole clip ("{found}"): ' + ", and ".join(need) + "."]
 
 
+# ── 구체성: 카메라 항목표, 깊이별 날씨, 걸음의 물리 묘사 (11-16: 러다이트 1번 글 수준) ──
+# 러다이트 1번은 카메라 높이·이동 방식·속도·거리·인물 크기·수평선·시차를 모두 적고, 무엇을 유지하는지까지 정했다.
+# 우리 3번은 '네온·비·사이버펑크' 같은 분위기 말이 많고 카메라와 걸음은 한 줄이었다. 짧은 보통 프로필은 단락이 짧아 보지 않는다.
+CAMERA_HEIGHT_RE = re.compile(
+    r"\b(?:eye[- ]?level|eye[- ]?height|eye position|eye line|(?:chest|waist|hip|knee|shoulder|table|counter|head|sill|street|ground)"
+    r"[- ]?(?:level|height)|low[- ]angle|high[- ]angle|overhead|top[- ]down|bird['’]?s[- ]eye|worm['’]?s[- ]eye|dutch angle"
+    r"|(?:pilot|driver|rider|viewer)['’]?s eye)\b", re.I)
+CAMERA_KEEP_RE = re.compile(
+    r"\b(?:keep(?:s|ing)?|maintain(?:s|ing)?|hold(?:s|ing)?|stay(?:s|ing)?|remain(?:s|ing)?)\b[^.;]{0,70}"
+    r"\b(?:height|horizon|distance|framing|size|level|angle|position|pace)\b", re.I)
+
+
+def camera_sheet_problems(result: dict) -> list[str]:
+    """camera_light 단락이 카메라 높이·각도를 밝히고(shot 단락에 있어도 된다) 카메라가 무엇을 유지하는지 말해야 한다."""
+    cam = str(result.get("camera_light") or "")
+    if not cam.strip():
+        return []   # 빈 단락은 길이 검사가 알린다
+    out = []
+    if not CAMERA_HEIGHT_RE.search(cam) and not CAMERA_HEIGHT_RE.search(str(result.get("shot") or "")):
+        out.append('"camera_light" must name the camera height or angle (for example eye-level, low-angle, table height).')
+    if not CAMERA_KEEP_RE.search(cam):
+        out.append('"camera_light" must say what the camera keeps constant, such as its distance to the subject, the subject\'s size '
+                   "in frame, a level horizon or its framing, in positive words.")
+    return out
+
+
+# 비·눈은 깊이별로 나뉘어 다른 것들과 이어져야 한다 (3번: 'Heavy rain falls in visible streaks' 한 줄)
+PRECIP_RE = re.compile(r"\b(?:rain(?:y|fall|drops?|ing)?|drizzle|downpour|snow(?:fall|flakes?|ing)?|sleet|hail)\b", re.I)
+_DEPTH_NEAR = re.compile(r"\b(?:near|nearer|nearest|close|closer|foreground|front)\b", re.I)
+_DEPTH_FAR = re.compile(r"\b(?:far|farther|further|distant|distance|background|haze|hazy)\b", re.I)
+_DEPTH_MID = re.compile(r"\b(?:mid|middle|midground|midway)\b", re.I)
+_DEPTH_WORD = re.compile(r"\b(?:(?:different|varying|several|multiple|separate)(?: \w+)? (?:depths?|layers?)|at (?:\w+ )?depths?"
+                         r"|(?:layers?|layered) of (?:rain|snow|drizzle|mist)|depth layers?)\b", re.I)
+
+
+def weather_depth_problems(prompt: str) -> list[str]:
+    """비·눈이 나오는 글은 어느 한 문장에서 깊이별(가까이·중간·멀리, 또는 '다른 깊이')로 나눠 써야 한다."""
+    sents = re.split(r"(?<=[.!?;])\s+", prompt or "")
+    hit = [s for s in sents if PRECIP_RE.search(s)]
+    if not hit:
+        return []
+    for s in hit:
+        layers = sum(bool(rx.search(s)) for rx in (_DEPTH_NEAR, _DEPTH_MID, _DEPTH_FAR))
+        if layers >= 2 or _DEPTH_WORD.search(s):
+            return []
+    return ["The weather is a flat background effect. Layer it by depth in one sentence (near the lens, in the middle, far away), "
+            "say how each layer is seen (streaks against dark surfaces, droplets stippling the ground, haze softening distant "
+            "shapes) and connect it to the surfaces, reflections and light sources around it."]
+
+
+# 걷는 사람은 발의 착지·체중 이동·다음 발의 전진·팔과 몸통으로 나눠 쓴다 ('walks' 한 단어로 끝내지 않는다)
+WALKER_RE = re.compile(r"\b(?:man|woman|person|figure|walker|runner|girl|boy|child|adult|pedestrian|he|she|they)\b"
+                       r"(?:\s+[\w'’,-]+){0,6}?\s+(?:walk|strid|stroll|jog|run|ran|march|trudg|wander)\w*", re.I)
+_GAIT_BUCKETS = (re.compile(r"\b(?:foot|feet|shoes?|heels?|toes?|boots?|soles?)\b", re.I),
+                 re.compile(r"\b(?:weight|balance)\b", re.I),
+                 re.compile(r"\b(?:plants?|planted|planting|lands?|landing|releases?|swings?|swinging|advances?|advancing)\b", re.I),
+                 re.compile(r"\b(?:arms?|torso|shoulders?|hips?|knees?|legs?)\b", re.I))
+
+
+def gait_problems(prompt: str, said: str = "") -> list[str]:
+    """걷는·달리는 사람이 나오면 발·체중·착지와 전진·팔과 몸통 중 세 가지 이상의 물리 묘사가 있어야 한다. 1인칭 걷기는 보지 않는다."""
+    if pov_wanted(said) or not WALKER_RE.search(prompt or ""):
+        return []
+    have = sum(bool(rx.search(prompt)) for rx in _GAIT_BUCKETS)
+    if have >= 3:
+        return []
+    return ['Describe the walk physically in "action" instead of just saying the person walks: the foot landing and taking the '
+            "weight, the other leg swinging forward so the next foot advances, the arms counter-swinging and the torso rising "
+            "and falling slightly, with the clothing following."]
+
+
 def example_copy_problems(result: dict, said: str, scene: str) -> list[str]:
     """T2V 장문은 길이 예시(찻잔 장면)를 받는다. 모델이 그것을 베껴 요청과 상관없는 찻잔·김·창가가 영상에 나온다
     (11-16 파일럿 1인칭 요청: 앞 두 단락은 조종석, 뒤 두 단락은 찻잔). 예시 낱말이나 문장이 요청·장면에 없는데 나오면 알린다"""
@@ -931,6 +1002,10 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
         problems += extra_subject_problems(prompt, said)
         problems += blocking_problems(prompt)
         problems += travel_problems(prompt, said, profile["mode"])
+        if not profile.get("mid"):   # 보통 프로필은 단락이 짧아 항목표·깊이·걸음 묘사까지 요구하지 않는다
+            problems += camera_sheet_problems(result)
+            problems += weather_depth_problems(prompt)
+            problems += gait_problems(prompt, said)
         if operating_pov(said) and not (HAND_WORDS_RE.search(prompt) and re.search(r"\b(?:hands?|forearms?|gloves?)\b", prompt, re.I)):
             problems.append("The user asked for a first-person view of operating a vehicle: show the viewer's own hands or "
                             "forearms on the real controls (yoke, wheel, handlebars) at the bottom edge of the frame, and "
@@ -978,6 +1053,14 @@ _KO_RULES = [
                "영상 모델이 어느 쪽을 따를지 몰라 뒷걸음질 같은 결과가 나올 수 있습니다."),
     (re.compile(r"^Travel keeps one steady pace"),
      lambda m: "걷기·주행이 클립 중간에 시작하거나 느려지다 멈춥니다. 처음부터 끝까지 같은 속도로 움직이게 써야 합니다."),
+    (re.compile(r'^"camera_light" must name the camera height'),
+     lambda m: "카메라 높이·각도(예: 눈높이)가 글에 없습니다. 카메라를 항목표처럼 구체적으로 써야 합니다."),
+    (re.compile(r'^"camera_light" must say what the camera keeps constant'),
+     lambda m: "카메라가 무엇을 유지하는지(인물과의 거리·인물 크기·수평선·구도)가 없습니다. 움직임뿐 아니라 유지할 것까지 정해야 합니다."),
+    (re.compile(r"^The weather is a flat background effect"),
+     lambda m: "비·눈이 배경 효과로만 쓰였습니다. 가까이·중간·멀리 깊이별로 나눠 쓰고 건물·바닥 반사·빛과 이어서 묘사해야 합니다."),
+    (re.compile(r"^Describe the walk physically"),
+     lambda m: "걷는다고만 쓰였습니다. 발의 착지, 체중 이동, 다음 발의 전진, 팔과 몸통의 움직임으로 나눠 써야 합니다."),
     (re.compile(r"^Do not restate the look"),
      lambda m: "첫 화면에 이미 있는 외형을 다시 설명했습니다. 움직임만 써야 합니다."),
     (re.compile(r'^"ko\.(\w+)" must be a Korean sentence'),
