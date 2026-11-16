@@ -1099,7 +1099,7 @@ async def t_via_image_pipeline_is_one_task_with_only_the_video():
     assert fs.turns[t["id"]]["work"]["size"][0] > fs.turns[t["id"]]["work"]["size"][1]
 
 
-async def t_via_image_high_quality_asks_before_any_gpu_and_runs_both_after_approval():
+async def t_via_image_high_quality_shows_the_same_plan_card_then_runs_only_the_video():
     fs = FakeStore(); fs.patch()
     fs.thread_cfg = {}
     deps = FakeDeps(fs, rec=HQ)
@@ -1107,17 +1107,20 @@ async def t_via_image_high_quality_asks_before_any_gpu_and_runs_both_after_appro
     t = new_via(fs, rec=HQ)
     await d.pump(); await settle(d)
     assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))
-    assert "submit" not in [c[0] for c in deps.calls] and "render" not in [c[0] for c in deps.calls]   # 계획 전에는 GPU 를 쓰지 않는다
+    # 계획은 예전 글→영상과 같은 카드다 (요약·프롬프트·길이). 장면 이미지는 빠름이라 계획 전에 만들어 두고 영상은 승인 뒤에 돈다
+    order = [c[0] for c in deps.calls if c[0] in ("expand_image", "submit", "stage_image", "render")]
+    assert order == ["expand_image", "submit", "stage_image", "render"], order
     plan = plan_msgs(fs)[0]["data"]["plan"]
-    assert plan["attachment_ids"] == [] and plan["quality"] == "높음"
-    assert plan["estimate_s"] > HQ["estimate"]["gpu_seconds"]      # 장면 이미지 시간이 더해진다
+    assert plan["action"] == "t2v" and plan["attachment_ids"] == [] and plan["quality"] == "높음"
+    assert plan["ko"] and plan["words"] > 0 and plan["seconds"] and plan["frames"]
+    assert plan["estimate_s"] >= HQ["estimate"]["gpu_seconds"]
     assert await d.approve(t) == "ok"
     await d.pump(); await settle(d)
     assert t["state"] == "done", (t["state"], t.get("error"))
     subs = [c[1] for c in deps.calls if c[0] == "submit"]
     assert [s["extra_data"]["studio"]["recipe"] for s in subs] == [IMG["id"], HQ["id"]]
-    assert len([c for c in deps.calls if c[0] == "expand_image"]) == 1          # 승인 뒤 다시 쓰지 않는다
-    assert len(plan_msgs(fs)) == 1                                               # 계획 카드는 한 번
+    assert len([c for c in deps.calls if c[0] == "expand_image"]) == 1 and len([c for c in deps.calls if c[0] == "render"]) == 1
+    assert len(plan_msgs(fs)) == 1
 
 
 async def t_via_image_scene_failure_and_cancel_stop_before_the_video():

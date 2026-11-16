@@ -370,7 +370,7 @@ async def unsent_uploads(hours: int) -> list[dict]:
     """보내지 않고 오래된 업로드와 복사본 (9.4). 복사본은 메시지를 만들다 실패해 고아가 된 경우를 거둔다. 결과 행은 대상이 아니다"""
     rows = await db.fetch(
         "SELECT * FROM chat_attachments WHERE source IN ('upload','copy') AND message_id IS NULL AND deleted_at IS NULL "
-        "AND created_at < now() - make_interval(hours => $1)", hours)
+        "AND created_at < now() - make_interval(hours => $1) AND COALESCE(meta->>'scene', '') = ''", hours)
     return [dict(r) for r in rows]
 
 
