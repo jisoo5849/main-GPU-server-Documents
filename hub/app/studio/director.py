@@ -233,7 +233,8 @@ class RealDeps:
         try:
             await store.add_attachment({"id": uuid.UUID(att_id), "thread_id": turn["thread_id"], "user_id": user["id"],
                                         "source": "copy", "media": "image", "mime": "image/png", "width": w, "height": h,
-                                        "bytes": n, "sha256": sha2, "input_rel": in_rel})
+                                        "bytes": n, "sha256": sha2, "input_rel": in_rel,
+                                        "meta": {"scene": True}})      # 계획 승인을 기다리는 동안 정리 대상이 아니다
         except Exception:
             p = files.input_path(env, in_rel)
             if p:
@@ -570,7 +571,8 @@ class Director:
         return list((ctx.turn.get("request") or {}).get("attachment_ids") or [])
 
     async def _pipeline_front(self, ctx: Ctx, work: dict) -> dict | None:
-        """장면 이미지 단계. 계획 카드를 띄웠거나 취소됐으면 None. 끝나면 work 에 scene_att 가 있다"""
+        """장면 이미지 단계. 취소됐으면 None. 끝나면 work 에 scene_att 가 있다. 계획 카드는 영상 프롬프트까지 쓴 뒤에 뜬다
+        (예전 글→영상과 같은 카드: 요약·프롬프트·길이·예상 시간). 장면 이미지는 빠름 8스텝이라 승인 전에 만들어 둔다"""
         turn = ctx.turn
         req = turn.get("request") or {}
         img_recipe = self.recipe_for("image")
@@ -600,11 +602,6 @@ class Director:
                     raise StepError("llm_error", "장면 프롬프트를 만들지 못했습니다")
                 work = {**work, "scene_prompt": r["prompt"], "crew": (r.get("crew") or {}).get("category")}
                 await store.merge_work(turn["id"], {"scene_prompt": r["prompt"], "crew": work.get("crew")})
-        if not work.get("approved") and await self._needs_plan(ctx, work):
-            await self._park_for_approval(ctx, work)
-            return None
-        work["approved"] = True        # 이 요청의 계획 판단은 끝났다 (영상 프롬프트 뒤·재시작 뒤에 다시 묻지 않는다)
-        await store.merge_work(turn["id"], {"approved": True})
         # 장면 이미지 크기: 영상이 같은 비율이 되도록 영상 크기의 비율로, 이미지 레시피의 면적으로
         vsz = recipes.default_size(ctx.recipe, aspect=(ctx.spec or {}).get("aspect"))
         ssz = list(recipes.default_size(img_recipe, photo=(vsz[0], vsz[1])))
@@ -681,10 +678,6 @@ class Director:
         except Exception:  # noqa: BLE001
             med = {}
         own = float((ctx.recipe.get("estimate") or {}).get("gpu_seconds") or med.get("comfy") or 60)
-        scene = 0.0
-        if ctx.via and not (ctx.turn.get("work") or {}).get("scene_att"):
-            ir = self.recipe_for("image")
-            scene = float(((ir or {}).get("estimate") or {}).get("gpu_seconds") or 40) + float(med.get("llm") or 30)
         frames = ((ctx.turn.get("work") or {}).get("settings") or {}).get("frames")
         if frames:
             own *= max(0.4, min(1.0, float(frames) / 81))      # 짧은 영상은 덜 걸린다 [추정]
@@ -693,7 +686,7 @@ class Director:
         q = await self.deps.queue()
         ahead_c = sum(1 for j in q if j.get("kind") == "comfy")
         ahead_l = sum(1 for j in q if j.get("kind") == "llm")
-        return int(ahead_c * comfy + ahead_l * llm + own + scene)
+        return int(ahead_c * comfy + ahead_l * llm + own)
 
     async def _needs_plan(self, ctx: Ctx, work: dict) -> bool:
         """긴 영상은 먼저 계획을 보여 준다: 대화 설정이 ask_long 이고 영상이며 예상 시간이 기준 이상 (다시 만들기는 건너뜀)"""
@@ -722,8 +715,6 @@ class Director:
             work["size"] = size
             await store.merge_work(turn["id"], {"size": size})
         st = work.get("settings") or {}
-        if ctx.via and not st:      # 영상 프롬프트를 쓰기 전이라 길이는 요청에서 읽은 값을 보인다
-            st = {"seconds": (ctx.spec or {}).get("seconds")}
         lc = work.get("length_choice") or {}
         plan = {"action": "t2v" if ctx.via else ctx.action, "attachment_ids": list(req.get("attachment_ids") or [])[:1],
                 "seconds": st.get("seconds"), "frames": st.get("frames") or recipe["defaults"].get("frames"),
