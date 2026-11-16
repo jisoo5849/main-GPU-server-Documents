@@ -763,7 +763,8 @@ TRAVEL_STOP_RE = re.compile(
     rf"\b(?:stops?|stopping|halts?|halting|pauses?|pausing|ceases?) {_TRAVEL}\b"
     r"|\b(?:stride|strides|steps|gait|footsteps|walk)\b(?:\s+[\w-]+){0,2}?\s+(?:slows?|slowing|shortens?|shortening)\b"
     r"|\bslows? (?:his|her|their|its) (?:pace|stride|steps|walk|gait)\b"
-    r"|\b(?:he|she|they|the (?:man|woman|figure|walker|runner|rider|driver|cyclist|person|girl|boy|child|car|vehicle|horse))\b"
+    r"|\b(?:he|she|they|it|the (?:man|woman|figure|walker|runner|rider|driver|cyclist|person|girl|boy|child|car|vehicle|horse"
+    r"|dog|cat|deer|fox|wolf|bird|animal|boat|ship|train|bus|truck|bike|bicycle|motorcycle|scooter|drone|aircraft|plane))\b"
     r"(?:\s+[\w-]+){0,2}?\s+(?:stops|halts|pauses|comes to (?:a )?(?:stop|halt|standstill|rest)"
     r"|slows (?:down|to (?:a )?(?:walk|halt|stop|standstill)))\b", re.I)
 TRAVEL_CHANGE_ASKED_RE = re.compile(r"멈추|멈춰|멈춘|멈춤|멈칫|멈출|멈췄|정지|서다|선다|섰다|세우|세운|속도를 줄|느려|늦추|출발|시작"
@@ -818,7 +819,7 @@ def camera_sheet_problems(result: dict) -> list[str]:
 
 
 # 비·눈은 깊이별로 나뉘어 다른 것들과 이어져야 한다 (3번: 'Heavy rain falls in visible streaks' 한 줄)
-PRECIP_RE = re.compile(r"\b(?:rain(?:y|fall|drops?|ing)?|drizzle|downpour|snow(?:fall|flakes?|ing)?|sleet|hail)\b", re.I)
+PRECIP_RE = re.compile(r"\b(?:rain(?:y|fall|drops?|ing)?|drizzle|downpour|snow(?:fall|flakes?|ing)?|sleet|hail|fog(?:gy)?)\b", re.I)
 _DEPTH_NEAR = re.compile(r"\b(?:near|nearer|nearest|close|closer|foreground|front)\b", re.I)
 _DEPTH_FAR = re.compile(r"\b(?:far|farther|further|distant|distance|background|haze|hazy)\b", re.I)
 _DEPTH_MID = re.compile(r"\b(?:mid|middle|midground|midway)\b", re.I)
@@ -860,6 +861,73 @@ def gait_problems(prompt: str, said: str = "") -> list[str]:
     return ['Describe the walk physically in "action" instead of just saying the person walks: the foot landing and taking the '
             "weight, the other leg swinging forward so the next foot advances, the arms counter-swinging and the torso rising "
             "and falling slightly, with the clothing following."]
+
+
+# 사람이 아닌 대상도 같다: 동물은 발·날개와 체중, 몸의 따름을, 탈것은 바퀴·선체와 차체의 반응, 뒤에 남는 물보라·먼지를 쓴다.
+# 정규식으로 알 수 있는 흔한 대상(사람·동물·탈것)만 검사한다. 액체·천·불꽃·기계 같은 나머지는 지시문 규칙이 맡는다
+_ANIMAL = (r"(?:dog|puppy|cat|kitten|horse|pony|deer|stag|fox|wolf|bear|lion|tiger|leopard|cheetah|rabbit|hare|elephant|cow|sheep"
+           r"|goat|bird|eagle|hawk|owl|crow|gull|duck|swan|goose|butterfly|bee|dragonfly|fish|whale|dolphin|shark|turtle|lizard"
+           r"|snake|animal)(?:s|es)?|puppies|ponies|butterflies|dragonflies")
+_MOVE = (r"(?:walk|trot|gallop|run|sprint|prowl|lope|bound|leap|jump|hop|soar|glide|swim|dart|crawl|slither|trudg|pad|"
+         r"stride|fl(?:y|ies|ew|ying))(?:s|es|ing|ed)?|ran|flies|flying|flew")
+ANIMAL_MOVER_RE = re.compile(rf"\b(?:{_ANIMAL})\b(?:\s+[\w'’,-]+){{0,6}}?\s+(?:{_MOVE})\b", re.I)
+_ANIMAL_BUCKETS = (
+    re.compile(r"\b(?:paws?|hoofs?|hooves|legs?|wings?|fins?|claws?|talons?|feet|flippers?|forelegs?|hindlegs?)\b", re.I),
+    re.compile(r"\b(?:weight|balance|momentum|thrust|pushes? off)\b", re.I),
+    re.compile(r"\b(?:plants?|planted|lands?|lifts?|swings?|extends?|flaps?|beats?|strokes?|sweeps?|reach(?:es)?|folds?|unfolds?"
+               r"|kicks?|undulat\w+)\b", re.I),
+    re.compile(r"\b(?:spine|tail|head|neck|ears?|mane|body|shoulders?|flanks?|ribs?|feathers?|fur|coat|torso|hips?|whiskers?)\b", re.I))
+_VEHICLE = (r"(?:car|truck|van|bus|taxi|train|tram|motorcycle|motorbike|bicycle|bike|scooter|boat|ship|sailboat|yacht|canoe|kayak"
+            r"|ferry|aircraft|airplane|plane|jet|helicopter|drone|rover|tractor|sled|carriage|cart)(?:s|es)?")
+_VMOVE = (r"(?:drive|drives|driving|ride|rides|riding|race|races|racing|speed|speeds|speeding|cruise|cruises|cruising|roll|rolls"
+          r"|rolling|sail|sails|sailing|glide|glides|gliding|fly|flies|flying|pedal|pedals|pedaling|row|rows|rowing|paddle"
+          r"|paddles|paddling|travel|travels|traveling|zoom|zooms|zooming|moves|moving|passes|passing)")
+VEHICLE_MOVER_RE = re.compile(rf"\b{_VEHICLE}\b(?:\s+[\w'’,-]+){{0,6}}?\s+{_VMOVE}\b", re.I)
+_VEHICLE_BUCKETS = (
+    re.compile(r"\b(?:wheels?|tyres?|tires?|rotors?|propellers?|props?|hull|bow|keel|sails?|oars?|paddles?|pedals?|handlebars?"
+               r"|engine|exhaust|wings?|blades?|runners?)\b", re.I),
+    re.compile(r"\b(?:suspension|chassis|body|frame|lean(?:s|ing)?|banks?|banking|pitch(?:es)?|sways?|rocks?|tilts?|bounces?"
+               r"|settles?|dips?|surges?|heel(?:s|ing)?)\b", re.I),
+    re.compile(r"\b(?:spray|mist|dust|wake|foam|ripples?|smoke|vapou?r|trail|reflections?|skid|puddles?|splash(?:es)?"
+               r"|turbulence|sparks?|gravel|waves?)\b", re.I))
+
+
+def mover_problems(prompt: str, said: str = "") -> list[str]:
+    """걷는 사람 말고도 움직이는 동물·탈것은 움직이는 부분과 몸·차체의 반응을 나눠 써야 한다. 1인칭 요청은 보지 않는다.
+
+    동물은 발·날개, 체중, 착지·들기·휘젓기 같은 단계, 몸(척추·꼬리·머리)의 따름 중 세 가지 이상.
+    탈것은 바퀴·선체·날개, 차체의 반응, 뒤에 남는 물보라·먼지·물결 중 두 가지 이상.
+    """
+    if pov_wanted(said):
+        return []
+    out = []
+    if ANIMAL_MOVER_RE.search(prompt or "") and sum(bool(rx.search(prompt)) for rx in _ANIMAL_BUCKETS) < 3:
+        out.append('Describe the animal\'s motion physically in "action" instead of just saying it moves: the paw, hoof or wing that '
+                   "plants or beats and takes the weight, how the leg or wing swings through to the next stride or beat, and how the "
+                   "spine, shoulders, head and tail answer it.")
+    if VEHICLE_MOVER_RE.search(prompt or "") and sum(bool(rx.search(prompt)) for rx in _VEHICLE_BUCKETS) < 2:
+        out.append('Describe the vehicle\'s motion physically in "action" instead of just saying it moves: the wheels, rotors or hull '
+                   "doing the work, how the body settles or leans on its suspension or in the air, and what trails behind it "
+                   "(spray, dust, wake, ripples).")
+    return out
+
+
+# 비·눈·안개는 깊이별로 나눠 쓰고(weather_depth_problems), 김·연기·먼지·불똥·꽃잎·물보라 같은 주변 입자는 빛이나 표면과 이어서 쓴다.
+# '미세한 먼지가 떠다닌다' 만 쓰면 배경 효과일 뿐이다 (1번 글: 'Rain moves at different apparent depths, visible against shadowed building surfaces')
+AMBIENT_RE = re.compile(r"\b(?:mist|steam|smoke|dust|embers?|sparks?|petals?|pollen|fireflies|spray|bubbles?|ash|vapou?r)\b", re.I)
+AMBIENT_LINK_RE = re.compile(
+    r"\b(?:light|lights|lit|beam|glow(?:s|ing)?|backlight|highlights?|reflect\w*|shadows?|surfaces?|glass|water|ground|pavement|wall|"
+    r"walls|facades?|windows?|sky|sun|sunlight|lamp|rim|edge|edges|skin|fabric|leaf|leaves|branches|table|floor|ceiling|roof|"
+    r"buildings?|trees?|hills?|peaks?|rim|cup|bottle|lid|rim|stone|wood|metal|steel|bark|horizon|distance|distant)\b", re.I)
+
+
+def ambient_link_problems(prompt: str) -> list[str]:
+    """주변 입자(김·연기·먼지·불똥·꽃잎·물보라)가 나오면 어느 한 문장에서 빛이나 표면과 이어져야 한다."""
+    sents = [s for s in re.split(r"(?<=[.!?;])\s+", prompt or "") if AMBIENT_RE.search(s)]
+    if not sents or any(AMBIENT_LINK_RE.search(s) for s in sents):
+        return []
+    return ["The atmosphere (mist, steam, smoke, dust, sparks, petals, spray) floats unconnected. Tie it to the light and the surfaces "
+            "in the same sentence: where it catches the light, what it drifts past, what it settles on."]
 
 
 def example_copy_problems(result: dict, said: str, scene: str) -> list[str]:
@@ -1006,6 +1074,8 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
             problems += camera_sheet_problems(result)
             problems += weather_depth_problems(prompt)
             problems += gait_problems(prompt, said)
+            problems += mover_problems(prompt, said)
+            problems += ambient_link_problems(prompt)
         if operating_pov(said) and not (HAND_WORDS_RE.search(prompt) and re.search(r"\b(?:hands?|forearms?|gloves?)\b", prompt, re.I)):
             problems.append("The user asked for a first-person view of operating a vehicle: show the viewer's own hands or "
                             "forearms on the real controls (yoke, wheel, handlebars) at the bottom edge of the frame, and "
@@ -1061,6 +1131,12 @@ _KO_RULES = [
      lambda m: "비·눈이 배경 효과로만 쓰였습니다. 가까이·중간·멀리 깊이별로 나눠 쓰고 건물·바닥 반사·빛과 이어서 묘사해야 합니다."),
     (re.compile(r"^Describe the walk physically"),
      lambda m: "걷는다고만 쓰였습니다. 발의 착지, 체중 이동, 다음 발의 전진, 팔과 몸통의 움직임으로 나눠 써야 합니다."),
+    (re.compile(r"^Describe the animal's motion physically"),
+     lambda m: "동물이 움직인다고만 쓰였습니다. 발·날개가 딛고 치는 순간, 체중, 다음 걸음·날갯짓, 척추·꼬리·머리의 따름으로 나눠 써야 합니다."),
+    (re.compile(r"^Describe the vehicle's motion physically"),
+     lambda m: "탈것이 움직인다고만 쓰였습니다. 바퀴·선체의 움직임, 차체의 기울어짐·출렁임, 뒤에 남는 물보라·먼지·물결로 나눠 써야 합니다."),
+    (re.compile(r"^The atmosphere \(mist"),
+     lambda m: "김·연기·먼지 같은 입자가 빛이나 표면과 이어지지 않고 떠 있습니다. 빛을 받는 곳, 지나가는 곳, 내려앉는 곳을 함께 써야 합니다."),
     (re.compile(r"^Do not restate the look"),
      lambda m: "첫 화면에 이미 있는 외형을 다시 설명했습니다. 움직임만 써야 합니다."),
     (re.compile(r'^"ko\.(\w+)" must be a Korean sentence'),
