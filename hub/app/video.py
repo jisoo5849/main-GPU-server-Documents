@@ -125,6 +125,100 @@ Rules:
 The four parts are joined in this order into one English prompt of {lo} to {hi} words in total (aim for about {target}, roughly {part_target} words per part); each part has at least {part_min} words. {style}{example}"""
 
 
+# ── 소리: 영상과 소리를 함께 만드는 모델(LTX-2.5)용. 영상 프롬프트 뒤에 붙는 'Audio:' 단락을 따로 쓴다 ──
+SOUND_SYSTEM = """You are the sound designer of a small film crew. You write the sound for one short video clip; the video model creates the audio together with the picture from your text.
+Clip: about {seconds} seconds, one continuous shot.
+Return JSON only:
+- "sound": one English paragraph of {lo} to {hi} words that starts with "Audio:".
+- "ko": one Korean sentence that tells the user what they will hear.
+Rules:
+- Order: first the ambient bed of the place (room tone, wind, a distant hum), then the sounds that the visible actions make, in the order of the picture (name what makes each sound, its material and its distance, for example a heel on wet stone, fabric brushing, a motor humming), then the music, then how the sound settles with the final frame.
+- Sound only what the picture shows or implies, and never add a sound source that is not in the video text. When a thing makes no sound (space, a still lake), let a quiet bed and the music carry it instead of inventing noise.
+- Music: {music_rule}
+- Speech: {speech_rule}
+- Positive phrasing only: describe what is heard; never write what is absent (no "no", "not", "without").
+- Never name songs, bands, artists, brands or real people, and never write lyrics."""
+MUSIC_ON = ("add a quiet instrumental score under the sounds: name its mood, its tempo (slow, steady or driving) and two or three "
+            "instruments or synthesizer textures that fit the picture; keep it clearly below the sound effects and let it fade with the ending.")
+MUSIC_OFF = "the user asked for no music: write no music at all, only the ambient bed and the sound effects."
+SPEECH_OFF = "the clip has no spoken words: write no speech, singing or narration."
+SPEECH_ON = ("the user gave these spoken lines: {lines}. Put each line in double quotes, word for word and in its original language, "
+             "say which visible person speaks it, and describe the voice in a few words. Add no other speech.")
+NO_MUSIC_RE = re.compile(r"음악\s*(?:은|도|을)?\s*(?:없이|빼|넣지\s*마|필요\s*없)|배경\s*음악\s*(?:은\s*)?(?:없|빼)|무\s*음악"
+                         r"|\bno (?:background )?music\b|without (?:any )?music", re.I)
+QUOTE_RE = re.compile(r'["“”「」『』]\s*([^"“”「」『』]{2,200}?)\s*["“”「」『』]')
+# 따옴표가 대사인지는 말하는 말이 함께 있을 때만 본다 ('"니키"라는 고양이' 의 이름을 대사로 읽지 않는다)
+SPEECH_CUE_RE = re.compile(r"말(?:한|해|하|을|이)|라고\s*(?:말|외|속삭|인사|노래|한다|해)|대사|외치|속삭|인사|\bsays?\b|\bsaid\b|speak|whisper|shout|talk", re.I)
+QUOTED_OUT_RE = re.compile(r'["“”][^"“”]*["“”]')
+SOUND_NEGATION_RE = re.compile(r"\b(?:no|not|without)\b", re.I)
+
+
+def spoken_lines(said: str) -> list[str]:
+    """사용자가 따옴표로 준 대사. 영상 안에서 그대로 말하게 한다"""
+    if not SPEECH_CUE_RE.search(said or ""):
+        return []
+    return [m.strip() for m in QUOTE_RE.findall(said or "") if m.strip()][:4]
+
+
+def sound_problems(data, said: str, profile: dict) -> list[str]:
+    if not isinstance(data, dict):
+        return ["Return a JSON object with sound and ko."]
+    lo, hi = profile.get("sound_words") or [35, 120]
+    snd = str(data.get("sound") or "").strip()
+    problems = []
+    n = len(snd.split())
+    if not lo <= n <= hi:
+        problems.append(f'"sound" has {n} words; write {lo} to {hi} words.')
+    if HANGUL_RE.search(QUOTED_OUT_RE.sub("", snd)):
+        problems.append('"sound" must be English; only a spoken line in double quotes may keep its own language.')
+    if not HANGUL_RE.search(str(data.get("ko") or "")):
+        problems.append('"ko" must be a Korean sentence.')
+    lines = spoken_lines(said)
+    if QUOTED_OUT_RE.sub("", snd) != snd and not lines:
+        problems.append("No one speaks in this clip: remove the quoted words.")
+    for line in lines:
+        if line not in snd:
+            problems.append(f'Say the user\'s spoken line word for word in double quotes: "{line}".')
+    if SOUND_NEGATION_RE.search(QUOTED_OUT_RE.sub("", snd)):
+        problems.append('Use positive phrasing only: describe what is heard, never write "no", "not" or "without".')
+    return problems
+
+
+async def write_sound(call, text: str, notes: str, video_prompt: str, seconds: float, profile: dict,
+                      rounds: int = 2) -> dict:
+    """영상 프롬프트를 본 뒤 소리 단락을 쓴다 (같은 LLM 차례 안). {'sound': 'Audio: ...', 'ko': '...', 'rounds': n, 'left': [...]}"""
+    said = f"{text} {notes}".strip()
+    lo, hi = profile.get("sound_words") or [35, 120]
+    lines = spoken_lines(said)
+    system = SOUND_SYSTEM.format(
+        seconds=seconds, lo=lo, hi=hi, music_rule=MUSIC_OFF if NO_MUSIC_RE.search(said) else MUSIC_ON,
+        speech_rule=SPEECH_ON.format(lines=" | ".join(f'"{x}"' for x in lines)) if lines else SPEECH_OFF)
+    user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "") \
+        + f"VIDEO TEXT (what the picture and the motion show):\n{video_prompt}"
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    schema = {"type": "object", "properties": {"sound": {"type": "string"}, "ko": {"type": "string"}}, "required": ["sound", "ko"]}
+    best, data, problems = None, {}, ["no answer"]
+    for rnd in range(1, rounds + 1):
+        reply = await call({"messages": messages, "format": schema, "think": False, "options": {"temperature": 0.6}})
+        content = (reply.get("message") or {}).get("content", "")
+        try:
+            data = parse_json_reply(content)
+        except PromptxError as e:
+            data, problems = {}, [str(e)]
+        else:
+            problems = sound_problems(data, said, profile)
+        if isinstance(data, dict) and str(data.get("sound") or "").strip() and (best is None or len(problems) < len(best[1])):
+            best = (data, problems)
+        if not problems:
+            break
+        messages = messages + [{"role": "assistant", "content": content}, repair_message(problems)]
+    data, left = best if best else ({}, problems)
+    snd = re.sub(r"\s+", " ", str(data.get("sound") or "")).strip()
+    if snd and not snd.lower().startswith("audio:"):
+        snd = "Audio: " + snd
+    return {"sound": snd, "ko": str(data.get("ko") or "").strip()[:300], "rounds": rnd, "left": left}
+
+
 @lru_cache(maxsize=1)
 def load_knowledge() -> dict:
     with open(KNOWLEDGE_PATH, encoding="utf-8") as f:
@@ -266,6 +360,8 @@ def suggest_settings(profile: dict, seconds=None) -> dict:
     if not math.isfinite(sec) or sec <= 0:
         sec = float(profile["default_seconds"])   # inf·nan·0·음수는 기본 길이로 (int(inf) 는 예외를 낸다)
     sec = min(max(0.5, sec), 600.0)
+    if profile.get("whole_seconds"):       # LTX 는 길이를 정수 초로 받는다: 2.5초는 3초로, 1초는 최소 길이로 맞춘다
+        sec = float(max(int(profile.get("min_seconds") or 1), int(round(sec))))
     want = int(round(sec * fps)) + 1
     frames = min(maxf, max(step + 1, ((want - 1) // step) * step + 1))
     return {"frames": frames, "fps": fps, "seconds": round((frames - 1) / fps, 2), "capped": want > maxf}
@@ -1301,6 +1397,7 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
     model, frame_model = settings.expand_model, settings.video_frame_model
     frame, scene_info, crew_info, menus = frame_in, None, None, None
     length = None
+    sound_info = None
     result, rounds, left = {}, 0, []
     try:
         if b64 is not None and frame_model != model:
@@ -1338,6 +1435,8 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
                 result, more, left = await draft(call, text, notes, profile, suggested["seconds"], frame, scene, rng=rng,
                                                  style=style)
                 rounds += more
+            if profile.get("sound") and str(result.get("prompt") or "").strip():
+                sound_info = await write_sound(call, text, notes, str(result["prompt"]), suggested["seconds"], profile)
     except llm.HelperBusy as e:
         raise PromptxError(str(e), 503) from None
     except RuntimeError as e:
@@ -1346,9 +1445,15 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
     motion = str(result.get("prompt") or "").strip()
     ko = result.get("ko") if isinstance(result.get("ko"), dict) else {}
     parts = {p["key"]: str(result.get(p["key"]) or "").strip() for p in long_spec()["parts"]} if long else None
-    return {"prompt": compose(mode, scene, motion, style, long), "motion": motion, "long": long, "parts": parts,
+    sound = (sound_info or {}).get("sound") or ""
+    ko_out = {k: str(ko.get(k) or "") for k in KO_KEYS}
+    if sound and (sound_info or {}).get("ko"):
+        ko_out["sound"] = sound_info["ko"]
+    body = compose(mode, scene, motion, style, long)
+    return {"prompt": f"{body}\n\n{sound}" if sound and body else body, "sound": sound,
+            "sound_left": (sound_info or {}).get("left") or [], "motion": motion, "long": long, "parts": parts,
             "scene": scene if mode == "t2v" else "", "profile": pid, "profile_title": profile["title"], "mode": mode,
-            "settings": suggested, "frame": frame, "ko": {k: str(ko.get(k) or "") for k in KO_KEYS},
+            "settings": suggested, "frame": frame, "ko": ko_out,
             "crew": crew_info, "scene_crew": (scene_info or {}).get("crew"),
             "scene_violations": (scene_info or {}).get("violations") or [],
             "length_choice": length, "violations": left, "violations_ko": explain_ko(left), "rounds": rounds, "model": model,
