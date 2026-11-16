@@ -722,6 +722,102 @@ def test_pov_detection_covers_common_phrasings():
         assert not video.pov_wanted(said), said
 
 
+# ── 11-16 파일럿 1인칭 요청: 앞 두 단락은 조종석, 뒤 두 단락은 길이 예시의 찻잔을 베낀 영상이 나왔다 ──
+PILOT_SAID = "비행기를 운항하는 파일럿의 1인칭 시점 영상으로 만들어줘"
+PILOT_SCENE = "A first-person view from an airliner cockpit looking out the windshield at clouds, instruments and the control yoke"
+PILOT_KO = {"camera": "카메라는 조종석 시점에서 수평으로 천천히 앞으로 나아갑니다.", "motion": "조종사의 손이 조종간을 잡고 작게 움직입니다.",
+            "timing": "5초 동안 일정한 속도로 진행됩니다."}
+PILOT_GOOD = {
+    "ko": PILOT_KO,
+    "shot": ("Live-action, cinematic first-person POV from the pilot's seat inside an airliner cockpit, composed as one "
+             "continuous shot. The view looks straight ahead through the wide curved windshield at a bright horizon above a "
+             "sea of white clouds, while the dark glare shield and the glowing instrument displays fill the lower frame. The "
+             "viewer's own hands in thin black gloves rest on the control yoke at the bottom edge of the frame, the leather "
+             "of the gloves and the matte plastic of the yoke clearly visible. A 35mm perspective keeps the yoke and the "
+             "nearest displays crisp while the clouds fall into a soft blur, so the horizon reads first, the displays second "
+             "and the hands on the yoke third."),
+    "camera_light": ("The camera holds the pilot's eye position and eases forward in one slow, steady push toward the "
+                     "windshield, keeping the same height and a level horizon. Warm sunrise light enters from the right of the "
+                     "windshield, drawing a thin golden rim along the top of the yoke and the knuckles of the gloves and laying "
+                     "soft, low shadows across the glare shield, while cool blue light from the displays lifts the shadow side "
+                     "of the panel. A restrained film look with gentle highlight roll-off, fine grain and a warm-to-cool "
+                     "neutral grade keeps detail in both the bright clouds and the dark instrument panel."),
+    "action": ("At first the airliner flies level and almost still: the horizon stays straight and the clouds below drift "
+               "very slowly toward the windshield. Then the gloved hands tighten on the yoke and ease it a fraction forward, "
+               "and the horizon tilts by a degree while the cloud tops slide past the lower edge of the glass. As the push "
+               "continues, a thin thread of sunlight glides across the glare shield and the displays pulse softly, and the "
+               "hands settle back into a steady grip as the aircraft levels again."),
+    "ending": ("Finally the small movements fade, the horizon returns to a perfectly level line and the camera comes to rest "
+               "on a calm, slightly closer view through the windshield, with the clouds still drifting faintly below. The "
+               "yoke keeps its exact shape, the gloves keep their position at the bottom edge, the glare shield and the "
+               "instrument displays stay fixed in place, and the light on the cloud tops stays unchanged. The final frame "
+               "holds the same calm, high-altitude feeling, the light a touch warmer than at the start.")}
+# 손 낱말을 모두 뺀 같은 글
+PILOT_NO_HANDS = dict(PILOT_GOOD)
+PILOT_NO_HANDS["shot"] = PILOT_GOOD["shot"].replace(
+    "The viewer's own hands in thin black gloves rest on the control yoke at the bottom edge of the frame, the leather of the "
+    "gloves and the matte plastic of the yoke clearly visible.", "The control yoke sits at the bottom edge of the frame in matte black plastic.")
+PILOT_NO_HANDS["shot"] = PILOT_NO_HANDS["shot"].replace(" and the hands on the yoke third", " and the yoke third")
+PILOT_NO_HANDS["camera_light"] = PILOT_GOOD["camera_light"].replace(" and the knuckles of the gloves", "")
+PILOT_NO_HANDS["action"] = PILOT_GOOD["action"].replace(
+    "Then the gloved hands tighten on the yoke and ease it a fraction forward, and the horizon tilts", "Then the horizon tilts").replace(
+    ", and the hands settle back into a steady grip as the aircraft levels again", ", and the aircraft levels again")
+PILOT_NO_HANDS["ending"] = PILOT_GOOD["ending"].replace("the gloves keep their position at the bottom edge, ", "")
+# 잘못 나온 글: 조종석(앞)과 길이 예시의 찻잔(뒤)
+PILOT_BAD = dict(PILOT_GOOD)
+EX = video.long_spec()["example"]
+PILOT_BAD["camera_light"] = PILOT_GOOD["camera_light"].split(". ")[0] + ". " + EX["camera_light"].split(". ", 1)[1]
+PILOT_BAD["action"] = EX["action"]
+PILOT_BAD["ending"] = EX["ending"]
+
+
+def test_t2v_long_rejects_a_copy_of_the_length_example():
+    probs = video.check_video(PILOT_BAD, T2V_LONG, PILOT_SAID, None, PILOT_SCENE)
+    for key in ("camera_light", "action", "ending"):
+        assert any(f'"{key}" copies the EXAMPLE' in p for p in probs), (key, probs)
+    assert any('"action" describes a different scene from "shot"' in p for p in probs)
+    assert any('"ending" describes a different scene from "shot"' in p for p in probs)
+    # 요청이 정말 찻잔·김이면 같은 낱말도 허용한다 (장면 글에 있다)
+    def reworded(text):   # 문장을 그대로 베끼지 않은 같은 장면 (낱말 12개 연속 일치를 끊는다)
+        out = []
+        for i, w in enumerate(text.split()):
+            out.append(w)
+            if i % 6 == 5:
+                out.append("really")
+        return " ".join(out)
+    tea_parts = {**PILOT_BAD, **{k: reworded(PILOT_BAD[k]) for k in ("camera_light", "action", "ending")}}
+    teacup = video.check_video(tea_parts, T2V_LONG, "창가 찻잔에서 김이 오르는 영상",
+                               None, "A teacup on a windowsill with steam rising and branches outside the window")
+    assert not any("copies the EXAMPLE" in p for p in teacup), teacup
+    # 같은 글을 조종석 요청에서 보면 낱말이 요청에 없으니 걸린다
+    assert any("copies the EXAMPLE" in p for p in video.check_video(tea_parts, T2V_LONG, PILOT_SAID, None, PILOT_SCENE))
+    # 올바른 조종석 글, 구름·골목 같은 정상 글은 걸리지 않는다
+    assert video.check_video(PILOT_GOOD, T2V_LONG, PILOT_SAID, None, PILOT_SCENE) == []
+    assert not video.part_consistency_problems(LONG) and not video.example_copy_problems(LONG, "향수 광고 영상", SCENE)
+    # 단락이 짧은 보통 프로필도 겹치는 낱말이 있으면 통과한다 (예시를 주지 않는 프로필은 베끼기 검사도 하지 않는다)
+    mid = {"ko": KO, **{k: ". ".join(LONG[k].split(". ")[:2]).rstrip(".") + "." for k in PARTS}}
+    assert video.part_consistency_problems(mid) == []
+    # 예시 머리말은 예시의 명사를 쓰지 말라고 알려 준다
+    user_msgs = video.build_messages(PILOT_SAID, "", T2V_LONG, 5.0, scene=PILOT_SCENE)
+    assert "teacup" in user_msgs[0]["content"] and "never use its nouns" in user_msgs[0]["content"]
+
+
+def test_pov_operating_request_shows_the_viewers_hands_on_the_controls():
+    assert video.operating_pov(PILOT_SAID) and video.operating_pov("자동차 운전석 1인칭 시점 주행 영상")
+    # 드론 FPV·그냥 걷는 1인칭·손 숨김 요청은 해당하지 않는다
+    assert not video.operating_pov("1인칭 드론 비행 영상") and not video.operating_pov("1인칭으로 걷는 영상")
+    assert not video.operating_pov("파일럿 1인칭 시점, 손은 보이지 않게") and not video.operating_pov("비행기 조종석 영상")
+    msgs = video.build_messages(PILOT_SAID, "", T2V_LONG, 5.0, scene=PILOT_SCENE)
+    assert "operating something" in msgs[1]["content"] and "yoke, wheel, handlebars" in msgs[1]["content"]
+    assert "operating something" not in video.build_messages("1인칭으로 걷는 영상", "", T2V_LONG, 5.0)[1]["content"]
+    probs = video.check_video(PILOT_NO_HANDS, T2V_LONG, PILOT_SAID, None, PILOT_SCENE)
+    assert any("first-person view of operating" in p for p in probs), probs
+    assert not any("first-person view of operating" in p for p in video.check_video(PILOT_GOOD, T2V_LONG, PILOT_SAID, None, PILOT_SCENE))
+    # 조종하지 않는 1인칭 요청에는 손을 요구하지 않는다
+    walk = video.check_video(PILOT_NO_HANDS, T2V_LONG, "1인칭 시점으로 숲길을 걷는 영상", None, PILOT_SCENE)
+    assert not any("first-person view of operating" in p for p in walk)
+
+
 def test_pov_check_targets_only_the_viewer():
     rx = video.SELF_BODY_RE
     for bad in ("an over-the-shoulder view", "the pilot's headset", "the pilot’s head", "a view of a seated pilot",

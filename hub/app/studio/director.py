@@ -52,9 +52,12 @@ FAIL_TEXT = {
     "no_image": ("사진을 함께 올려 주세요.", []),
     "unavailable": ("이 기능은 지금 준비 중입니다.", []),
     "unsafe": ("이 요청은 만들 수 없습니다.", []),
+    "bad_prompt": ("요청과 다른 장면으로 프롬프트가 써져서 만들지 않았습니다. 다시 시도해 볼까요?", RETRY_FULL),
     "changed": ("결과 파일이 바뀌어 이어서 만들 수 없습니다.", []),
     "gone": ("결과 파일을 찾을 수 없어 이어서 만들 수 없습니다.", []),
 }
+# 고쳐 쓴 뒤에도 남으면 그 프롬프트로 영상을 만들지 않는 위반: 요청과 다른 장면(예시 베끼기)이다 (11-16 파일럿 요청)
+BLOCKING_RE = re.compile(r"copies the EXAMPLE|describes a different scene")
 PLAN_ACTIONS = [{"id": "approve", "label": "승인"}, {"id": "cancel", "label": "취소"}]
 PLAN_STATUS_TEXT = {"approved": "승인함", "cancelled": "취소됨", "expired": "시간이 지나 취소됨", "replanned": "바꿔서 다시 계획함"}
 TWO_RE = re.compile(r"두\s*(?:사람|명)|둘이|커플|\btwo\b", re.I)
@@ -724,20 +727,34 @@ class Director:
             ctx.bag = bag
             ctx.stage = "frame" if image is not None and reuse_frame is None else "prompt"
             await self.emit(ctx, True)
-            r = await self._guard_llm(ctx, self.deps.render(
-                ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text, notes="", style="",
-                profile_id=recipe["video_profile"], seconds=seconds, image=image, image_prompt="",
-                crew=False if used_default else None, read_frame_on=True, auto_length=True, frame=reuse_frame))
-            f = None
-            if needs_fix(r.get("violations")):
-                ctx.has_fix = True
-                ctx.stage = "fix"
-                await self.emit(ctx, True)
-                f = await self._guard_llm(ctx, self.deps.fix(
+            for attempt in (1, 2):
+                r = await self._guard_llm(ctx, self.deps.render(
                     ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text, notes="",
-                    style="", profile_id=r["profile"], seconds=r["settings"]["seconds"],
-                    current={"ko": r["ko"], "parts": r["parts"], "motion": r["motion"]}, frame=r["frame"],
-                    scene=r.get("scene") or ""))
+                    style="", profile_id=recipe["video_profile"], seconds=seconds, image=image, image_prompt="",
+                    crew=False if used_default else None, read_frame_on=True, auto_length=True,
+                    frame=reuse_frame if attempt == 1 else (reuse_frame or r.get("frame"))))
+                f = None
+                if needs_fix(r.get("violations")):
+                    ctx.has_fix = True
+                    ctx.stage = "fix"
+                    await self.emit(ctx, True)
+                    f = await self._guard_llm(ctx, self.deps.fix(
+                        ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text,
+                        notes="", style="", profile_id=r["profile"], seconds=r["settings"]["seconds"],
+                        current={"ko": r["ko"], "parts": r["parts"], "motion": r["motion"]}, frame=r["frame"],
+                        scene=r.get("scene") or ""))
+                left = (f if f is not None else r).get("violations") or []
+                blocking = [v for v in left if BLOCKING_RE.search(v)]
+                if not blocking:
+                    break
+                # 요청과 다른 장면의 프롬프트로 GPU 를 쓰지 않는다: 한 번 더 새로 쓰고, 그래도 같으면 실패로 끝낸다
+                await store.event(turn["id"], "prompt_rejected", {"attempt": attempt, "violations": blocking})
+                ctx.stage = "prompt"
+                await self.emit(ctx, True)
+            else:
+                for e in bag:
+                    await store.event(turn["id"], "llm_job", {k: e.get(k) for k in ("job_id", "purpose", "model", "end")})
+                raise StepError("bad_prompt", "; ".join(blocking)[:300])
             for e in bag:
                 await store.event(turn["id"], "llm_job", {k: e.get(k) for k in ("job_id", "purpose", "model", "end")})
         final = f["prompt"] if f and f.get("changed") else r["prompt"]
