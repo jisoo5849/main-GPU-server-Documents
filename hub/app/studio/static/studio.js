@@ -44,9 +44,48 @@
   function clearEmpty() { const e = feed.querySelector(".empty"); if (e) e.remove(); }
   function scrollDown() { feed.scrollTop = feed.scrollHeight; }
 
+  // 크게 보기: 브라우저의 기본 전체 화면 단추가 안 눌리는 환경(앱 안 브라우저 창 등)에서도 되도록 화면 가득 덮는 보기를 직접 만든다.
+  // 가능하면 진짜 전체 화면도 함께 켠다 (안 되면 덮개만 보인다). Esc·닫기·바깥을 누르면 닫힌다
+  function bigView(src) {
+    const t0 = src.currentTime, wasPlaying = !src.paused;
+    src.pause();
+    const over = el("div", "vbig");
+    const v = document.createElement("video");
+    v.src = src.src; v.controls = true; v.loop = true; v.autoplay = true; v.playsInline = true;
+    v.addEventListener("loadedmetadata", () => { try { v.currentTime = t0; } catch (e) { /* 처음부터 */ } }, { once: true });
+    const close = el("button", "vclose", "닫기 ✕"); close.type = "button";
+    let closed = false;
+    const done = () => {
+      if (closed) return; closed = true;
+      document.removeEventListener("keydown", onKey, true); document.removeEventListener("fullscreenchange", onFs);
+      try { src.currentTime = v.currentTime; } catch (e) { /* 그대로 */ }
+      v.pause(); over.remove();
+      if (document.fullscreenElement) { const p = document.exitFullscreen(); if (p && p.catch) p.catch(() => {}); }
+      if (wasPlaying) { const p = src.play(); if (p && p.catch) p.catch(() => {}); }
+    };
+    const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); done(); } };
+    const onFs = () => { if (!document.fullscreenElement) done(); };
+    close.addEventListener("click", done);
+    over.addEventListener("click", (e) => { if (e.target === over) done(); });
+    document.addEventListener("keydown", onKey, true);
+    over.append(v, close); document.body.append(over);
+    try {
+      const p = over.requestFullscreen ? over.requestFullscreen() : null;
+      if (p && p.then) p.then(() => document.addEventListener("fullscreenchange", onFs)).catch(() => {});
+    } catch (e) { /* 덮개만 보인다 */ }
+    const pl = v.play(); if (pl && pl.catch) pl.catch(() => {});
+  }
+
   function attachmentNode(id, media) {
     const url = "/studio/api/files/" + id;
-    if (media === "video") { const v = document.createElement("video"); v.src = url; v.controls = true; v.loop = true; v.playsInline = true; v.preload = "metadata"; return v; }
+    if (media === "video") {
+      const wrap = el("div", "vwrap");
+      const v = document.createElement("video"); v.src = url; v.controls = true; v.loop = true; v.playsInline = true; v.preload = "metadata";
+      const big = el("button", "vfs", "⛶ 크게 보기"); big.type = "button"; big.title = "화면 가득 크게 봅니다 (Esc 로 닫기)";
+      big.addEventListener("click", () => bigView(v));
+      wrap.append(v, big);
+      return wrap;
+    }
     const i = document.createElement("img"); i.src = url; i.className = "thumb"; i.alt = ""; return i;
   }
 
