@@ -553,7 +553,7 @@ def test_long_messages_carry_the_four_part_plan():
     sys_msg, user_msg = video.build_messages("향수 광고 영상", "", T2V_LONG, 5.0, scene=SCENE, style="STYLE X")
     for key in PARTS:
         assert f'"{key}"' in sys_msg["content"]
-    assert "320 to 500 words" in sys_msg["content"] and "quality buzzwords" in sys_msg["content"]
+    assert "320 to 600 words" in sys_msg["content"] and "aim for about 410" in sys_msg["content"] and "quality buzzwords" in sys_msg["content"]
     assert "EXAMPLE of the length" in sys_msg["content"] and "ceramic teacup" in sys_msg["content"]   # 러다이트 밀도 예시
     assert "Model: Wan 2.2 T2V 14B." in sys_msg["content"] and "러다이트" not in sys_msg["content"]  # Luddite 로 읽히지 않게
     assert "LOOK REFERENCE" in user_msg["content"] and "do not restate" not in user_msg["content"]
@@ -956,6 +956,30 @@ def test_animals_and_vehicles_need_physical_motion_too():
     assert video.travel_problems("The boat glides on at the same pace while the camera settles.", "", "t2v") == []
 
 
+def test_t2v_long_cap_is_600_but_the_aim_stays_410():
+    # 11-16 메인: 개 예시가 542낱말이라 상한 500 을 넘었다. 상한은 600 으로 넓히고 목표는 410 에 둔다 (넓힌 상한이 '더 길게' 가 아니게)
+    assert T2V_LONG["words"] == [320, 600] and video.aim_words(T2V_LONG) == 410
+    assert video.aim_words(I2V_LONG) == 350 and video.aim_words(video.profile_of("wan22_t2v_mid")[1]) == 215   # 목표가 없으면 범위 가운데
+    over = dict(LONG, action=LONG["action"] + " " + LONG["action"] + " " + LONG["action"])
+    n = len(video.assemble(over).split())
+    assert 600 < n
+    msg = [p for p in video.check_video(over, T2V_LONG, "향수 광고 영상", None, SCENE) if "words; write 320 to 600" in p]
+    assert msg and "Cut it to about 410 words in total, about 102 words per part" in msg[0]
+    mid_len = dict(LONG, action=LONG["action"] + " " + LONG["action"])                       # 500 을 넘고 600 이하는 이제 통과한다
+    assert 500 < len(video.assemble(mid_len).split()) <= 600
+    assert not any("words; write" in p for p in video.check_video(mid_len, T2V_LONG, "향수 광고 영상", None, SCENE))
+
+
+def test_layered_rain_in_one_sentence_with_semicolons_passes():
+    # 11-16 메인 I2V 시험: 모델이 세 층으로 쓴 한 문장이 세미콜론에서 잘려 '배경 효과' 로 걸렸다
+    layered = ("Rain falls in distinct layers: near the lens, streaks blur against the dark coat; in the middle, droplets stipple "
+               "the asphalt, rippling the reflections; and far away, a fine mist softens the distant towers.")
+    assert video.weather_depth_problems(layered) == []
+    assert video.weather_depth_problems("Rain falls in three layers over the street.") == []
+    assert len(video.weather_depth_problems(FLAT_RAIN)) == 1                               # 한 층뿐인 비는 여전히 걸린다
+    assert video.ambient_link_problems("Steam rises slowly; it curls through the beam of window light.") == []
+
+
 def test_ambient_particles_and_fog_need_light_surfaces_or_depth():
     assert video.ambient_link_problems("Steam rises from the cup and curls through the beam of window light, catching the backlight.") == []
     assert video.ambient_link_problems(video.assemble(LONG)) == []                                  # 향수 병 글의 안개·먼지는 빛과 이어져 있다
@@ -1207,7 +1231,7 @@ def test_mid_profiles_are_compact_versions_of_the_long_one():
     n = len(video.assemble(mid).split())
     assert 170 <= n <= 260, n
     assert video.check_video(mid, t2v_mid, "향수 광고 영상", None, SCENE) == []
-    assert any("words; write 320 to 500" in p for p in video.check_video(mid, T2V_LONG, "향수 광고 영상", None, SCENE))
+    assert any("words; write 320 to 600" in p for p in video.check_video(mid, T2V_LONG, "향수 광고 영상", None, SCENE))
     # 첫 화면도 참고 글도 모르면 보통 I2V 도 움직임만으로 바뀐다
     result, _, _ = run_render([{"ko": KO, "prompt": MOTION}], username="alice", slug="alice-main",
                               text="고양이가 창가에서 하품하는 영상", profile_id="wan22_i2v_mid", crew=False)
