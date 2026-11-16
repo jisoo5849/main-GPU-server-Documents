@@ -648,6 +648,28 @@ def _alpha_words(text: str) -> list[str]:
     return re.findall(r"[a-z]+", str(text or "").lower())
 
 
+# 요청에 없는 다른 비행기·사람이 글에 들어갔는지 (11-16: 조종석 요청에 부기장 실루엣, 창밖에 다른 비행기)
+EXTRA_AIRCRAFT_RE = re.compile(r"\b(?:another|other|second|distant|nearby|passing|approaching|formation of)\s+"
+                               r"(?:aircraft|airplanes?|planes?|jets?|jetliners?|airliners?|helicopters?)\b|\bcontrails?\b", re.I)
+EXTRA_CREW_RE = re.compile(r"\b(?:co-?pilots?|passengers?|crew members?|flight attendants?|second pilot|another pilot)\b", re.I)
+ALLOW_AIRCRAFT_RE = re.compile(r"다른 비행기|옆 비행기|편대|지나가는|전투기|헬리콥터|여객기가|비행운")
+ALLOW_CREW_RE = re.compile(r"부기장|승객|승무원|동료|co-?pilot|함께|같이")
+
+
+def extra_subject_problems(prompt: str, said: str) -> list[str]:
+    """요청이 이름 붙이지 않은 다른 비행기(창밖)나 다른 사람(조종 1인칭 요청)이 글에 있으면 위반"""
+    found = []
+    if not ALLOW_AIRCRAFT_RE.search(said or ""):
+        found += [m.group(0).lower() for m in EXTRA_AIRCRAFT_RE.finditer(prompt)]
+    if operating_pov(said) and not ALLOW_CREW_RE.search(said or ""):
+        found += [m.group(0).lower() for m in EXTRA_CREW_RE.finditer(prompt)]
+    if not found:
+        return []
+    uniq = ", ".join(sorted(set(found)))
+    return [f"The request names no such subject, so remove: {uniq}. Say what lies beyond the windshield or window and that it holds "
+            "only what the request names (for example only clouds and open sky), and show only the viewer's own hands."]
+
+
 def example_copy_problems(result: dict, said: str, scene: str) -> list[str]:
     """T2V 장문은 길이 예시(찻잔 장면)를 받는다. 모델이 그것을 베껴 요청과 상관없는 찻잔·김·창가가 영상에 나온다
     (11-16 파일럿 1인칭 요청: 앞 두 단락은 조종석, 뒤 두 단락은 찻잔). 예시 낱말이나 문장이 요청·장면에 없는데 나오면 알린다"""
@@ -785,6 +807,7 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
         if profile["mode"] == "t2v" and not profile.get("mid"):
             problems += example_copy_problems(result, said, scene)
         problems += part_consistency_problems(result)
+        problems += extra_subject_problems(prompt, said)
         if operating_pov(said) and not (HAND_WORDS_RE.search(prompt) and re.search(r"\b(?:hands?|forearms?|gloves?)\b", prompt, re.I)):
             problems.append("The user asked for a first-person view of operating a vehicle: show the viewer's own hands or "
                             "forearms on the real controls (yoke, wheel, handlebars) at the bottom edge of the frame, and "
