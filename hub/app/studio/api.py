@@ -311,6 +311,13 @@ async def _post_message(request: Request, user: dict, thread: dict):
         reply = dec["reply"] if dec["action"] == "answer" else (
             "화질 높음은 지금 준비 중입니다. 화질을 빠름으로 바꿔 보내 주세요." if high_ok else "이 기능은 지금 준비 중입니다.")
         return await _reply_only(user, thread, cmid, shown, att_ids, reply)
+    via_image = False
+    if recipe is not None and dec["action"] == "t2v" and settings.studio_t2v_via_image:
+        # 글→영상은 내부에서 장면 이미지를 먼저 만들고 그 이미지로 영상을 만든다. 사용자에게는 한 작업이다.
+        # 두 레시피가 모두 켜져 있을 때만 (아니면 글만으로 영상을 만든다)
+        i2v_r = d.recipe_for("i2v", "high" if high_ok else "fast")
+        if i2v_r is not None and d.recipe_for("image") is not None:
+            recipe, via_image = i2v_r, True
     if want_high and not high_ok and dec["action"] == "image":
         dec = {**dec, "notes": list(dec["notes"]) + ["이미지는 화질 높음이 아직 없어 빠름으로 만들었습니다"]}
     env = await store.studio_env(settings.studio_env_slug)
@@ -350,6 +357,8 @@ async def _post_message(request: Request, user: dict, thread: dict):
     spec = intent.apply_options(intent.extract_spec(req_text if not used_default else ""), options)
     req = {"text": req_text, "used_default": used_default, "attachment_ids": turn_atts, "spec": spec, "mode": "new",
            "notes": dec["notes"], "rule": dec["rule"], "carry": dec["carry"], **reuse}
+    if via_image:
+        req["via_image"] = True
     turn = await store.create_turn(thread["id"], user["id"], _client_ip(request), req, m["id"], recipe["id"],
                                    recipe["version"], dec["action"])
     await store.set_decision(turn["id"], {"action": dec["action"], "source": dec["source"], "carry": dec["carry"],
@@ -530,7 +539,8 @@ async def _spawn_retry(request: Request, user: dict, thread: dict, src: dict, mo
     # 다시 만들기·다시 시도는 원래 요청과 같은 레시피(같은 화질)로 한다. 그 레시피가 꺼졌으면 같은 화질의 다른 레시피로
     recipe = d.recipe_map.get(src.get("recipe_id") or "")
     if recipe is None or recipe["id"] in d.disabled:
-        recipe = d.recipe_for(src.get("action") or "i2v", d.quality_of_turn(src))
+        via = bool((src.get("request") or {}).get("via_image"))
+        recipe = d.recipe_for("i2v" if via else (src.get("action") or "i2v"), d.quality_of_turn(src))
     if recipe is None:
         return err(503, "studio_not_ready", "이 기능은 지금 준비 중입니다.")
     if cmid:

@@ -60,8 +60,15 @@ def quality_variant(r: dict) -> dict | None:
         n = v["prompt"][str(neg["node"])]["inputs"]
         if str(n.get(neg["input"]) or "").strip():
             n[neg["input"]] = str(n[neg["input"]]).rstrip() + QUALITY_NEGATIVE_EXTRA
+    d = v.get("defaults") or {}
+    if r.get("action") in ("i2v", "t2v") and d.get("width"):
+        # 480p 에서 1024×576 으로 (면적 약 1.45배). 720p 는 모델이 지원하지만 메인에서 다른 프로그램이 GPU 14GB 를 쓰는 때가 있어
+        # 메모리 부족을 피하려고 한 단계 낮춘다 [추정]
+        d.update(width=1024, height=576, max_side=1024)
+        v["defaults"] = d
     gpu = int((r.get("estimate") or {}).get("gpu_seconds") or 60)
-    v["estimate"] = {"gpu_seconds": gpu * 5, "basis": "가속을 끄면 스텝이 5배, CFG>1 이라 스텝마다 계산이 2번(실행 약 10배), "
+    scale = 6 if r.get("action") in ("i2v", "t2v") else 5       # 해상도까지 올리면 더 걸린다
+    v["estimate"] = {"gpu_seconds": gpu * scale, "basis": "가속을 끄면 스텝이 5배, CFG>1 이라 스텝마다 계산이 2번(실행 약 10배), "
                                                      "콜드 스타트·정리는 그대로 [추정]"}
     v["limits"] = {"max_run_seconds": max(3600, int(r["limits"]["max_run_seconds"]) * 4)}
     return v

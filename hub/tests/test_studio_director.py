@@ -190,12 +190,14 @@ class FakeDeps:
         self.fs.by_client[cid] = {"prompt_id": jid, "number": 5, "node_errors": {}}
         self.queue_rows = [{"id": jid, "seq": 5, "state": "queued", "kind": "comfy"}]
         outcome = self.outcome_seq.pop(0) if self.outcome_seq else self.outcome
-        asyncio.ensure_future(self._drive(jid, cid, outcome))
+        rec = IMG if body["extra_data"]["studio"]["recipe"] == IMG["id"] else self.rec
+        asyncio.ensure_future(self._drive(jid, cid, outcome, rec))
         return {"prompt_id": jid, "number": 5, "node_errors": {}}
 
-    async def _drive(self, jid, cid, outcome):
+    async def _drive(self, jid, cid, outcome, rec=None):
+        rec = rec or self.rec
         j = self.fs.jobs[jid]
-        bands = self.rec["progress"]["bands"]
+        bands = rec["progress"]["bands"]
         r = self.receivers.get(cid)
         while self.hold:
             await asyncio.sleep(0.01)
@@ -215,7 +217,7 @@ class FakeDeps:
                         await r.send_text('{"type":"progress","data":{"node":"%s","value":2,"max":2,"prompt_id":"%s"}}' % (n, jid))
         await asyncio.sleep(0.03)
         if outcome == "success":
-            if self.rec["action"] in ("image", "edit"):
+            if rec["action"] in ("image", "edit"):
                 self.fs.outputs[jid] = [{"node_id": "9", "rel_path": "studio/chat/2026-11-12/bob/abcd1234/image_00001_.png", "media": "images"}]
             else:
                 self.fs.outputs[jid] = [{"node_id": "108", "rel_path": "studio/chat/2026-11-12/bob/abcd1234/video_00001_.mp4", "media": "videos"},
@@ -229,6 +231,12 @@ class FakeDeps:
         if outcome == "error":
             j["error"] = {"message": "boom"}
         self.queue_rows = []
+
+    async def stage_image(self, env, user, turn, rel):
+        self.calls.append(("stage_image", rel))
+        att_id = str(uuid.uuid4())
+        self.fs.atts[att_id] = {"id": att_id, "media": "image", "input_rel": f"studio/bob/{att_id}.png", "width": 1024, "height": 576}
+        return {"id": att_id, "width": 1024, "height": 576}
 
     async def cancel_queued(self, env_id, ids):
         self.calls.append(("cancel_queued", ids))
@@ -1037,6 +1045,126 @@ async def t_high_quality_edit_also_asks_before_running():
     await d.pump(); await settle(d)
     assert t["state"] == "done"
     assert [c[1] for c in deps.calls if c[0] == "submit"][0]["prompt"]["170:168"]["inputs"]["value"] is False
+
+
+def new_via(fs, text="비행기 조종석에서 1인칭으로 구름 사이를 나는 영상", rec=None, **kw):
+    """글만 보낸 영상 요청: 내부에서 장면 이미지를 먼저 만들고 그 이미지로 영상을 만든다"""
+    t = new_turn(fs, text, rec=rec or REC, **kw)
+    t["request"]["attachment_ids"] = []
+    t["request"]["via_image"] = True
+    t["action"] = "t2v"
+    return t
+
+
+def via_director(deps, rec=None):
+    rec = rec or REC
+    return D.Director(deps, {rec["id"]: rec, IMG["id"]: IMG})
+
+
+async def t_via_image_pipeline_is_one_task_with_only_the_video():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    d = via_director(deps)
+    t = new_via(fs)
+    await d.pump(); await settle(d)
+    assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+    order = [c[0] for c in deps.calls if c[0] in ("expand_image", "submit", "stage_image", "render")]
+    assert order == ["expand_image", "submit", "stage_image", "render", "submit"], order
+    subs = [c[1] for c in deps.calls if c[0] == "submit"]
+    assert [s["extra_data"]["studio"]["recipe"] for s in subs] == [IMG["id"], REC["id"]]
+    assert len({s["client_id"] for s in subs}) == 2           # 접수 이름이 겹치지 않는다
+    # 영상 프롬프트는 장면 이미지(숨은 첨부)를 첫 화면으로, 장면 프롬프트를 함께 받는다
+    rk = [c[1] for c in deps.calls if c[0] == "render"][0]
+    staged = [a for a in fs.atts.values() if a.get("input_rel") == rk["image"]["subfolder"] + "/" + rk["image"]["filename"]]
+    assert len(staged) == 1 and rk["image_prompt"].startswith("IMG ")
+    assert "first-instant" not in rk["image_prompt"] and "still photograph" in [c[1] for c in deps.calls if c[0] == "expand_image"][0]
+    # 장면 이미지는 채팅에 나가지 않는다: 결과 메시지는 영상 하나
+    res = [m for m in fs.messages if m["kind"] == "result"]
+    assert len(res) == 1 and res[0]["data"]["media"] == "video" and len(res[0]["data"]["attachment_ids"]) == 1
+    assert len(fs.results) == 1 and fs.results[0]["media"] == "video"
+    assert "scene" in [s for s, _j, _p in fs.links] and "generate" in [s for s, _j, _p in fs.links]
+    # 사용자에게 보이는 진행: 한 카드, 이미지·첫 화면이라는 말이 없다
+    progs = [e["progress"] for e in deps.published if e.get("type") == "turn.progress"]
+    assert progs and {p["title"] for p in progs} == {"영상 만드는 중"}
+    stages = {p["stage"] for p in progs}
+    assert {"scene", "motion", "generate"} <= stages and not (stages & {"frame", "fix"}), stages
+    for p in progs:
+        assert "이미지" not in p["text"] and "첫 화면" not in p["text"], p
+        assert [c["key"] for c in p["chips"]] == ["prompt", "scene", "motion", "generate", "collect"]
+        if p["stage"] == "scene":
+            assert p["pct"] is None
+    notes = res[0]["data"].get("notes") or []
+    assert "영상 비율은 사진 비율을 따릅니다" not in notes
+    # 장면 이미지 크기는 영상 비율, 영상 크기는 장면 이미지 비율에서 정해진다
+    assert fs.turns[t["id"]]["work"]["size"][0] > fs.turns[t["id"]]["work"]["size"][1]
+
+
+async def t_via_image_high_quality_asks_before_any_gpu_and_runs_both_after_approval():
+    fs = FakeStore(); fs.patch()
+    fs.thread_cfg = {}
+    deps = FakeDeps(fs, rec=HQ)
+    d = via_director(deps, HQ)
+    t = new_via(fs, rec=HQ)
+    await d.pump(); await settle(d)
+    assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))
+    assert "submit" not in [c[0] for c in deps.calls] and "render" not in [c[0] for c in deps.calls]   # 계획 전에는 GPU 를 쓰지 않는다
+    plan = plan_msgs(fs)[0]["data"]["plan"]
+    assert plan["attachment_ids"] == [] and plan["quality"] == "높음"
+    assert plan["estimate_s"] > HQ["estimate"]["gpu_seconds"]      # 장면 이미지 시간이 더해진다
+    assert await d.approve(t) == "ok"
+    await d.pump(); await settle(d)
+    assert t["state"] == "done", (t["state"], t.get("error"))
+    subs = [c[1] for c in deps.calls if c[0] == "submit"]
+    assert [s["extra_data"]["studio"]["recipe"] for s in subs] == [IMG["id"], HQ["id"]]
+    assert len([c for c in deps.calls if c[0] == "expand_image"]) == 1          # 승인 뒤 다시 쓰지 않는다
+    assert len(plan_msgs(fs)) == 1                                               # 계획 카드는 한 번
+
+
+async def t_via_image_scene_failure_and_cancel_stop_before_the_video():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    deps.outcome_seq = ["error"]
+    d = via_director(deps)
+    t = new_via(fs)
+    await d.pump(); await settle(d)
+    assert t["state"] == "failed" and t["error"]["code"] == "run_error", (t["state"], t.get("error"))
+    assert "render" not in [c[0] for c in deps.calls] and not [m for m in fs.messages if m["kind"] == "result"]
+    # 장면 이미지가 대기 중일 때 취소하면 그 작업이 취소된다
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    deps.hold = True
+    d = via_director(deps)
+    t = new_via(fs)
+    await d.pump()
+    for _ in range(300):
+        if deps.last_job:
+            break
+        await asyncio.sleep(0.01)
+    assert deps.last_job
+    await asyncio.sleep(0.05)
+    job = deps.last_job
+    await d.cancel(t); await settle(d)
+    assert t["state"] == "cancelled" and ("cancel_queued", [job]) in deps.calls, (t["state"], t.get("error"))
+    assert "render" not in [c[0] for c in deps.calls]
+
+
+async def t_via_image_again_reuses_scene_prompt_but_makes_a_new_scene():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    d = via_director(deps)
+    src = new_via(fs)
+    await d.pump(); await settle(d)
+    assert src["state"] == "done"
+    n_expand = len([c for c in deps.calls if c[0] == "expand_image"])
+    n_render = len([c for c in deps.calls if c[0] == "render"])
+    again = new_via(fs, mode="new_seed"); again["request"]["source_turn"] = str(src["id"])
+    await d.pump(); await settle(d)
+    assert again["state"] == "done", (again["state"], again.get("error"))
+    assert len([c for c in deps.calls if c[0] == "expand_image"]) == n_expand      # LLM 을 다시 쓰지 않는다
+    assert len([c for c in deps.calls if c[0] == "render"]) == n_render + 1       # 영상 프롬프트는 새 장면 이미지를 보고 새로 쓴다
+    assert len([c for c in deps.calls if c[0] == "stage_image"]) == 2              # 장면 이미지는 새로 만든다
+    subs = [c[1] for c in deps.calls if c[0] == "submit"]
+    assert len(subs) == 4 and len({s["client_id"] for s in subs}) == 4, [(s["client_id"], s["extra_data"]["studio"]["recipe"]) for s in subs]
 
 
 async def t_resume_after_prompt_done_skips_llm():

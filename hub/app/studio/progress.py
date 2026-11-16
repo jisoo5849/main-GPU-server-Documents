@@ -8,6 +8,9 @@
 # purpose(llm_turn) → 감독 단계 (8.4)
 PURPOSE_STAGE = {"video_frame": "frame", "video_expand": "prompt", "video_fix": "fix", "image_inspect": "inspect",
                  "prompt_expand": "prompt", "edit_prompt": "prompt"}
+# 글→영상을 장면 이미지 → 영상 두 단계로 만들 때의 단계 이름. 사용자에게는 이미지라는 말을 쓰지 않는다
+PIPELINE_PURPOSE_STAGE = {"prompt_expand": "prompt", "video_frame": "motion", "video_expand": "motion", "video_fix": "motion",
+                          "image_inspect": "inspect"}
 
 STAGE_TEXT = {
     ("frame", "queued"): "첫 화면 읽기 차례를 기다리는 중",
@@ -16,6 +19,8 @@ STAGE_TEXT = {
     ("prompt", "running"): "프롬프트 작성 중",
     ("fix", "queued"): "다듬기 차례를 기다리는 중",
     ("fix", "running"): "프롬프트 다듬는 중",
+    ("motion", "queued"): "움직임 설계 차례를 기다리는 중",
+    ("motion", "running"): "움직임 설계 중",
 }
 
 # 종류마다 진행 카드의 제목과 단계 칩 (8.4). P1 은 i2v 만 쓰지만 표는 문서대로 둔다
@@ -24,8 +29,10 @@ CARD = {
     "t2v": ("영상 만드는 중", ["prompt", "generate", "collect"]),
     "image": ("이미지 만드는 중", ["prompt", "generate", "collect"]),
     "edit": ("이미지 편집하는 중", ["prompt", "generate", "collect"]),
+    "pipeline": ("영상 만드는 중", ["prompt", "scene", "motion", "generate", "collect"]),
 }
-CHIP_LABEL = {"frame": "첫 화면 읽기", "prompt": "프롬프트 작성", "fix": "다듬기", "generate": "생성", "collect": "마무리"}
+CHIP_LABEL = {"frame": "첫 화면 읽기", "prompt": "프롬프트 작성", "fix": "다듬기", "generate": "생성", "collect": "마무리",
+              "scene": "장면 준비", "motion": "움직임 설계"}
 
 
 def wait_text(position: int | None, running_ahead: bool = False, kind: str = "생성") -> str:

@@ -64,6 +64,18 @@ TWO_RE = re.compile(r"두\s*(?:사람|명)|둘이|커플|\btwo\b", re.I)
 TO_VIDEO = [{"id": "to_video", "label": "이걸로 영상 만들기"}]
 
 
+def shown_stage(ctx) -> str:
+    """사용자에게 보이는 단계. 글→영상을 장면 이미지 → 영상 두 단계로 만들 때 안쪽 단계 이름(이미지·첫 화면 읽기)을 숨긴다"""
+    s = ctx.stage
+    if not ctx.via:
+        return s
+    if ctx.scene_phase and s in ("queue", "prepare", "generate", "collect"):
+        return "scene"
+    if s in ("frame", "fix") or (s == "prompt" and ctx.motion):
+        return "motion"
+    return s
+
+
 def first_stage(action: str | None) -> str:
     """요청이 시작할 때의 단계. 이미지·글→영상·편집에는 첫 화면 읽기가 없으니 프롬프트 작성이 첫 단계다"""
     return "frame" if action == "i2v" else "prompt"
@@ -103,6 +115,12 @@ class Ctx:
         self.reused = False           # 저장된 프롬프트를 다시 쓴 요청(다시 만들기)이면 계획 카드를 건너뛴다
         self.node_log: list = []      # 노드별 걸린 시간 [{"node", "ms"}] (운영자 기록 node_timing, 12절)
         self._node_cur: tuple | None = None
+        self.via = False              # 글→영상을 장면 이미지 → 영상 두 단계로 만드는 요청 (사용자에게는 한 작업)
+        self.scene_phase = False      # 지금 장면 이미지 단계의 ctx
+        self.motion = False           # 장면 이미지가 끝나 영상 쪽 단계로 넘어갔다
+        self.label = "생성"           # 대기 글에 쓰는 이름
+        self.job_step = "generate"    # chat_turn_jobs 에 남기는 단계 이름 (장면 이미지는 scene)
+        self.pend_key = "pending"     # work 에 접수 정보를 남기는 키 (장면 이미지는 scene_pending)
         self.req_text = ""          # 사용자가 쓴 요청 글. (text 는 진행 카드에 보이는 글이라 따로 둔다)
 
 
@@ -205,6 +223,25 @@ class RealDeps:
         except llm.HelperBusy as e:
             raise promptx.PromptxError(str(e), 503) from None
 
+    async def stage_image(self, env, user, turn, rel):
+        """장면 이미지(결과 폴더)를 입력 폴더로 복사한 숨은 첨부를 만든다. 채팅 메시지에는 붙지 않는다"""
+        import asyncio
+        import uuid
+        nbytes, sha = await asyncio.to_thread(files.fingerprint, rel)
+        att_id, in_rel, sha2, w, h, n = await asyncio.to_thread(
+            files.copy_result_as_input, env, user["username"], user["id"], rel, sha)
+        try:
+            await store.add_attachment({"id": uuid.UUID(att_id), "thread_id": turn["thread_id"], "user_id": user["id"],
+                                        "source": "copy", "media": "image", "mime": "image/png", "width": w, "height": h,
+                                        "bytes": n, "sha256": sha2, "input_rel": in_rel})
+        except Exception:
+            p = files.input_path(env, in_rel)
+            if p:
+                import os
+                os.remove(p)
+            raise
+        return {"id": att_id, "width": w, "height": h}
+
     async def fix(self, user, ip, env, **kw):
         from .. import video
         return await video.fix(user, ip, env["username"], env["slug"], kw.pop("text"), **kw)
@@ -306,12 +343,15 @@ class Director:
         if not force and now - ctx.last_emit < self.min_interval:
             return
         ctx.last_emit = now
-        title, _ = progress.CARD.get(ctx.action, progress.CARD["i2v"])
+        card = "pipeline" if ctx.via else ctx.action
+        title, _ = progress.CARD.get(card, progress.CARD["i2v"])
         has_fix = ctx.has_fix or any(progress.PURPOSE_STAGE.get(e["purpose"]) == "fix" for e in ctx.bag)
-        prog = {"title": title, "stage": ctx.stage, "text": ctx.text,
-                "pct": ctx.tracker.pct if ctx.stage in ("generate", "collect") else None,
-                "band": ctx.tracker.band_label() if ctx.stage == "generate" else None,
-                "chips": progress.chips(ctx.action, has_fix, CHIP_OF_STAGE.get(ctx.stage, ctx.stage))}
+        shown = shown_stage(ctx)
+        pct_ok = ctx.stage in ("generate", "collect") and not ctx.scene_phase     # 장면 이미지 단계는 % 를 보이지 않는다
+        prog = {"title": title, "stage": shown, "text": ctx.text,
+                "pct": ctx.tracker.pct if pct_ok else None,
+                "band": ctx.tracker.band_label() if pct_ok and ctx.stage == "generate" else None,
+                "chips": progress.chips(card, has_fix, CHIP_OF_STAGE.get(shown, shown))}
         await store.save_progress(ctx.tid, prog)
         if ctx.stage != ctx.saved_stage:       # 운영자 화면이 보는 chat_turns.stage 도 단계가 바뀔 때 갱신한다
             ctx.saved_stage = ctx.stage
@@ -471,11 +511,15 @@ class Director:
         ctx.spec = req.get("spec") or {}
         ctx.notes = list(req.get("notes") or [])
         ctx.first_person = self.deps.pov(ctx.req_text)
+        ctx.via = bool(req.get("via_image")) and ctx.action == "i2v"
+        if ctx.via:
+            ctx.stage = "prompt"
         ctx.tracker = progress.Tracker(recipe["progress"]["bands"])
         await store.event(turn["id"], "turn_created", {"chars": len(ctx.req_text), "attachments": len(req.get("attachment_ids") or []),
                                                        "default_text": bool(req.get("used_default"))})
         await store.event(turn["id"], "spec", ctx.spec)
         work = dict(turn.get("work") or {})
+        ctx.motion = bool(work.get("scene_att"))
         if resume and work.get("pending") is not None and not ctx.job_id:
             found = await store.job_by_client(env["id"], work["pending"]["client_id"])
             if found:
@@ -483,13 +527,17 @@ class Director:
         if ctx.job_id is None and resume:
             ctx.job_id = await store.turn_job(turn["id"], "generate")
         if ctx.job_id is None:
+            if ctx.via:       # 장면 이미지를 먼저 만든다 (계획 카드는 그 앞에서 한 번만)
+                work = await self._pipeline_front(ctx, work)
+                if work is None:
+                    return          # 계획 카드를 띄웠거나 취소됐다
             if not (resume and work.get("prompt")):      # 허브 재시작 뒤 자동 재개: 프롬프트가 이미 끝났으면 접수부터 (5.10)
                 if ctx.action == "image":
                     work = await self._write_image_prompt(ctx, work)
                 elif ctx.action == "edit":
                     work = await self._write_edit_prompt(ctx, work)
                 else:
-                    work = await self._write_prompt(ctx, work)
+                    work = {**work, **await self._write_prompt(ctx, work)}
             if not work.get("approved") and await self._needs_plan(ctx, work):
                 await self._park_for_approval(ctx, work)
                 return
@@ -510,6 +558,92 @@ class Director:
             ctx.job_id = await self._submit(ctx, work)
             await self._watch_job(ctx, work)
 
+    # ── 글→영상: 장면 이미지를 먼저 만들고 그 이미지로 영상을 만든다 (사용자에게는 한 작업) ──
+    SCENE_HINT = "(Make this the first instant of the scene as one still photograph, not a sequence.)"
+    SCENE_HINT_POV = (" The view is first-person: no head or shoulders of the viewer; if the viewer is operating something, "
+                      "only a small pair of hands at the bottom edge, and the whole interior and the view ahead in clear detail.")
+
+    def _frame_ids(self, ctx: Ctx, work: dict) -> list:
+        """첫 화면이 될 사진 첨부. 글→영상은 먼저 만든 장면 이미지(사용자에게 보이지 않는 첨부)다"""
+        if work.get("scene_att"):
+            return [work["scene_att"]]
+        return list((ctx.turn.get("request") or {}).get("attachment_ids") or [])
+
+    async def _pipeline_front(self, ctx: Ctx, work: dict) -> dict | None:
+        """장면 이미지 단계. 계획 카드를 띄웠거나 취소됐으면 None. 끝나면 work 에 scene_att 가 있다"""
+        turn = ctx.turn
+        req = turn.get("request") or {}
+        img_recipe = self.recipe_for("image")
+        if img_recipe is None:
+            raise StepError("prepare_down")
+        if work.get("scene_att"):
+            work.pop("size", None)       # 다시 이어받은 요청: 영상 크기는 장면 이미지에서 정한다
+            return work
+        if not work.get("scene_prompt"):
+            reused = await self._reuse_prompt(ctx)      # 다시 만들기: 저장된 장면 프롬프트로 시드만 새로
+            if reused and reused.get("scene_prompt"):
+                work = {**work, **reused}
+            else:
+                with self.deps.llm_context() as bag:
+                    ctx.bag = bag
+                    ctx.stage = "prompt"
+                    await self.emit(ctx, True)
+                    hint = self.SCENE_HINT + (self.SCENE_HINT_POV if ctx.first_person else "")
+                    r = await self._guard_llm(ctx, self.deps.expand_image(
+                        ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.req_text + "\n" + hint))
+                    for e in bag:
+                        await store.event(turn["id"], "llm_job", {k: e.get(k) for k in ("job_id", "purpose", "model", "end")})
+                await store.event(turn["id"], "expand", {"crew": r.get("crew"), "violations": r.get("violations"),
+                                                          "rounds": r.get("rounds"), "advice": r.get("advice"),
+                                                          "people": r.get("people"), "scene": True})
+                if not (r.get("prompt") or "").strip():
+                    raise StepError("llm_error", "장면 프롬프트를 만들지 못했습니다")
+                work = {**work, "scene_prompt": r["prompt"], "crew": (r.get("crew") or {}).get("category")}
+                await store.merge_work(turn["id"], {"scene_prompt": r["prompt"], "crew": work.get("crew")})
+        if not work.get("approved") and await self._needs_plan(ctx, work):
+            await self._park_for_approval(ctx, work)
+            return None
+        work["approved"] = True        # 이 요청의 계획 판단은 끝났다 (영상 프롬프트 뒤·재시작 뒤에 다시 묻지 않는다)
+        await store.merge_work(turn["id"], {"approved": True})
+        # 장면 이미지 크기: 영상이 같은 비율이 되도록 영상 크기의 비율로, 이미지 레시피의 면적으로
+        vsz = recipes.default_size(ctx.recipe, aspect=(ctx.spec or {}).get("aspect"))
+        ssz = list(recipes.default_size(img_recipe, photo=(vsz[0], vsz[1])))
+        sctx = Ctx(turn, ctx.user, ctx.env, img_recipe)
+        sctx.via, sctx.scene_phase, sctx.job_step, sctx.pend_key = True, True, "scene", "scene_pending"
+        sctx.spec, sctx.notes, sctx.first_person, sctx.req_text = ctx.spec, ctx.notes, ctx.first_person, ctx.req_text
+        sctx.stage, sctx.text = "queue", "장면 준비 중"
+        sctx.label = "장면 준비"
+        swork = {"prompt": work["scene_prompt"], "size": ssz, "scene_pending": work.get("scene_pending")}
+        self.ctxs[turn["id"]] = sctx           # 취소는 지금 돌고 있는 작업을 멈춘다
+        try:
+            await store.event(turn["id"], "scene_start", {"size": ssz, "recipe": img_recipe["id"]})
+            found = None       # 재시작 전에 접수한 장면 작업이 있으면 다시 접수하지 않고 이어서 본다
+            prev = (work.get("scene_pending") or {}).get("client_id")
+            if prev:
+                found = await store.job_by_client(ctx.env["id"], prev)
+            if found:
+                sctx.job_id = found["prompt_id"]
+                await store.event(turn["id"], "scene_resumed", {"job_id": str(sctx.job_id)})
+            else:
+                sctx.job_id = await self._submit(sctx, swork)
+            main = await self._watch_job(sctx, swork)
+            if main is None:
+                return None                    # 취소됐다 (_collect 가 상태를 끝냈다)
+            sctx.close_nodes()
+            if sctx.node_log:
+                await store.event(turn["id"], "scene_node_timing", {"nodes": sctx.node_log[:200]})
+            att = await self.deps.stage_image(ctx.env, ctx.user, turn, main["rel_path"])
+        finally:
+            self._release(sctx)      # 실패·취소면 ctxs 가 sctx 로 남아 정리가 장면 작업을 멈춘다
+        self.ctxs[turn["id"]] = ctx
+        work["scene_att"] = att["id"]
+        work.pop("size", None)                 # 영상 크기는 장면 이미지 크기에서 새로 정한다
+        await store.merge_work(turn["id"], {"scene_att": att["id"], "scene_size": ssz})
+        await store.event(turn["id"], "scene_done", {"attachment": att["id"], "width": att.get("width"), "height": att.get("height")})
+        ctx.motion = True
+        ctx.stage = "frame"
+        return work
+
     # ── 프롬프트 만들기 (LLM 차례) ──
     async def _reuse_prompt(self, ctx: Ctx) -> dict | None:
         """다시 만들기: 저장된 프롬프트·설정으로 시드만 새로 뽑는다 (LLM 차례 없음)"""
@@ -526,7 +660,10 @@ class Director:
                 return None
             if sw.get("prompt"):
                 work = {k: sw[k] for k in ("prompt", "parts", "ko", "profile", "length_choice", "settings", "size",
-                                           "frame_known", "crew") if k in sw}
+                                           "frame_known", "crew", "scene_prompt") if k in sw}
+                if ctx.via:
+                    # 장면 이미지는 새로 만드니, 영상 프롬프트도 그 이미지를 보고 새로 쓴다 (옛 이미지의 세부가 남지 않게)
+                    work = {k: v for k, v in work.items() if k in ("scene_prompt", "crew")}
                 new_aspect = (req.get("spec") or {}).get("aspect")
                 if new_aspect and new_aspect != ((src.get("request") or {}).get("spec") or {}).get("aspect"):
                     work.pop("size", None)      # 다른 비율을 말했으면 크기를 새로 정한다
@@ -544,6 +681,10 @@ class Director:
         except Exception:  # noqa: BLE001
             med = {}
         own = float((ctx.recipe.get("estimate") or {}).get("gpu_seconds") or med.get("comfy") or 60)
+        scene = 0.0
+        if ctx.via and not (ctx.turn.get("work") or {}).get("scene_att"):
+            ir = self.recipe_for("image")
+            scene = float(((ir or {}).get("estimate") or {}).get("gpu_seconds") or 40) + float(med.get("llm") or 30)
         frames = ((ctx.turn.get("work") or {}).get("settings") or {}).get("frames")
         if frames:
             own *= max(0.4, min(1.0, float(frames) / 81))      # 짧은 영상은 덜 걸린다 [추정]
@@ -552,7 +693,7 @@ class Director:
         q = await self.deps.queue()
         ahead_c = sum(1 for j in q if j.get("kind") == "comfy")
         ahead_l = sum(1 for j in q if j.get("kind") == "llm")
-        return int(ahead_c * comfy + ahead_l * llm + own)
+        return int(ahead_c * comfy + ahead_l * llm + own + scene)
 
     async def _needs_plan(self, ctx: Ctx, work: dict) -> bool:
         """긴 영상은 먼저 계획을 보여 준다: 대화 설정이 ask_long 이고 영상이며 예상 시간이 기준 이상 (다시 만들기는 건너뜀)"""
@@ -581,8 +722,10 @@ class Director:
             work["size"] = size
             await store.merge_work(turn["id"], {"size": size})
         st = work.get("settings") or {}
+        if ctx.via and not st:      # 영상 프롬프트를 쓰기 전이라 길이는 요청에서 읽은 값을 보인다
+            st = {"seconds": (ctx.spec or {}).get("seconds")}
         lc = work.get("length_choice") or {}
-        plan = {"action": ctx.action, "attachment_ids": list(req.get("attachment_ids") or [])[:1],
+        plan = {"action": "t2v" if ctx.via else ctx.action, "attachment_ids": list(req.get("attachment_ids") or [])[:1],
                 "seconds": st.get("seconds"), "frames": st.get("frames") or recipe["defaults"].get("frames"),
                 "fps": recipe["defaults"].get("fps"), "size": size, "quality": recipe.get("quality_label"),
                 "words": len(str(work.get("prompt") or "").split()),
@@ -629,7 +772,8 @@ class Director:
         # 계획한 레시피(화질 포함)로 판단한다. 꺼졌으면 같은 화질의 다른 레시피를 찾는다
         recipe = self.recipe_map.get(turn.get("recipe_id") or "")
         if recipe is None or recipe["id"] in self.disabled:
-            recipe = self.recipe_for(turn.get("action") or "i2v", self.quality_of_turn(turn))
+            via = bool((turn.get("request") or {}).get("via_image"))
+            recipe = self.recipe_for("i2v" if via else (turn.get("action") or "i2v"), self.quality_of_turn(turn))
         if recipe is None:
             if await self._cancel_awaiting(turn):
                 await self._plan_status(turn, "cancelled")
@@ -710,12 +854,12 @@ class Director:
     async def _write_prompt(self, ctx: Ctx, work: dict) -> dict:
         turn = ctx.turn
         req = turn.get("request") or {}
-        reused = await self._reuse_prompt(ctx)
+        reused = None if ctx.via else await self._reuse_prompt(ctx)      # 장면 이미지 경유는 새 이미지를 보고 새로 쓴다
         if reused:
             return reused
         image = None
         if ctx.action == "i2v":
-            atts = await store.attachments_of(req.get("attachment_ids") or [])
+            atts = await store.attachments_of(self._frame_ids(ctx, work))
             img = next((a for a in atts if a["media"] == "image" and a.get("input_rel")), None)
             if img is None:
                 raise StepError("no_image")
@@ -736,7 +880,8 @@ class Director:
             for attempt in (1, 2):
                 r = await self._guard_llm(ctx, self.deps.render(
                     ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text, notes="",
-                    style="", profile_id=recipe["video_profile"], seconds=seconds, image=image, image_prompt="",
+                    style="", profile_id=recipe["video_profile"], seconds=seconds, image=image,
+                    image_prompt=work.get("scene_prompt") or "",
                     crew=False if used_default else None, read_frame_on=True, auto_length=True,
                     frame=reuse_frame if attempt == 1 else (reuse_frame or r.get("frame"))))
                 f = None
@@ -825,12 +970,13 @@ class Director:
         state = (st or {}).get("state")
         self._llm_state[cur["job_id"]] = state
         ctx.stage = stage
+        shown = shown_stage(ctx)
         if state == "queued":
             pos = progress.queue_position(queue, cur["job_id"])
             ahead = any(j.get("state") not in ("queued",) for j in queue if str(j.get("id")) != str(cur["job_id"]))
-            ctx.text = progress.wait_text(pos, ahead, progress.CHIP_LABEL.get(stage, "프롬프트 작성"))
+            ctx.text = progress.wait_text(pos, ahead, progress.CHIP_LABEL.get(shown, "프롬프트 작성"))
         else:
-            ctx.text = progress.STAGE_TEXT.get((stage, "running"), "작업 중")
+            ctx.text = progress.STAGE_TEXT.get((shown, "running"), "작업 중")
         if await self.deps.setting("paused"):
             ctx.text = "점검 중이라 새 작업이 잠시 멈췄습니다"
         elif await self.deps.setting("blocked"):
@@ -845,7 +991,7 @@ class Director:
         img = None
         img_slot = "first_frame" if "first_frame" in inject else ("edit_image" if "edit_image" in inject else None)
         if img_slot:
-            atts = await store.attachments_of(req.get("attachment_ids") or [])
+            atts = await store.attachments_of(self._frame_ids(ctx, work))
             img = next((a for a in atts if a["media"] == "image" and a.get("input_rel")), None)
             if img is None:
                 raise StepError("no_image")
@@ -859,8 +1005,8 @@ class Director:
         elif not size:
             size = list(recipes.default_size(recipe, photo=photo, aspect=(ctx.spec or {}).get("aspect")))
         seed = random.randint(0, inject["seed"].get("max", 2 ** 32))
-        attempt = int((work.get("pending") or {}).get("attempt", 0)) + 1
-        client_id = f"studio-{turn['id']}-g{attempt}"
+        attempt = int((work.get(ctx.pend_key) or {}).get("attempt", 0)) + 1
+        client_id = f"studio-{turn['id']}-{'s' if ctx.scene_phase else 'g'}{attempt}"     # 장면 이미지(s)와 영상(g)은 이름이 겹치지 않는다
         prefix_slots = recipes.slots_of(recipe, "save_prefix")
         values = {"prompt": work["prompt"], "seed": seed,
                   "save_prefix": [recipes.prefix_value(s, env_user(ctx), ctx.user["id"], str(turn["id"])) for s in prefix_slots]}
@@ -884,8 +1030,8 @@ class Director:
             raise StepError("submit", problem)
         work["size"], work["seed"] = list(size), seed
         pend = {"client_id": client_id, "attempt": attempt}
-        work["pending"] = pend
-        await store.merge_work(turn["id"], {"size": list(size), "seed": seed, "pending": pend})
+        work[ctx.pend_key] = pend
+        await store.merge_work(turn["id"], {"size": list(size), "seed": seed, ctx.pend_key: pend})
         ctx.stage = "queue"
         ctx.text = "대기 중"
         body = {"prompt": prompt, "client_id": client_id,
@@ -907,7 +1053,7 @@ class Director:
                     self.deps.unregister(env["id"], client_id, receiver)
                     raise asyncio.CancelledError from None
             ctx.job_id = res["prompt_id"]
-            await store.link_job(turn["id"], res["prompt_id"], "generate", recipe["id"], attempt)
+            await store.link_job(turn["id"], res["prompt_id"], ctx.job_step, recipe["id"], attempt)
             raise
         except Exception as e:  # noqa: BLE001
             res = await store.job_by_client(env["id"], client_id)
@@ -922,7 +1068,7 @@ class Director:
         self.fail_streak[recipe["id"]] = 0
         ctx.job_id = res["prompt_id"]       # 기록이 실패해도 이 작업을 멈출 수 있게 먼저 쥔다
         try:
-            await store.link_job(turn["id"], res["prompt_id"], "generate", recipe["id"], attempt)
+            await store.link_job(turn["id"], res["prompt_id"], ctx.job_step, recipe["id"], attempt)
             await store.event(turn["id"], "comfy_submitted", {"job_id": res["prompt_id"], "seq": res.get("number"),
                                                               "client_id": client_id, "recipe": recipe["id"],
                                                               "version": recipe["version"], "seed": seed,
@@ -945,7 +1091,7 @@ class Director:
     async def _watch_job(self, ctx: Ctx, work: dict):
         turn, recipe, env = ctx.turn, ctx.recipe, ctx.env
         if ctx.job_id and ctx.receiver is None:       # 허브 재시작 뒤 이어받음
-            ctx.client_id = (work.get("pending") or {}).get("client_id")
+            ctx.client_id = (work.get(ctx.pend_key) or {}).get("client_id")
             if ctx.client_id:
                 ctx.receiver = Receiver(self, ctx)
                 self.deps.register(env["id"], ctx.client_id, ctx.receiver)
@@ -967,13 +1113,13 @@ class Director:
                     queue = await self.deps.queue()
                     pos = progress.queue_position(queue, ctx.job_id)
                     ahead = any(j.get("state") != "queued" for j in queue if str(j.get("id")) != str(ctx.job_id))
-                    ctx.text = progress.wait_text(pos, ahead, "생성")
+                    ctx.text = progress.wait_text(pos, ahead, ctx.label)
                 elif state == "starting":
                     ctx.stage, ctx.text = "prepare", "GPU 준비 중"
                 elif state == "running":
                     if ctx.stage != "generate":
                         ctx.stage = "generate"
-                    ctx.text = f"생성 {ctx.tracker.pct}%"
+                    ctx.text = "장면 준비 중" if ctx.scene_phase else f"생성 {ctx.tracker.pct}%"
                     started = st.get("started_at")
                     if started is not None and time.time() - started.timestamp() > max_run:
                         await self._stop_job(ctx)
@@ -1044,13 +1190,15 @@ class Director:
         if await store.cancel_requested(turn["id"]):     # 취소 요청 뒤에 끝난 결과는 채팅에 내지 않는다 (5.9)
             await self.finish_state(turn, "cancelled")
             return
+        if ctx.scene_phase:       # 장면 이미지: 채팅에는 내지 않고 다음 단계가 첫 화면으로 쓴다
+            return main
         ctx.close_nodes()
         if ctx.node_log:
             await store.event(turn["id"], "node_timing", {"nodes": ctx.node_log[:200]})
         att_id, media = await self._add_result(ctx, main)
         notes = list(ctx.notes)
         if ctx.action == "i2v":
-            notes = intent.i2v_notes(ctx.spec) + notes if ctx.spec else notes
+            notes = intent.i2v_notes(ctx.spec, aspect_note=not ctx.via) + notes if ctx.spec else notes
         elif ctx.action == "image" and ctx.spec.get("aspect") is None:
             notes = [n for n in notes if n != "영상 비율은 사진 비율을 따릅니다"]
         ctx.stage, ctx.text = "collect", "마무리"

@@ -112,10 +112,10 @@ def apply_options(spec: dict, options: dict) -> dict:
     return s
 
 
-def i2v_notes(spec: dict) -> list[str]:
-    """i2v 는 사진 비율을 따르므로 비율 지정이 있으면 알린다"""
+def i2v_notes(spec: dict, aspect_note: bool = True) -> list[str]:
+    """i2v 는 사진 비율을 따르므로 비율 지정이 있으면 알린다 (글→영상을 장면 이미지로 만든 경우는 비율을 지켰으니 알리지 않는다)"""
     notes = list(spec.get("notes") or [])
-    if spec.get("aspect"):
+    if spec.get("aspect") and aspect_note:
         notes.append("영상 비율은 사진 비율을 따릅니다")
     return notes
 

@@ -157,7 +157,8 @@ for rid in ("wan22_i2v_14b_fast", "wan22_t2v_14b_fast", "qwen_image_edit"):
     tn, ti = hq["fixed"]["turbo"]["node"], hq["fixed"]["turbo"]["input"]
     assert hq["prompt"][tn]["inputs"][ti] is False and fast["prompt"][tn]["inputs"][ti] is True    # 원본은 그대로
     assert hq["inject"] == fast["inject"] and hq["outputs"] == fast["outputs"] and hq["action"] == fast["action"]
-    assert hq["estimate"]["gpu_seconds"] == fast["estimate"]["gpu_seconds"] * 5 and hq["limits"]["max_run_seconds"] >= 3600
+    scale = 6 if fast["action"] in ("i2v", "t2v") else 5          # 영상은 해상도도 올려 더 걸린다
+    assert hq["estimate"]["gpu_seconds"] == fast["estimate"]["gpu_seconds"] * scale and hq["limits"]["max_run_seconds"] >= 3600
     assert all(x["ok"] for x in R.check_recipe(hq, {"wan22_i2v_long", "wan22_t2v_long"})), rid
     assert hq["quality_label"] == "높음" and "높음" in hq["title"]
     sv = R.sample_values(hq)
@@ -168,6 +169,11 @@ assert all_r["wan22_t2v_14b_fast_quality"]["prompt"][wt["node"]]["inputs"][wt["i
 assert not all_r["wan22_t2v_14b_fast"]["prompt"][wt["node"]]["inputs"][wt["input"]].endswith(R.QUALITY_NEGATIVE_EXTRA)
 qn = all_r["qwen_image_edit"]["fixed"]["negative"]
 assert all_r["qwen_image_edit_quality"]["prompt"][qn["node"]]["inputs"][qn["input"]] == ""
+# 높음의 Wan 은 해상도도 올린다 (1024×576, 세로·정사각도 같은 면적). 빠른 레시피와 편집은 그대로
+hqw = all_r["wan22_t2v_14b_fast_quality"]
+assert R.default_size(hqw) == (1024, 576) and R.default_size(hqw, aspect="portrait") == (576, 1024) and R.default_size(hqw, aspect="square") == (768, 768)
+assert R.default_size(all_r["wan22_t2v_14b_fast"]) == (848, 480) and R.default_size(all_r["wan22_i2v_14b_fast_quality"]) == (1024, 576)
+assert max(R.default_size(hqw, photo=(1000, 10))) <= 1024 and "width" not in all_r["qwen_image_edit_quality"]["defaults"]
 # 파생 레시피를 다시 파생하지 않고, 지문은 내용으로 안정적으로 만든다
 assert R.quality_variant(all_r["wan22_t2v_14b_fast_quality"]) is None and R.quality_variant(all_r["zimage_turbo_t2i"]) is None
 assert R.raw_bytes(all_r["wan22_t2v_14b_fast_quality"]) == R.raw_bytes(R.load_all()["wan22_t2v_14b_fast_quality"])
