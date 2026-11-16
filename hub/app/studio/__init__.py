@@ -70,10 +70,8 @@ async def _check_recipes(d) -> list[str]:
         report.append({"id": "V10", "ok": not missing, "level": "error" if missing else "ok",
                        "msg": ("공용 저장소에 없는 모델: " + ", ".join(missing)) if missing else ""})
         ok = recipes.recipe_ok(report)
-        raw = open(os.path.join(recipes.RECIPE_DIR, rid + ".json"), "rb").read() \
-            if os.path.exists(os.path.join(recipes.RECIPE_DIR, rid + ".json")) else b""
         try:
-            await store.save_recipe_check(r, hashlib.sha256(raw).hexdigest(), ok, report)
+            await store.save_recipe_check(r, hashlib.sha256(recipes.raw_bytes(r)).hexdigest(), ok, report)
         except Exception:  # noqa: BLE001
             log.exception("레시피 검증 기록 실패")
         if not ok:

@@ -91,8 +91,7 @@ async def studio_check(args):
         print_report(rid, report)
         ok = recipes.recipe_ok(report)
         failed += 0 if ok else 1
-        raw = open(os.path.join(recipes.RECIPE_DIR, rid + ".json"), "rb").read()
-        await store.save_recipe_check(r, hashlib.sha256(raw).hexdigest(), ok, report)
+        await store.save_recipe_check(r, hashlib.sha256(recipes.raw_bytes(r)).hexdigest(), ok, report)
     await db.log_access(None, None, "admin_cli", {"cmd": "studio-check", "target": ",".join(ids), "by": args.by or None,
                                                   "failed": failed})
     if failed:

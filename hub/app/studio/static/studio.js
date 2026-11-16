@@ -62,11 +62,11 @@
   function planCard(m, data) {
     const p = data.plan || {};
     const card = el("div", "plan");
-    card.append(el("h4", null, "영상 만들기 계획 (승인하면 시작합니다)"));
+    card.append(el("h4", null, (p.action === "edit" ? "이미지 편집 계획" : "영상 만들기 계획") + " (승인하면 시작합니다)"));
     if (p.attachment_ids && p.attachment_ids[0]) card.append(attachmentNode(p.attachment_ids[0], "image"));
     const dl = el("dl");
     const row = (k, v) => { if (v) { dl.append(el("dt", null, k), el("dd", null, v)); } };
-    row("종류", p.action === "t2v" ? "글→영상" : "이미지→영상");
+    row("종류", p.action === "t2v" ? "글→영상" : (p.action === "edit" ? "이미지 편집" : "이미지→영상"));
     row("길이", p.seconds ? p.seconds + "초 (" + p.frames + "프레임, " + p.fps + "fps)" : (p.frames ? p.frames + "프레임" : ""));
     row("크기", p.size && p.size.length ? p.size[0] + "×" + p.size[1] : "사진 크기를 따릅니다");
     row("품질", p.quality);
@@ -256,6 +256,7 @@
       const options = {};
       if ($("opt-seconds").value) options.seconds = Number($("opt-seconds").value);
       if ($("opt-aspect").value) options.aspect = $("opt-aspect").value;
+      if ($("opt-quality").value) options.quality = $("opt-quality").value;
       if (Object.keys(options).length) body.options = options;
       const r = await api("/studio/api/threads/" + state.thread + "/messages", { method: "POST", json: body });
       textEl.value = ""; textEl.style.height = ""; state.attachment = null; renderAttach();

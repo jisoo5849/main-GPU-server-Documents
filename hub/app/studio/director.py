@@ -287,12 +287,12 @@ class Director:
         self.min_interval = settings.studio_progress_min_interval_ms / 1000
 
     # ── 레시피 ──
-    def recipe_for(self, action: str) -> dict | None:
-        for rid in sorted(self.recipe_map):
-            r = self.recipe_map[rid]
-            if r["action"] == action and rid not in self.disabled:
-                return r
-        return None
+    def recipe_for(self, action: str, quality: str = "fast") -> dict | None:
+        return recipes.pick(self.recipe_map, self.disabled, action, quality)
+
+    def quality_of_turn(self, turn: dict | None) -> str:
+        """이 요청이 쓴 레시피의 화질 (이어 말하기·다시 만들기가 같은 화질을 이어 가게)"""
+        return recipes.quality_of(self.recipe_map.get((turn or {}).get("recipe_id") or ""))
 
     # ── 화면으로 보내기 ──
     async def push(self, user_id: int, event: dict):
@@ -556,8 +556,11 @@ class Director:
 
     async def _needs_plan(self, ctx: Ctx, work: dict) -> bool:
         """긴 영상은 먼저 계획을 보여 준다: 대화 설정이 ask_long 이고 영상이며 예상 시간이 기준 이상 (다시 만들기는 건너뜀)"""
-        if ctx.action not in ("i2v", "t2v") or ctx.reused:
+        high = recipes.quality_of(ctx.recipe) == "high"
+        if ctx.reused or not (ctx.action in ("i2v", "t2v") or (high and ctx.action == "edit")):
             return False
+        if high:
+            return True      # 화질 높음은 시간이 길어 대화 설정과 상관없이 늘 예상 시간을 보이고 승인을 받는다
         try:       # 예상 시간을 못 구해도 요청이 죽지 않게 한다: 계획 없이 진행한다
             if (await store.thread_settings(ctx.turn["thread_id"])).get("ask") != "ask_long":
                 return False
@@ -623,7 +626,10 @@ class Director:
         상태 바꾸기가 조건부(awaiting_approval → pending, work.approved 를 같은 UPDATE 로)라 두 번 눌러도 한 번만 진행하고,
         시작은 pump 가 사용자 활성 한도를 지켜 한다 (5.2)"""
         turn = dict(turn)           # 상태를 바꾸기 전의 값(plan.message_id)으로 카드 상태를 갱신한다
-        recipe = self.recipe_for(turn.get("action") or "i2v")
+        # 계획한 레시피(화질 포함)로 판단한다. 꺼졌으면 같은 화질의 다른 레시피를 찾는다
+        recipe = self.recipe_map.get(turn.get("recipe_id") or "")
+        if recipe is None or recipe["id"] in self.disabled:
+            recipe = self.recipe_for(turn.get("action") or "i2v", self.quality_of_turn(turn))
         if recipe is None:
             if await self._cancel_awaiting(turn):
                 await self._plan_status(turn, "cancelled")

@@ -980,6 +980,65 @@ async def t_copied_example_prompt_is_rewritten_once_and_never_sent_to_gpu():
     assert t["state"] == "done" and [c[0] for c in deps.calls].count("render") == 1
 
 
+HQ = recipes.quality_variant(REC)
+HQ_EDIT = recipes.load_all()["qwen_image_edit_quality"]
+
+
+async def t_high_quality_always_shows_plan_card_and_runs_the_high_recipe():
+    fs = FakeStore(); fs.patch()
+    fs.thread_cfg = {}                                  # 대화 설정이 auto 여도 높음은 계획 카드를 거친다
+    deps = FakeDeps(fs, rec=HQ)
+    d = D.Director(deps, {REC["id"]: REC, HQ["id"]: HQ})
+    t = new_turn(fs, rec=HQ)
+    await d.pump(); await settle(d)
+    assert t["state"] == "awaiting_approval" and t["recipe_id"] == HQ["id"], (t["state"], t.get("error"))
+    plan = plan_msgs(fs)[0]["data"]["plan"]
+    assert plan["quality"] == "높음" and plan["estimate_s"] >= HQ["estimate"]["gpu_seconds"] and "submit" not in [c[0] for c in deps.calls]
+    assert await d.approve(t) == "ok"
+    await d.pump(); await settle(d)
+    assert t["state"] == "done", (t["state"], t.get("error"))
+    p = [c[1] for c in deps.calls if c[0] == "submit"][0]["prompt"]
+    assert p["129:131"]["inputs"]["value"] is False       # 가속을 끄고 접수한다
+    assert d.quality_of_turn(t) == "high" and d.quality_of_turn(None) == "fast"
+    # 같은 조건의 빠른 요청은 계획 카드가 뜨지 않는다
+    fs = FakeStore(); fs.patch()
+    fs.thread_cfg = {}
+    deps = FakeDeps(fs)
+    d = D.Director(deps, {REC["id"]: REC, HQ["id"]: HQ})
+    t = new_turn(fs)
+    await d.pump(); await settle(d)
+    assert t["state"] == "done" and not plan_msgs(fs)
+    # 높음 요청을 다시 만들기(저장된 프롬프트 재사용)하면 계획 카드를 건너뛴다. 처음부터 다시(rewrite)는 계획한다
+    fs = FakeStore(); fs.patch()
+    fs.thread_cfg = {}
+    deps = FakeDeps(fs, rec=HQ)
+    d = D.Director(deps, {REC["id"]: REC, HQ["id"]: HQ})
+    src = new_turn(fs, rec=HQ); src["state"] = "done"
+    src["work"] = {"prompt": "SAVED", "settings": {"frames": 81, "seconds": 5.0}, "size": [848, 480]}
+    again = new_turn(fs, rec=HQ, mode="new_seed"); again["request"]["source_turn"] = str(src["id"])
+    await d.pump(); await settle(d)
+    assert again["state"] == "done"
+    redo = new_turn(fs, rec=HQ, mode="rewrite")
+    await d.pump(); await settle(d)
+    assert redo["state"] == "awaiting_approval"
+
+
+async def t_high_quality_edit_also_asks_before_running():
+    fs = FakeStore(); fs.patch()
+    fs.thread_cfg = {}
+    deps = FakeDeps(fs, rec=HQ_EDIT)
+    d = D.Director(deps, {HQ_EDIT["id"]: HQ_EDIT})
+    t = new_turn(fs, "배경만 노을로 바꿔줘", rec=HQ_EDIT)
+    await d.pump(); await settle(d)
+    assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))
+    plan = plan_msgs(fs)[0]["data"]["plan"]
+    assert plan["action"] == "edit" and plan["quality"] == "높음" and plan["size"] in (None, []) and not plan["seconds"]
+    assert await d.approve(t) == "ok"
+    await d.pump(); await settle(d)
+    assert t["state"] == "done"
+    assert [c[1] for c in deps.calls if c[0] == "submit"][0]["prompt"]["170:168"]["inputs"]["value"] is False
+
+
 async def t_resume_after_prompt_done_skips_llm():
     fs = FakeStore(); fs.patch()
     deps = FakeDeps(fs)

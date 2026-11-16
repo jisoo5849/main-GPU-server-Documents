@@ -91,6 +91,11 @@ def clean_options(options) -> dict:
         if asp not in ASPECT_CHOICES:
             raise InputError("bad_request", "비율은 가로·세로·정사각 중에서 고를 수 있습니다.")
         out["aspect"] = asp
+    q = options.get("quality")
+    if q not in (None, "", "auto", "fast"):
+        if q != "high":
+            raise InputError("bad_request", "화질은 빠름·높음 중에서 고를 수 있습니다.")
+        out["quality"] = "high"
     return out
 
 
@@ -102,6 +107,8 @@ def apply_options(spec: dict, options: dict) -> dict:
         s["notes"] = [n for n in s.get("notes") or [] if "5초까지" not in n]
     if "aspect" in options:
         s["aspect"] = options["aspect"]
+    if options.get("quality") == "high":
+        s["quality"] = "high"
     return s
 
 
