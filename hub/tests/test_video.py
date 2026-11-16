@@ -996,6 +996,37 @@ def test_detail_rules_apply_to_long_but_not_to_the_compact_profile():
         assert key in rules, key
 
 
+def test_pov_operating_keeps_the_hands_a_supporting_detail():
+    # 11-16 60cc823e: 'the hands read first' + 움직임 단락 전체가 손(조종간을 돌림) → 디테일이 손으로 쏠리고 조종간이 자동차 핸들처럼 나왔다
+    said = "비행기를 운항하는 파일럿의 1인칭 시점 영상으로 만들어줘"
+    real = {"shot": ("First-person POV from the pilot's seat inside a commercial airplane cockpit, composed as one continuous "
+                     "shot. The leather seat and metal dashboard textures are crisp, creating a clean, professional aviation "
+                     "atmosphere where the hands read first, the instruments second, and the clouds third."),
+            "camera_light": "The camera remains locked off and steady.",
+            "action": ("At first, the scene is calm with the hands resting lightly on the yoke. Then, the viewer's hands make "
+                       "small, natural adjustments, turning the yoke slightly to the left and then back to center. The motion "
+                       "is smooth and controlled, with the fingers gripping the textured rubber firmly. As the hands move, the "
+                       "instrument displays remain steady. Finally, the hands settle back into a neutral position on the yoke.")}
+    probs = video.hand_focus_problems(real, said)
+    assert any("must not read first" in p for p in probs) and any('"action" is mostly about the hands' in p for p in probs), probs
+    assert any("must not read first" in p for p in video.check_video(dict(PILOT_GOOD, shot=real["shot"]), T2V_LONG, said, None, PILOT_SCENE))
+    # 올바른 글(손은 마지막 셋째, 움직임은 구름·빛)과 조종하지 않는 1인칭은 걸리지 않는다
+    assert video.hand_focus_problems(PILOT_GOOD, said) == []
+    assert video.hand_focus_problems(real, "1인칭으로 걷는 영상") == [] and video.hand_focus_problems(real, "1인칭 드론 비행 영상") == []
+    # 모델에게도 손은 화면의 10분의 1 조연이고 마지막이며 핸들 돌리기를 쓰지 말라고 알린다
+    line = video.operate_line()
+    assert "small supporting detail" in line and "come last" in line and "not the hands" in line and "turning or steering" in line
+    assert "yoke, wheel, handlebars" in line
+
+
+def test_long_rules_name_things_by_shape_and_give_vehicle_interiors_identifying_parts():
+    rules = " ".join(video.long_spec()["rules"])
+    assert "U-shaped control yoke" in rules and "mistaken for another object" in rules and "generic control yoke" not in rules
+    assert "at least five parts" in rules and "rudder pedals" in rules and "no single object may take over the frame" in rules
+    sys_msg = video.build_messages("비행기를 운항하는 파일럿의 1인칭 시점 영상으로 만들어줘", "", T2V_LONG, 5.0)[0]["content"]
+    assert "at least five parts that identify it" in sys_msg
+
+
 def test_pov_check_targets_only_the_viewer():
     rx = video.SELF_BODY_RE
     for bad in ("an over-the-shoulder view", "the pilot's headset", "the pilot’s head", "a view of a seated pilot",

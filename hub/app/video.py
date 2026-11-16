@@ -307,9 +307,12 @@ def operating_pov(said: str) -> bool:
 
 
 def operate_line() -> str:
-    return ("The viewer is operating something (flying, driving, steering): in \"shot\" or \"action\", show the viewer's own "
-            "hands or forearms gripping the real controls of that vehicle (yoke, wheel, handlebars) at the bottom edge of "
-            "the frame, with small natural movements of the hands in \"action\". Show no other person.")
+    return ("The viewer is operating something (flying, driving, steering): show the viewer's own hands or forearms on the "
+            "real controls of that vehicle (yoke, wheel, handlebars) at the bottom edge of the frame as a small supporting "
+            "detail, about a tenth of the frame, never the main subject. The hands come last in the visual hierarchy: the "
+            "view ahead and the whole interior read first and second. The one main action is the view in motion (clouds or "
+            "road passing, light shifting, displays glowing), not the hands; the hands may move once, slightly. Do not "
+            "describe turning or steering motions unless the user asks. Show no other person.")
 
 
 def people_ok(said: str, frame: dict | None = None, scene: str = "", known: bool = True) -> bool:
@@ -654,6 +657,25 @@ EXTRA_AIRCRAFT_RE = re.compile(r"\b(?:another|other|second|distant|nearby|passin
 EXTRA_CREW_RE = re.compile(r"\b(?:co-?pilots?|passengers?|crew members?|flight attendants?|second pilot|another pilot)\b", re.I)
 ALLOW_AIRCRAFT_RE = re.compile(r"다른 비행기|옆 비행기|편대|지나가는|전투기|헬리콥터|여객기가|비행운")
 ALLOW_CREW_RE = re.compile(r"부기장|승객|승무원|동료|co-?pilot|함께|같이")
+
+
+HANDS_FIRST_RE = re.compile(r"\b(?:hands?|forearms?|yoke)\b[^.]{0,70}\bread(?:s)? first\b", re.I)
+HAND_FOCUS_RE = re.compile(r"\b(?:hands?|fingers?|forearms?|grip\w*|yoke|steering)\b", re.I)
+
+
+def hand_focus_problems(result: dict, said: str) -> list[str]:
+    """조종·운전 1인칭 요청에서 손이 주인공이 되면 디테일이 손으로 쏠려 장면이 뭉개지고 핸들처럼 나온다
+    (11-16 파일럿 요청: 'the hands read first' + 움직임 단락 전체가 손). 손은 조연이어야 한다"""
+    if not operating_pov(said):
+        return []
+    problems = []
+    if HANDS_FIRST_RE.search(" ".join(str(result.get(k) or "") for k in ("shot", "camera_light"))):
+        problems.append("The hands must not read first: in the visual hierarchy the view ahead and the interior come first and "
+                        "second, and the hands come last as a small detail at the bottom edge.")
+    if len(HAND_FOCUS_RE.findall(str(result.get("action") or ""))) >= 7:
+        problems.append('"action" is mostly about the hands. Make the main action the view in motion (clouds or road passing, '
+                        "light shifting, displays glowing) and mention the hands at most twice, with one slight movement.")
+    return problems
 
 
 def extra_subject_problems(prompt: str, said: str) -> list[str]:
@@ -1068,6 +1090,7 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
             problems += example_copy_problems(result, said, scene)
         problems += part_consistency_problems(result)
         problems += extra_subject_problems(prompt, said)
+        problems += hand_focus_problems(result, said)
         problems += blocking_problems(prompt)
         problems += travel_problems(prompt, said, profile["mode"])
         if not profile.get("mid"):   # 보통 프로필은 단락이 짧아 항목표·깊이·걸음 묘사까지 요구하지 않는다
