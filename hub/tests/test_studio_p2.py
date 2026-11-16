@@ -146,6 +146,47 @@ assert sp["seconds"] == 3.0 and sp["aspect"] == "landscape" and not any("5초까
 assert intent.apply_options(base, {}) == base
 assert base["seconds"] == 5.0                                  # 원본은 바뀌지 않는다
 
+# ── 화질 높음 (가속 끔 변형) ──
+all_r = R.load_all()
+assert {"wan22_i2v_14b_fast_quality", "wan22_t2v_14b_fast_quality", "qwen_image_edit_quality"} <= set(all_r)
+assert "zimage_turbo_t2i_quality" not in all_r                     # Z-Image 는 가속 스위치가 없어 높음이 없다
+for rid in ("wan22_i2v_14b_fast", "wan22_t2v_14b_fast", "qwen_image_edit"):
+    fast, hq = all_r[rid], all_r[rid + "_quality"]
+    assert R.quality_of(fast) == "fast" and R.quality_of(hq) == "high" and hq["derived_from"] == rid
+    assert fast["fixed"]["turbo"]["value"] is True and hq["fixed"]["turbo"]["value"] is False
+    tn, ti = hq["fixed"]["turbo"]["node"], hq["fixed"]["turbo"]["input"]
+    assert hq["prompt"][tn]["inputs"][ti] is False and fast["prompt"][tn]["inputs"][ti] is True    # 원본은 그대로
+    assert hq["inject"] == fast["inject"] and hq["outputs"] == fast["outputs"] and hq["action"] == fast["action"]
+    assert hq["estimate"]["gpu_seconds"] == fast["estimate"]["gpu_seconds"] * 5 and hq["limits"]["max_run_seconds"] >= 3600
+    assert all(x["ok"] for x in R.check_recipe(hq, {"wan22_i2v_long", "wan22_t2v_long"})), rid
+    assert hq["quality_label"] == "높음" and "높음" in hq["title"]
+    sv = R.sample_values(hq)
+    R.build(hq, sv)
+# 부정 프롬프트가 있는 Wan 은 엉뚱한 물체·사람을 막는 말이 더해진다 (CFG>1 이라 실제로 적용된다). 부정이 빈 편집은 그대로
+wt = all_r["wan22_t2v_14b_fast"]["fixed"]["negative"]
+assert all_r["wan22_t2v_14b_fast_quality"]["prompt"][wt["node"]]["inputs"][wt["input"]].endswith(R.QUALITY_NEGATIVE_EXTRA)
+assert not all_r["wan22_t2v_14b_fast"]["prompt"][wt["node"]]["inputs"][wt["input"]].endswith(R.QUALITY_NEGATIVE_EXTRA)
+qn = all_r["qwen_image_edit"]["fixed"]["negative"]
+assert all_r["qwen_image_edit_quality"]["prompt"][qn["node"]]["inputs"][qn["input"]] == ""
+# 파생 레시피를 다시 파생하지 않고, 지문은 내용으로 안정적으로 만든다
+assert R.quality_variant(all_r["wan22_t2v_14b_fast_quality"]) is None and R.quality_variant(all_r["zimage_turbo_t2i"]) is None
+assert R.raw_bytes(all_r["wan22_t2v_14b_fast_quality"]) == R.raw_bytes(R.load_all()["wan22_t2v_14b_fast_quality"])
+assert R.raw_bytes(all_r["wan22_t2v_14b_fast"]) != R.raw_bytes(all_r["wan22_t2v_14b_fast_quality"])
+# 화질에 맞는 레시피 고르기
+assert R.pick(all_r, set(), "t2v")["id"] == "wan22_t2v_14b_fast" and R.pick(all_r, set(), "t2v", "high")["id"] == "wan22_t2v_14b_fast_quality"
+assert R.pick(all_r, {"wan22_t2v_14b_fast_quality"}, "t2v", "high") is None and R.pick(all_r, set(), "image", "high") is None
+# 화면의 화질 칸
+assert intent.clean_options({"quality": "high"}) == {"quality": "high"}
+assert intent.clean_options({"quality": ""}) == {} and intent.clean_options({"quality": "fast"}) == {} and intent.clean_options({"quality": "auto"}) == {}
+for bad_q in ("ultra", "HIGH", 1, True):
+    try:
+        intent.clean_options({"quality": bad_q})
+        raise AssertionError(bad_q)
+    except intent.InputError as ex:
+        assert ex.code == "bad_request"
+assert intent.apply_options({"seconds": None}, {"quality": "high"})["quality"] == "high"
+assert "quality" not in intent.apply_options({"seconds": None}, {})
+
 # ── Z-Image 이미지 레시피 ──
 rs = R.load_all()
 zi = rs["zimage_turbo_t2i"]

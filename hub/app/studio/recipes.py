@@ -32,7 +32,65 @@ def load_recipe_file(path: str) -> dict:
         return json.load(f)
 
 
+# 화질 '높음': 4스텝 가속(LoRA)을 끄면 템플릿의 기본 방식(영상 20스텝·CFG 3.5, 편집 40스텝·CFG 4)으로 돌아가고, CFG 가 1 보다
+# 커서 부정 프롬프트가 실제로 적용된다. 시간이 크게 늘어(영상 4~6분 [추정]) 계획 카드를 꼭 거친다.
+# Wan 은 중국어 부정 프롬프트를 쓰므로 같은 말로 "엉뚱한 물체·사람·중복 피사체" 를 더한다.
+QUALITY_NEGATIVE_EXTRA = "，多余的物体，无关的人物，重复的主体，凭空出现的陌生物体"
+
+
+def quality_of(recipe: dict | None) -> str:
+    return "high" if recipe and recipe.get("quality") == "high" else "fast"
+
+
+def quality_variant(r: dict) -> dict | None:
+    """가속 스위치(fixed.turbo)가 있는 빠른 레시피에서 높음 변형을 만든다. 없으면 None"""
+    turbo = (r.get("fixed") or {}).get("turbo")
+    if not turbo or r.get("quality") == "high":
+        return None
+    v = copy.deepcopy(r)
+    v["prompt"][str(turbo["node"])]["inputs"][turbo["input"]] = False
+    v["fixed"]["turbo"]["value"] = False
+    v["id"] = r["id"] + "_quality"
+    v["quality"] = "high"
+    v["quality_label"] = "높음"
+    v["title"] = r["title"].split("·")[0].strip() + " · 높음(가속 끔)"
+    v["derived_from"] = r["id"]
+    neg = (v.get("fixed") or {}).get("negative")
+    if neg:
+        n = v["prompt"][str(neg["node"])]["inputs"]
+        if str(n.get(neg["input"]) or "").strip():
+            n[neg["input"]] = str(n[neg["input"]]).rstrip() + QUALITY_NEGATIVE_EXTRA
+    gpu = int((r.get("estimate") or {}).get("gpu_seconds") or 60)
+    v["estimate"] = {"gpu_seconds": gpu * 5, "basis": "가속을 끄면 스텝이 5배, CFG>1 이라 스텝마다 계산이 2번(실행 약 10배), "
+                                                     "콜드 스타트·정리는 그대로 [추정]"}
+    v["limits"] = {"max_run_seconds": max(3600, int(r["limits"]["max_run_seconds"]) * 4)}
+    return v
+
+
+def raw_bytes(r: dict) -> bytes:
+    """레시피 검증 기록의 지문용 바이트 (파생 레시피는 파일이 없으므로 내용으로 만든다)"""
+    return json.dumps(r, sort_keys=True, ensure_ascii=False).encode("utf-8")
+
+
+def pick(recipe_map: dict, disabled, action: str, quality: str = "fast") -> dict | None:
+    """action 과 화질에 맞는 켜진 레시피 하나 (id 순서)"""
+    for rid in sorted(recipe_map):
+        r = recipe_map[rid]
+        if r["action"] == action and quality_of(r) == quality and rid not in disabled:
+            return r
+    return None
+
+
 def load_all(directory: str = RECIPE_DIR) -> dict[str, dict]:
+    out = _load_files(directory)
+    for r in list(out.values()):
+        v = quality_variant(r)
+        if v is not None and v["id"] not in out:
+            out[v["id"]] = v
+    return out
+
+
+def _load_files(directory: str) -> dict[str, dict]:
     out = {}
     if not os.path.isdir(directory):
         return out

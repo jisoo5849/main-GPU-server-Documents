@@ -170,7 +170,8 @@ async def me(request: Request):
                          "limits": {"upload_max_mb": settings.studio_upload_max_mb,
                                     "max_active": settings.studio_max_active_per_user,
                                     "max_open": settings.studio_max_open_per_user},
-                         "features": {a: bool(d and d.recipe_for(a)) for a in ("image", "i2v", "t2v", "edit")}})
+                         "features": {a: bool(d and d.recipe_for(a)) for a in ("image", "i2v", "t2v", "edit")},
+                         "quality_high": {a: bool(d and d.recipe_for(a, "high")) for a in ("i2v", "t2v", "edit")}})
 
 
 async def threads(request: Request):
@@ -300,11 +301,18 @@ async def _post_message(request: Request, user: dict, thread: dict):
     else:
         waiting = None       # 새 사진이 붙은 메시지 등은 새 요청이다. 계획은 그대로 두고 승인·취소·만료를 기다린다
         dec = intent.decide(text, len(att_ids), last["short"] if last else None, used_default, _video_hint)
-    recipe = d.recipe_for(dec["action"]) if d and dec["action"] != "answer" else None
+    # 화질: 칸에서 높음을 골랐거나, 이어 말하기(고치기)가 높음 요청을 이어 갈 때. 이미지는 가속 없는 레시피가 없어 빠름뿐이다
+    want_high = options.get("quality") == "high" or (dec["carry"] == "revise" and last and d
+                                                     and d.quality_of_turn(last["turn"]) == "high")
+    high_ok = want_high and dec["action"] in ("i2v", "t2v", "edit")
+    recipe = d.recipe_for(dec["action"], "high" if high_ok else "fast") if d and dec["action"] != "answer" else None
     if dec["action"] == "answer" or recipe is None:
         # 만들 일이 없거나 아직 없는 기능: 정해 둔 답만 한다 (GPU 안 씀, 5.3·13.1)
-        reply = dec["reply"] if dec["action"] == "answer" else "이 기능은 지금 준비 중입니다."
+        reply = dec["reply"] if dec["action"] == "answer" else (
+            "화질 높음은 지금 준비 중입니다. 화질을 빠름으로 바꿔 보내 주세요." if high_ok else "이 기능은 지금 준비 중입니다.")
         return await _reply_only(user, thread, cmid, shown, att_ids, reply)
+    if want_high and not high_ok and dec["action"] == "image":
+        dec = {**dec, "notes": list(dec["notes"]) + ["이미지는 화질 높음이 아직 없어 빠름으로 만들었습니다"]}
     env = await store.studio_env(settings.studio_env_slug)
     if env is None:
         return err(503, "studio_not_ready", state.reason)
@@ -519,7 +527,10 @@ async def _spawn_retry(request: Request, user: dict, thread: dict, src: dict, mo
                        msg_data: dict, rule: str | None = None, spec_over: dict | None = None):
     """src 요청을 같은 설정으로 다시 한다 (13.2). mode=new_seed 는 저장된 프롬프트로 시드만 새로, rewrite 는 처음부터"""
     d = state.director
-    recipe = d.recipe_for(src.get("action") or "i2v")
+    # 다시 만들기·다시 시도는 원래 요청과 같은 레시피(같은 화질)로 한다. 그 레시피가 꺼졌으면 같은 화질의 다른 레시피로
+    recipe = d.recipe_map.get(src.get("recipe_id") or "")
+    if recipe is None or recipe["id"] in d.disabled:
+        recipe = d.recipe_for(src.get("action") or "i2v", d.quality_of_turn(src))
     if recipe is None:
         return err(503, "studio_not_ready", "이 기능은 지금 준비 중입니다.")
     if cmid:
