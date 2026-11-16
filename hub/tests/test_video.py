@@ -839,6 +839,62 @@ def test_extra_aircraft_and_crew_are_flagged_when_the_request_names_none():
     assert "holds only those things" in sys_msg and "Never add vehicles, aircraft" in sys_msg
 
 
+# ── 11-16 글→영상 장문 비교 평가: 'walks away from the camera' 와 'camera moves backward ... constant distance' 가 한 글에 있었다 ──
+WALK_BAD = ("A solitary man in a dark trench coat walks away from the camera down a rain-slicked street. The camera moves "
+            "backward in one steady, continuous pull, keeping the same height and a level horizon while maintaining a constant "
+            "distance from the subject. Then he begins to stride forward, his feet splashing through puddles. Finally the man's "
+            "stride slows slightly as he moves deeper into the distance, and the camera eases to a gentle stop.")
+WALK_FIXED = ("A solitary man in a dark trench coat walks away from the camera down a rain-slicked street. The camera follows "
+              "behind him, moving forward in one steady dolly at his walking pace, keeping the same height, a level horizon and "
+              "a constant distance. From the first frame he is already mid-stride, his feet splashing through puddles. Finally "
+              "the camera settles while he keeps walking at the same pace, the rain falling steadily.")
+
+
+def test_camera_and_subject_directions_must_agree():
+    # 인물은 멀어지는데 카메라도 뒤로 물러나며 같은 거리를 지킨다는 글은 위반이다
+    p = video.blocking_problems(WALK_BAD)
+    assert len(p) == 1 and "walks away from the camera" in p[0] and "camera moves backward" in p[0] and "constant distance" in p[0]
+    assert "follows behind" in p[0] or "forward behind the subject" in p[0]
+    assert video.blocking_problems(WALK_FIXED) == []                                   # 카메라가 뒤에서 앞으로 따라가면 맞다
+    # 다가오는 인물 + 카메라가 앞으로, 서 있거나 옆으로만 가는 카메라 + 같은 거리도 위반이다
+    assert video.blocking_problems("A girl walks toward the camera while the camera pushes forward, keeping a constant distance.")
+    assert not video.blocking_problems("A girl walks toward the camera while the camera moves backward at the same pace, keeping a constant distance.")
+    assert video.blocking_problems("A man walks away from the camera. The camera stays locked off, keeping a constant distance from him.")
+    # 거리를 지킨다는 말이 없으면 크기가 바뀌는 연출이라 보지 않는다
+    assert not video.blocking_problems("A man walks away from the camera and grows smaller in the frame. The camera stays locked off.")
+    # 러다이트 1번처럼 옆으로 나란히 따라가는 글, 안개·김의 drift 는 걸리지 않는다
+    side = ("A solitary man walks from screen-left toward screen-right. The camera makes a smooth lateral tracking shot at a "
+            "matched pace, maintaining a constant distance, stable figure size and level horizon.")
+    assert video.blocking_problems(side) == []
+    assert video.blocking_problems("The camera pushes in slowly. Thin mist drifts away from the bottle and steam moves toward "
+                                   "the window, keeping a constant distance between the cups.") == []
+
+
+def test_travel_keeps_one_steady_pace():
+    p = video.travel_problems(WALK_BAD, "비 오는 거리를 걷는 남자", "t2v")
+    assert len(p) == 1 and "begins to stride" in p[0] and "stride slows" in p[0]
+    assert video.travel_problems(WALK_FIXED, "비 오는 거리를 걷는 남자", "t2v") == []
+    # I2V 는 서 있는 첫 화면에서 걷기 시작해도 되므로 시작은 보지 않는다. 느려져 멈추는 것은 본다
+    assert video.travel_problems("Then he begins to walk down the street.", "", "i2v") == []
+    assert video.travel_problems("Then he begins to walk. Finally his stride slows.", "", "i2v")
+    # 사용자가 출발이나 멈춤을 말했으면 막지 않는다
+    assert video.travel_problems(WALK_BAD, "걷다가 멈춰서 위를 보는 남자", "t2v") == []
+    assert video.travel_problems("The man stops at the crossing.", "", "t2v")
+    assert video.travel_problems("The camera eases to a gentle stop while the rain keeps falling.", "", "t2v") == []
+
+
+def test_direction_and_travel_rules_are_in_check_video_and_the_prompt():
+    bad = dict(LONG, action=WALK_BAD)
+    probs = video.check_video(bad, T2V_LONG, "비 오는 거리를 걷는 남자", None, SCENE)
+    assert any(x.startswith("Camera and subject directions disagree") for x in probs)
+    assert any(x.startswith("Travel keeps one steady pace") for x in probs)
+    assert not any(x.startswith(("Camera and subject", "Travel keeps")) for x in video.check_video(LONG, T2V_LONG, "향수 광고 영상", None, SCENE))
+    ko = video.explain_ko([x for x in probs if x.startswith(("Camera and subject", "Travel keeps"))])
+    assert "방향이 서로 맞지 않습니다" in ko[0] and "같은 속도" in ko[1]
+    rules = video.build_messages("남자가 걷는 영상", "", T2V_LONG, 5.0, scene=SCENE)[0]["content"]
+    assert "Never combine a subject walking away with a camera moving backward" in rules and "never write that it begins to move" in rules
+
+
 def test_pov_check_targets_only_the_viewer():
     rx = video.SELF_BODY_RE
     for bad in ("an over-the-shoulder view", "the pilot's headset", "the pilot’s head", "a view of a seated pilot",

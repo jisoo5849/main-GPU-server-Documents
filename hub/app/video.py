@@ -670,6 +670,127 @@ def extra_subject_problems(prompt: str, said: str) -> list[str]:
             "only what the request names (for example only clouds and open sky), and show only the viewer's own hands."]
 
 
+# ── 카메라와 대상의 동선 (11-16 글→영상 장문 비교 평가) ──
+# T2V 장문이 "a man ... walks away from the camera" 와 "The camera moves backward ... maintaining a constant distance" 를
+# 함께 썼다. 둘 다 서로 멀어지는 방향이라 거리를 지킬 수 없고, 영상 모델이 어느 쪽을 따를지 모른다 [추정: 뒷걸음질 같은 결과].
+# 대상은 사람·탈것의 이동 동사로만 본다 (mist·steam·light 의 drift·move 는 동선이 아니다. 명사 'head' 도 뺀다)
+_GO = (r"(?:walk(?:s|ing|ed)?|strid(?:e|es|ing)|strode|run(?:s|ning)?|ran|jog(?:s|ging)?|march(?:es|ing)?|stroll(?:s|ing)?"
+       r"|wander(?:s|ing)?|heads|heading|hurr(?:ies|ying)|sprint(?:s|ing)?|trudg(?:es|ing)|step(?:s|ping)?|driv(?:e|es|ing)"
+       r"|rid(?:e|es|ing)|cycl(?:e|es|ing)|skat(?:e|es|ing)|fl(?:y|ies|ying)|swim(?:s|ming)?)")
+_EYE = r"(?:the |our )?(?:camera|viewer|lens|us)\b"
+SUBJECT_AWAY_RE = re.compile(
+    rf"\b{_GO}\b(?:\s+[\w'’-]+){{0,3}}?\s+away from {_EYE}"
+    rf"|\b{_GO}\b(?:\s+[\w'’-]+){{0,3}}?\s+(?:deeper |further |farther )?into the (?:far )?distance\b"
+    rf"|\b{_GO}\b(?:\s+[\w'’-]+){{0,3}}?\s+(?:toward|towards) the (?:horizon|vanishing point|far end)\b", re.I)
+SUBJECT_TOWARD_RE = re.compile(
+    rf"\b{_GO}\b(?:\s+[\w'’-]+){{0,3}}?\s+(?:toward|towards|straight at|right at|up to|closer to) {_EYE}"
+    rf"|\bapproach(?:es|ing)? {_EYE}|\b(?:comes?|coming)\b(?:\s+[\w'’-]+){{0,2}}?\s+(?:toward|towards|closer to) {_EYE}", re.I)
+# 카메라가 어느 쪽으로 가는지. 주어가 카메라일 때만 본다(_CAM: 'as he moves away' 의 he 는 카메라가 아니다).
+# 'back to its starting position'(루프로 돌아오기)과 'moves in sync'(속도 맞추기)는 방향이 아니다
+_TRAVEL_VERB = (r"(?:mov(?:e|es|ing)|travel(?:s|l?ing)?|glid(?:e|es|ing)|doll(?:y|ies|ying)|track(?:s|ing)?|pull(?:s|ing)?"
+                r"|push(?:es|ing)?|retreat(?:s|ing)?|back(?:s|ing)|drift(?:s|ing)?|eas(?:e|es|ing)|slid(?:e|es|ing)"
+                r"|creep(?:s|ing)?|advanc(?:e|es|ing)|float(?:s|ing)?|crawl(?:s|ing)?)\b(?:\s+[\w-]+){0,2}?\s+")
+CAMERA_BACK_RE = re.compile(
+    _CAM + _TRAVEL_VERB + r"(?:backwards?|away|back(?!\s+(?:to|into|toward|towards|at)\b))\b"
+    r"|\bpull(?:s|ing)?[- ]back\b|\bdolly[- ](?:out|back)\b|\bbackward (?:dolly|pull|push|track(?:ing)?|move|travel|glide)\b", re.I)
+CAMERA_FORWARD_RE = re.compile(
+    _CAM + _TRAVEL_VERB + r"(?:forwards?|closer|toward(?:s)?(?! (?:the )?(?:left|right)\b)"
+    r"|in(?=\s*(?:[,.;]|toward|towards|on\b|closer|slowly|gently|steadily|smoothly|$)))"
+    r"|" + _CAM + r"follow(?:s|ing)?\b(?:\s+[\w-]+){0,2}?\s+(?:behind|after)\b"
+    r"|\bpush(?:es|ing)?[- ]in\b|\bdolly[- ]in\b|\bforward (?:dolly|push|track(?:ing)?|move|travel|glide)\b", re.I)
+CAMERA_SIDEWAYS_RE = re.compile(
+    _CAM + r"(?:track(?:s|ing)?|truck(?:s|ing)?|mov(?:e|es|ing)|glid(?:e|es|ing)|slid(?:e|es|ing)|travel(?:s|l?ing)?"
+    r"|drift(?:s|ing)?|doll(?:y|ies|ying))\b(?:\s+[\w-]+){0,2}?\s+(?:sideways|laterally|alongside|beside|parallel|to the (?:left|right))\b"
+    r"|\b(?:lateral|sideways|side-on|crab) (?:track(?:ing)?|dolly|move|travel|glide|shot)\b|\btrucks? (?:left|right)\b", re.I)
+CAMERA_STILL_RE = re.compile(
+    r"\b(?:locked[- ]off|static (?:shot|camera|frame|framing)|stationary camera|fixed camera)\b"
+    r"|\bcamera\b(?:\s+[\w-]+){0,2}?\s+(?:stays|remains|holds|sits)\s+(?:perfectly |completely |entirely )?"
+    r"(?:still|static|locked|fixed|stationary|motionless|in place)\b", re.I)
+# 카메라가 대상과 거리를 지킨다는 말. 'same size'(안정성 문장 'keeps the same size and shape' 에 흔하다)는 보지 않는다
+KEEP_DISTANCE_RE = re.compile(
+    r"\b(?:constant|same|steady|fixed|even|consistent|unchanging|unchanged) distance\b"
+    r"|\bkeep(?:s|ing)? (?:up )?pace\b|\bmatched pace\b"
+    r"|\bin (?:sync|step|time|lockstep) with (?:his|her|their|its|the [\w-]+(?:['’]s)?) (?:walking )?(?:pace|stride|steps|speed|walk|movement)\b"
+    r"|\bmatch(?:es|ing|ed)? (?:his|her|their|its|the [\w-]+(?:['’]s)?) (?:walking )?(?:pace|stride|speed|steps)\b", re.I)
+
+
+def blocking_problems(prompt: str) -> list[str]:
+    """카메라가 대상과 거리를 지킨다고 쓰면서 둘이 서로 멀어지거나 가까워지는 방향으로 움직이면 위반이다.
+
+    대상이 멀어지는데 카메라가 뒤로 물러나기, 대상이 다가오는데 카메라가 앞으로 가기, 카메라가 서 있거나 옆으로만 가는데
+    다가오거나 멀어지는 대상과 거리가 같다고 쓰기. 거리를 지킨다는 말이 없으면 크기가 바뀌는 연출일 수 있어 보지 않는다.
+    """
+    text = re.sub(r"\s+", " ", prompt or "")
+    dist = KEEP_DISTANCE_RE.search(text)
+    away, toward = SUBJECT_AWAY_RE.search(text), SUBJECT_TOWARD_RE.search(text)
+    if not dist or not (away or toward):
+        return []
+    fwd, back = CAMERA_FORWARD_RE.search(text), CAMERA_BACK_RE.search(text)
+    head = "Camera and subject directions disagree: "
+    fix = ("Make them agree in every part: either the camera moves forward behind the subject at its pace while it walks away, "
+           "or the subject walks toward the camera while the camera moves backward ahead of it at the same pace.")
+    if away and back:
+        return [head + f'the subject moves away from the camera ("{away.group(0)}") while the camera moves backward '
+                f'("{back.group(0)}") and keeps the same distance ("{dist.group(0)}"); moving apart, they cannot keep that '
+                "distance. " + fix]
+    if toward and fwd:
+        return [head + f'the subject moves toward the camera ("{toward.group(0)}") while the camera moves forward '
+                f'("{fwd.group(0)}") and keeps the same distance ("{dist.group(0)}"); moving toward each other, they cannot '
+                "keep that distance. " + fix]
+    if fwd or back:
+        return []
+    still = CAMERA_STILL_RE.search(text)
+    cam = still or CAMERA_SIDEWAYS_RE.search(text)
+    if not cam:
+        return []
+    way = away or toward
+    return [head + f'the camera {"stays in place" if still else "travels sideways"} ("{cam.group(0)}") yet keeps the same '
+            f'distance ("{dist.group(0)}") from a subject that moves {"away from" if away else "toward"} it ("{way.group(0)}"). '
+            "Either move the camera with the subject at its pace (forward behind it, or backward ahead of it), or keep the "
+            f"camera as it is and show the subject growing {'smaller' if away else 'larger'} in the frame."]
+
+
+# 걷기·달리기·주행은 짧은 클립 내내 같은 속도로 (11-16: "Then he begins to stride forward", "the man's stride slows").
+# 멈춰 있다 출발하거나 느려져 멈추는 동작은 짧은 클립에서 어색해지기 쉽다 [추정]. 사용자가 출발·멈춤을 말했으면 보지 않는다
+_TRAVEL = (r"(?:walk(?:s|ing)?|strid(?:e|es|ing)|run(?:s|ning)?|jog(?:s|ging)?|march(?:es|ing)?|stroll(?:s|ing)?"
+           r"|driv(?:e|es|ing)|rid(?:e|es|ing)|cycl(?:e|es|ing)|skat(?:e|es|ing)|sprint(?:s|ing)?)")
+TRAVEL_START_RE = re.compile(
+    rf"\b(?:begins?|began|starts?|started|beginning|starting) (?:to )?{_TRAVEL}\b"
+    r"|\btakes? (?:his|her|their|its|a) first steps?\b"
+    r"|\bsets? (?:off|out) (?:down|along|across|toward|towards|into|on|through)\b"
+    r"|\b(?:breaks?|bursts?) into a (?:walk|run|jog|sprint|stride)\b", re.I)
+TRAVEL_STOP_RE = re.compile(
+    rf"\b(?:stops?|stopping|halts?|halting|pauses?|pausing|ceases?) {_TRAVEL}\b"
+    r"|\b(?:stride|strides|steps|gait|footsteps|walk)\b(?:\s+[\w-]+){0,2}?\s+(?:slows?|slowing|shortens?|shortening)\b"
+    r"|\bslows? (?:his|her|their|its) (?:pace|stride|steps|walk|gait)\b"
+    r"|\b(?:he|she|they|the (?:man|woman|figure|walker|runner|rider|driver|cyclist|person|girl|boy|child|car|vehicle|horse))\b"
+    r"(?:\s+[\w-]+){0,2}?\s+(?:stops|halts|pauses|comes to (?:a )?(?:stop|halt|standstill|rest)"
+    r"|slows (?:down|to (?:a )?(?:walk|halt|stop|standstill)))\b", re.I)
+TRAVEL_CHANGE_ASKED_RE = re.compile(r"멈추|멈춰|멈춘|멈춤|멈칫|멈출|멈췄|정지|서다|선다|섰다|세우|세운|속도를 줄|느려|늦추|출발|시작"
+                                    r"|발을 떼|일어나|\b(?:stop|stops|halt|start|starts|begin|begins|pause)\b", re.I)
+
+
+def travel_problems(prompt: str, said: str, mode: str) -> list[str]:
+    """이동(걷기·주행)이 클립 중간에 시작하거나 느려지거나 멈추면 위반이다.
+
+    시작은 T2V 만 본다: I2V 는 첫 화면이 서 있는 사람일 수 있어 걷기 시작하는 것이 자연스럽다.
+    """
+    if TRAVEL_CHANGE_ASKED_RE.search(said or ""):
+        return []
+    text = re.sub(r"\s+", " ", prompt or "")
+    start = TRAVEL_START_RE.search(text) if mode == "t2v" else None
+    stop = TRAVEL_STOP_RE.search(text)
+    if not (start or stop):
+        return []
+    need = []
+    if start:
+        need.append("write the subject already walking, running or driving at a steady pace in the opening moment")
+    if stop:
+        need.append("keep it moving at the same pace in the final frame and let the calm ending come from the camera settling")
+    found = "; ".join(m.group(0) for m in (start, stop) if m)
+    return [f'Travel keeps one steady pace for the whole clip ("{found}"): ' + ", and ".join(need) + "."]
+
+
 def example_copy_problems(result: dict, said: str, scene: str) -> list[str]:
     """T2V 장문은 길이 예시(찻잔 장면)를 받는다. 모델이 그것을 베껴 요청과 상관없는 찻잔·김·창가가 영상에 나온다
     (11-16 파일럿 1인칭 요청: 앞 두 단락은 조종석, 뒤 두 단락은 찻잔). 예시 낱말이나 문장이 요청·장면에 없는데 나오면 알린다"""
@@ -808,6 +929,8 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
             problems += example_copy_problems(result, said, scene)
         problems += part_consistency_problems(result)
         problems += extra_subject_problems(prompt, said)
+        problems += blocking_problems(prompt)
+        problems += travel_problems(prompt, said, profile["mode"])
         if operating_pov(said) and not (HAND_WORDS_RE.search(prompt) and re.search(r"\b(?:hands?|forearms?|gloves?)\b", prompt, re.I)):
             problems.append("The user asked for a first-person view of operating a vehicle: show the viewer's own hands or "
                             "forearms on the real controls (yoke, wheel, handlebars) at the bottom edge of the frame, and "
@@ -850,6 +973,11 @@ _KO_RULES = [
      lambda m: f"1인칭 요청인데 보는 사람 자신이 화면에 나오는 표현('{m[1]}')이 있습니다."),
     (re.compile(r"^Replace quality buzzwords.*?: (.+)\.$"),
      lambda m: f"품질 유행어({m[1]})가 있습니다. 화면에 보이는 구체적인 묘사(빛·렌즈·색·질감)로 바꿔야 합니다."),
+    (re.compile(r"^Camera and subject directions disagree"),
+     lambda m: "카메라와 인물의 방향이 서로 맞지 않습니다(예: 인물은 멀어지는데 카메라가 뒤로 물러나며 같은 거리를 유지). "
+               "영상 모델이 어느 쪽을 따를지 몰라 뒷걸음질 같은 결과가 나올 수 있습니다."),
+    (re.compile(r"^Travel keeps one steady pace"),
+     lambda m: "걷기·주행이 클립 중간에 시작하거나 느려지다 멈춥니다. 처음부터 끝까지 같은 속도로 움직이게 써야 합니다."),
     (re.compile(r"^Do not restate the look"),
      lambda m: "첫 화면에 이미 있는 외형을 다시 설명했습니다. 움직임만 써야 합니다."),
     (re.compile(r'^"ko\.(\w+)" must be a Korean sentence'),
