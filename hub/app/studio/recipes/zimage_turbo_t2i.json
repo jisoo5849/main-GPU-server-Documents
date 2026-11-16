@@ -1,88 +1,128 @@
 {
   "schema": "studio-recipe-1",
   "id": "zimage_turbo_t2i",
-  "version": 1,
+  "version": 2,
   "title": "Z-Image Turbo 이미지 생성 · 빠름(8스텝)",
   "quality_label": "빠름",
   "action": "image",
   "negative_source": "zero_out",
   "source": {
     "template": "image_z_image_turbo",
-    "exported": "개발 PC 템플릿 구조를 API 형식으로 옮긴 안. 메인의 Export (API) 파일로 바꾼 뒤 version 을 올린다 [TBD]",
+    "exported": "메인(studio-chat 작업공간, 2026-11-13) Export (API) 그대로. 바꾼 것: 프롬프트(57:27.text)·시드(57:3.seed)를 자리 표시로 비움",
     "templates_json_version": "TBD (메인에서 확인)",
     "frontend_version": "TBD (메인에서 확인)"
   },
   "prompt": {
     "9": {
-      "class_type": "SaveImage",
       "inputs": {
         "filename_prefix": "z-image-turbo",
         "images": [
           "57:8",
           0
         ]
+      },
+      "class_type": "SaveImage",
+      "_meta": {
+        "title": "이미지 저장"
       }
     },
     "57:30": {
-      "class_type": "CLIPLoader",
       "inputs": {
         "clip_name": "qwen_3_4b.safetensors",
         "type": "lumina2",
         "device": "default"
+      },
+      "class_type": "CLIPLoader",
+      "_meta": {
+        "title": "CLIP 로드"
       }
     },
     "57:29": {
-      "class_type": "VAELoader",
       "inputs": {
         "vae_name": "ae.safetensors"
+      },
+      "class_type": "VAELoader",
+      "_meta": {
+        "title": "VAE 로드"
+      }
+    },
+    "57:33": {
+      "inputs": {
+        "conditioning": [
+          "57:27",
+          0
+        ]
+      },
+      "class_type": "ConditioningZeroOut",
+      "_meta": {
+        "title": "조건 (0으로 출력)"
+      }
+    },
+    "57:8": {
+      "inputs": {
+        "samples": [
+          "57:3",
+          0
+        ],
+        "vae": [
+          "57:29",
+          0
+        ]
+      },
+      "class_type": "VAEDecode",
+      "_meta": {
+        "title": "VAE 디코드"
       }
     },
     "57:28": {
-      "class_type": "UNETLoader",
       "inputs": {
         "unet_name": "z_image_turbo_bf16.safetensors",
         "weight_dtype": "default"
-      }
-    },
-    "57:11": {
-      "class_type": "ModelSamplingAuraFlow",
-      "inputs": {
-        "shift": 3,
-        "model": [
-          "57:28",
-          0
-        ]
+      },
+      "class_type": "UNETLoader",
+      "_meta": {
+        "title": "확산 모델 로드"
       }
     },
     "57:27": {
-      "class_type": "CLIPTextEncode",
       "inputs": {
         "text": "",
         "clip": [
           "57:30",
           0
         ]
-      }
-    },
-    "57:33": {
-      "class_type": "ConditioningZeroOut",
-      "inputs": {
-        "conditioning": [
-          "57:27",
-          0
-        ]
+      },
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "CLIP 텍스트 인코딩 (프롬프트)"
       }
     },
     "57:13": {
-      "class_type": "EmptySD3LatentImage",
       "inputs": {
         "width": 1024,
         "height": 1024,
         "batch_size": 1
+      },
+      "class_type": "EmptySD3LatentImage",
+      "_meta": {
+        "title": "빈 잠재 이미지 (SD3)"
+      }
+    },
+    "57:11": {
+      "inputs": {
+        "shift": 3,
+        "sampling": "flow",
+        "model": [
+          "57:28",
+          0
+        ]
+      },
+      "class_type": "ModelSamplingAuraFlow",
+      "_meta": {
+        "title": "모델 샘플링 (AuraFlow)"
       }
     },
     "57:3": {
-      "class_type": "KSampler",
       "inputs": {
         "seed": 0,
         "steps": 8,
@@ -106,19 +146,10 @@
           "57:13",
           0
         ]
-      }
-    },
-    "57:8": {
-      "class_type": "VAEDecode",
-      "inputs": {
-        "samples": [
-          "57:3",
-          0
-        ],
-        "vae": [
-          "57:29",
-          0
-        ]
+      },
+      "class_type": "KSampler",
+      "_meta": {
+        "title": "KSampler"
       }
     }
   },
