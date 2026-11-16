@@ -171,6 +171,9 @@ async def me(request: Request):
                                     "max_active": settings.studio_max_active_per_user,
                                     "max_open": settings.studio_max_open_per_user},
                          "features": {a: bool(d and d.recipe_for(a)) for a in ("image", "i2v", "t2v", "edit")},
+                         "sound": {"available": bool(d and d.recipe_for("i2v", sound=True)),
+                                   "default": bool(settings.studio_sound_default),
+                                   "max_seconds": {"sound": int(intent.MAX_SECONDS_SOUND), "silent": int(intent.MAX_SECONDS)}},
                          "quality_high": {a: bool(d and d.recipe_for(a, "high")) for a in ("i2v", "t2v", "edit")}})
 
 
@@ -305,19 +308,47 @@ async def _post_message(request: Request, user: dict, thread: dict):
     want_high = options.get("quality") == "high" or (dec["carry"] == "revise" and last and d
                                                      and d.quality_of_turn(last["turn"]) == "high")
     high_ok = want_high and dec["action"] in ("i2v", "t2v", "edit")
-    recipe = d.recipe_for(dec["action"], "high" if high_ok else "fast") if d and dec["action"] != "answer" else None
+    # 소리: 칸 > 글('소리 없이') > 화질 높음(소리 없는 Wan) > 이어 말하기가 잇는 앞 요청 > 설정 기본. 소리 포함은 LTX-2.5 (화질 높음 없음)
+    use_sound, sound_notes = False, []
+    if d and dec["action"] in ("i2v", "t2v"):
+        opt = options.get("sound")
+        if opt is not None:
+            use_sound = opt == "on"
+        elif intent.MUTE_RE.search(text):
+            use_sound = False
+        elif want_high:
+            sound_notes.append("화질 높음은 소리가 없는 영상으로 만들었습니다. 소리를 넣으려면 소리 칸을 '포함'으로 바꿔 주세요")
+        elif dec["carry"] == "revise" and last:
+            use_sound = d.engine_of_turn(last["turn"]) == "ltx"
+        else:
+            use_sound = bool(settings.studio_sound_default)
+        if use_sound and (d.recipe_for("i2v", sound=True) is None
+                          or (dec["action"] == "t2v" and d.recipe_for("image") is None)):
+            sound_notes.append("소리 포함 영상은 지금 준비 중이라 소리 없이 만들었습니다")
+            use_sound = False
+        if use_sound and want_high:
+            sound_notes.append("소리 포함 영상은 화질 높음이 없어 기본 화질로 만들었습니다")
+            high_ok = False
+    if use_sound:
+        recipe = d.recipe_for("i2v", "fast", True)
+    else:
+        recipe = d.recipe_for(dec["action"], "high" if high_ok else "fast") if d and dec["action"] != "answer" else None
     if dec["action"] == "answer" or recipe is None:
         # 만들 일이 없거나 아직 없는 기능: 정해 둔 답만 한다 (GPU 안 씀, 5.3·13.1)
         reply = dec["reply"] if dec["action"] == "answer" else (
             "화질 높음은 지금 준비 중입니다. 화질을 빠름으로 바꿔 보내 주세요." if high_ok else "이 기능은 지금 준비 중입니다.")
         return await _reply_only(user, thread, cmid, shown, att_ids, reply)
     via_image = False
-    if recipe is not None and dec["action"] == "t2v" and settings.studio_t2v_via_image:
+    if use_sound and dec["action"] == "t2v":
+        via_image = True       # 소리 포함 글→영상은 늘 장면 이미지를 먼저 만든다 (위에서 이미지 레시피가 있음을 확인했다)
+    elif recipe is not None and dec["action"] == "t2v" and settings.studio_t2v_via_image:
         # 글→영상은 내부에서 장면 이미지를 먼저 만들고 그 이미지로 영상을 만든다. 사용자에게는 한 작업이다.
         # 두 레시피가 모두 켜져 있을 때만 (아니면 글만으로 영상을 만든다)
         i2v_r = d.recipe_for("i2v", "high" if high_ok else "fast")
         if i2v_r is not None and d.recipe_for("image") is not None:
             recipe, via_image = i2v_r, True
+    if sound_notes:
+        dec = {**dec, "notes": list(dec["notes"]) + sound_notes}
     if want_high and not high_ok and dec["action"] == "image":
         dec = {**dec, "notes": list(dec["notes"]) + ["이미지는 화질 높음이 아직 없어 빠름으로 만들었습니다"]}
     env = await store.studio_env(settings.studio_env_slug)
@@ -335,7 +366,9 @@ async def _post_message(request: Request, user: dict, thread: dict):
     if dec["carry"] == "repeat":                 # R6b: 저장된 프롬프트·설정으로 시드만 새로 (다시 만들기와 같다)
         return await _spawn_retry(request, user, thread, last["turn"], "new_seed", shown or text, cmid,
                                   {"action": "repeat"}, rule="R6b",
-                                  spec_over=intent.apply_options(intent.extract_spec(text), options))
+                                  spec_over=intent.apply_options(intent.extract_spec(
+                                      text, intent.MAX_SECONDS_SOUND if d.engine_of_turn(last["turn"]) == "ltx"
+                                      else intent.MAX_SECONDS), options))
     m = await store.add_message(thread["id"], "user", "text", shown,
                                 {"attachment_ids": att_ids} if att_ids and dec["source"] != "last_result" else None, None, cmid)
     if att_ids and dec["source"] != "last_result":
@@ -354,7 +387,11 @@ async def _post_message(request: Request, user: dict, thread: dict):
         if dec["action"] == "i2v":
             turn_atts = list(lreq.get("attachment_ids") or [])
             reuse = {"reuse_frame_of": str(last["turn"]["id"])}
-    spec = intent.apply_options(intent.extract_spec(req_text if not used_default else ""), options)
+    spec = intent.apply_options(intent.extract_spec(req_text if not used_default else "",
+                                                    intent.MAX_SECONDS_SOUND if use_sound else intent.MAX_SECONDS), options)
+    if not use_sound and (spec.get("seconds") or 0) > intent.MAX_SECONDS:      # 칸에서 5초보다 길게 골랐다
+        spec["seconds"] = intent.MAX_SECONDS
+        spec["notes"] = list(spec.get("notes") or []) + [f"소리 없는 영상은 {int(intent.MAX_SECONDS)}초까지라 {int(intent.MAX_SECONDS)}초로 만들었습니다"]
     req = {"text": req_text, "used_default": used_default, "attachment_ids": turn_atts, "spec": spec, "mode": "new",
            "notes": dec["notes"], "rule": dec["rule"], "carry": dec["carry"], **reuse}
     if via_image:
@@ -540,7 +577,8 @@ async def _spawn_retry(request: Request, user: dict, thread: dict, src: dict, mo
     recipe = d.recipe_map.get(src.get("recipe_id") or "")
     if recipe is None or recipe["id"] in d.disabled:
         via = bool((src.get("request") or {}).get("via_image"))
-        recipe = d.recipe_for("i2v" if via else (src.get("action") or "i2v"), d.quality_of_turn(src))
+        act = "i2v" if via else (src.get("action") or "i2v")
+        recipe = d.recipe_for(act, d.quality_of_turn(src), d.engine_of_turn(src) == "ltx") or d.recipe_for(act, d.quality_of_turn(src))
     if recipe is None:
         return err(503, "studio_not_ready", "이 기능은 지금 준비 중입니다.")
     if cmid:
@@ -599,7 +637,8 @@ async def turn_to_video(request: Request):
     if not _rate_ok(user["id"]):
         return err(429, "too_many_messages", "잠시 뒤 다시 눌러 주세요.")
     d = state.director
-    recipe = d.recipe_for("i2v") if d else None
+    snd = bool(d and settings.studio_sound_default and d.recipe_for("i2v", sound=True) is not None)
+    recipe = d.recipe_for("i2v", "fast", snd) if d else None
     thread = await store.get_thread(src["thread_id"], user["id"])
     env = await store.studio_env(settings.studio_env_slug)
     if recipe is None or env is None:

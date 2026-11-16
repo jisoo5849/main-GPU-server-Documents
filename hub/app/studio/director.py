@@ -326,8 +326,15 @@ class Director:
         self.min_interval = settings.studio_progress_min_interval_ms / 1000
 
     # ── 레시피 ──
-    def recipe_for(self, action: str, quality: str = "fast") -> dict | None:
+    def recipe_for(self, action: str, quality: str = "fast", sound: bool = False) -> dict | None:
+        """sound=True 면 소리 포함 영상(LTX-2.5, 이미지→영상만, 화질 높음 없음). 아니면 소리 없는 레시피(Wan 등)"""
+        if sound:
+            return recipes.pick(self.recipe_map, self.disabled, action, "fast", "ltx")
         return recipes.pick(self.recipe_map, self.disabled, action, quality)
+
+    def engine_of_turn(self, turn: dict | None) -> str:
+        """이 요청이 쓴 영상 엔진 (이어 말하기·다시 만들기가 같은 엔진을 잇게)"""
+        return recipes.engine_of(self.recipe_map.get((turn or {}).get("recipe_id") or ""))
 
     def quality_of_turn(self, turn: dict | None) -> str:
         """이 요청이 쓴 레시피의 화질 (이어 말하기·다시 만들기가 같은 화질을 이어 가게)"""
@@ -678,10 +685,14 @@ class Director:
             med = await self.deps.medians() or {}
         except Exception:  # noqa: BLE001
             med = {}
-        own = float((ctx.recipe.get("estimate") or {}).get("gpu_seconds") or med.get("comfy") or 60)
+        est = ctx.recipe.get("estimate") or {}
+        own = float(est.get("gpu_seconds") or med.get("comfy") or 60)
         frames = ((ctx.turn.get("work") or {}).get("settings") or {}).get("frames")
         if frames:
-            own *= max(0.4, min(1.0, float(frames) / 81))      # 짧은 영상은 덜 걸린다 [추정]
+            # 짧은 영상은 덜 걸린다 [추정]. Wan 은 81프레임이 기준이라 더 늘지 않는다. LTX 는 기준 프레임과 지수가 레시피에 있다(실측)
+            ref = float(est.get("ref_frames") or 81)
+            exp = float(est.get("exponent") or 1.0)
+            own *= max(0.4, min(8.0 if est.get("ref_frames") else 1.0, (float(frames) / ref) ** exp))
         comfy = med.get("comfy") or own
         llm = med.get("llm") or 30
         q = await self.deps.queue()
@@ -765,7 +776,9 @@ class Director:
         recipe = self.recipe_map.get(turn.get("recipe_id") or "")
         if recipe is None or recipe["id"] in self.disabled:
             via = bool((turn.get("request") or {}).get("via_image"))
-            recipe = self.recipe_for("i2v" if via else (turn.get("action") or "i2v"), self.quality_of_turn(turn))
+            act = "i2v" if via else (turn.get("action") or "i2v")
+            recipe = (self.recipe_for(act, self.quality_of_turn(turn), self.engine_of_turn(turn) == "ltx")
+                      or self.recipe_for(act, self.quality_of_turn(turn)))        # 소리 포함 레시피가 꺼졌으면 소리 없는 레시피로 잇는다
         if recipe is None:
             if await self._cancel_awaiting(turn):
                 await self._plan_status(turn, "cancelled")
@@ -901,6 +914,8 @@ class Director:
             for e in bag:
                 await store.event(turn["id"], "llm_job", {k: e.get(k) for k in LLM_JOB_KEYS})
         final = f["prompt"] if f and f.get("changed") else r["prompt"]
+        if r.get("sound") and r["sound"] not in final:
+            final = f"{final}\n\n{r['sound']}"
         frame_ok = self.deps.frame_known(r.get("frame"))
         await store.event(turn["id"], "render", {
             "profile": r.get("profile"), "length_choice": r.get("length_choice"), "crew": r.get("crew"),
@@ -909,7 +924,7 @@ class Director:
         if f:
             await store.event(turn["id"], "fix", {k: f.get(k) for k in ("before_ko", "violations", "words_before",
                                                                         "words_after", "rounds", "changed", "fixed")})
-        work = {"prompt": final, "parts": (f or r).get("parts"), "ko": (f or r).get("ko"), "profile": r.get("profile"),
+        work = {"prompt": final, "parts": (f or r).get("parts"), "ko": {**(r.get("ko") or {}), **((f or {}).get("ko") or {})}, "profile": r.get("profile"),
                 "length_choice": r.get("length_choice"), "settings": r.get("settings"), "frame_known": frame_ok,
                 "frame": r.get("frame")}
         await store.merge_work(turn["id"], work)
@@ -1008,8 +1023,12 @@ class Director:
             values[img_slot] = img["input_rel"]
         if "frames" in inject:
             values["frames"] = frames
+        if "seconds" in inject:      # LTX: 길이를 초로 받는다 (프레임은 초 × fps + 1)
+            sl = inject["seconds"]
+            values["seconds"] = max(int(sl.get("min", 2)), min(int(sl.get("max", 20)),
+                                                               int(round(((frames or 121) - 1) / int(d.get("fps") or 24)))))
         if "check_index" in inject:
-            values["check_index"] = max(0, min((frames or 0) // 2, 80))
+            values["check_index"] = max(0, min((frames or 0) // 2, int(inject["check_index"].get("max", 80))))
         try:
             prompt = recipes.build(recipe, values)
         except recipes.RecipeError as e:

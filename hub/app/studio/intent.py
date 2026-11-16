@@ -8,7 +8,8 @@ import re
 # 제작진 분야 키워드에 걸리지 않는 문장이다 ('자연스럽게' 는 풍경 키워드 '자연' 에 걸린다, crew_knowledge.json)
 DEFAULT_I2V_TEXT = "이 사진 속 장면이 부드럽게 움직이는 짧은 영상"
 MAX_TEXT = 2000
-MAX_SECONDS = 5.0
+MAX_SECONDS = 5.0              # 소리 없는 영상(Wan)
+MAX_SECONDS_SOUND = 20.0       # 소리 포함 영상(LTX-2.5)
 MIN_SECONDS = 0.5
 
 SECONDS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*초")
@@ -18,6 +19,9 @@ ASPECT_RES = (
     ("square", re.compile(r"정사각|1\s*:\s*1")),
 )
 SOUND_RE = re.compile(r"소리|음악|효과음|사운드|BGM", re.I)
+# '소리 없이' 는 소리가 없는 영상(Wan)으로. '음악 없이' 는 소리 포함이되 음악만 뺀다 (영상 렌더러가 따로 본다)
+MUTE_RE = re.compile(r"소리\s*(?:는|도|를|가)?\s*(?:없이|빼|꺼|필요\s*없)|소리\s*없는\s*(?:영상|동영상|클립|비디오|버전)|무음|음소거"
+                     r"|\bsilent\b|\bno sound\b|without sound", re.I)
 
 
 class InputError(ValueError):
@@ -45,27 +49,25 @@ def resolve_text(text, n_attachments: int) -> tuple[str, bool]:
     raise InputError("empty_message", "글이나 사진을 보내 주세요.")
 
 
-def extract_spec(text: str) -> dict:
-    """{seconds: float|None, aspect: str|None, sound: bool, notes: [한국어 안내]}.
-    5초를 넘는 길이는 5초로 맞추고, 소리·비율은 말없이 무시하지 않고 안내를 남긴다. 안내는 결과 뒤에 한 줄로 보인다."""
+def extract_spec(text: str, max_seconds: float = MAX_SECONDS) -> dict:
+    """{seconds: float|None, aspect: str|None, sound: bool(소리 말이 있는가), notes: [한국어 안내]}.
+    max_seconds 를 넘는 길이는 그 길이로 맞추고 안내를 남긴다(소리 없는 영상 5초, 소리 포함 20초). 안내는 결과 뒤에 한 줄로 보인다."""
     notes = []
     seconds = None
     m = SECONDS_RE.search(text or "")
     if m:
         v = float(m.group(1))
-        if v > MAX_SECONDS:
-            seconds = MAX_SECONDS
-            notes.append("한 번에 5초까지라 5초로 만들었습니다")
+        if v > max_seconds:
+            seconds = max_seconds
+            notes.append(f"한 번에 {int(max_seconds)}초까지라 {int(max_seconds)}초로 만들었습니다")
         elif v >= MIN_SECONDS:
             seconds = v
     aspect = next((name for name, rx in ASPECT_RES if rx.search(text or "")), None)
     sound = bool(SOUND_RE.search(text or ""))
-    if sound:
-        notes.append("소리는 아직 넣지 못합니다")
     return {"seconds": seconds, "aspect": aspect, "sound": sound, "notes": notes}
 
 
-SECONDS_CHOICES = (2.0, 3.0, 4.0, 5.0)
+SECONDS_CHOICES = (2.0, 3.0, 4.0, 5.0, 8.0, 10.0, 12.0, 15.0, 20.0)     # 5초 넘는 길이는 소리 포함 영상만
 ASPECT_CHOICES = ("portrait", "landscape", "square")
 
 
@@ -84,7 +86,7 @@ def clean_options(options) -> dict:
         except (TypeError, ValueError, OverflowError):
             raise InputError("bad_request", "요청 형식이 올바르지 않습니다.") from None
         if isinstance(sec, bool) or v not in SECONDS_CHOICES:
-            raise InputError("bad_request", "길이는 2~5초 중에서 고를 수 있습니다.")
+            raise InputError("bad_request", "길이는 2~20초 중에서 고를 수 있습니다.")
         out["seconds"] = v
     asp = options.get("aspect")
     if asp not in (None, "", "auto"):
@@ -96,6 +98,11 @@ def clean_options(options) -> dict:
         if q != "high":
             raise InputError("bad_request", "화질은 빠름·높음 중에서 고를 수 있습니다.")
         out["quality"] = "high"
+    snd = options.get("sound")
+    if snd not in (None, "", "auto"):
+        if snd not in ("on", "off"):
+            raise InputError("bad_request", "소리는 자동·포함·없음 중에서 고를 수 있습니다.")
+        out["sound"] = snd
     return out
 
 
@@ -104,7 +111,7 @@ def apply_options(spec: dict, options: dict) -> dict:
     s = dict(spec or {})
     if "seconds" in options:
         s["seconds"] = options["seconds"]
-        s["notes"] = [n for n in s.get("notes") or [] if "5초까지" not in n]
+        s["notes"] = [n for n in s.get("notes") or [] if "초까지" not in n]
     if "aspect" in options:
         s["aspect"] = options["aspect"]
     if options.get("quality") == "high":

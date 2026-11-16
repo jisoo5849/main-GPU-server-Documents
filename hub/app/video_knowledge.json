@@ -183,6 +183,25 @@
       "style": "Wan text-to-video: the scene description comes first, then short motion sentences in the order camera, subject motion, scene motion, ending.",
       "models": ["wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors", "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"],
       "tested": ""
+    },
+    "ltx25_i2v_long": {
+      "title": "LTX-2.5 I2V · 장문 + 소리 (첫 화면 → 영상과 소리)",
+      "mode": "i2v",
+      "long": true,
+      "sound": true,
+      "whole_seconds": true,
+      "min_seconds": 2,
+      "fps": 24,
+      "max_frames": 481,
+      "frame_step": 8,
+      "default_seconds": 5,
+      "words": [170, 320],
+      "target": 230,
+      "part_min_words": 30,
+      "sound_words": [35, 120],
+      "style": "LTX-2.5 image-to-video with sound: long, detailed cinematic prose in the same four parts, staying true to the first frame; the sound is written separately.",
+      "models": ["ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors"],
+      "tested": "2026-11-16 메인: 5·10·20초, 1280×704, 소리 포함"
     }
   }
 }

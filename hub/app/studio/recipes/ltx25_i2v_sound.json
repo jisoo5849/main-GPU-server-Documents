@@ -1,0 +1,741 @@
+{
+ "schema": "studio-recipe-1",
+ "id": "ltx25_i2v_sound",
+ "version": 1,
+ "title": "LTX-2.5 이미지→영상 · 소리 포함",
+ "quality_label": "소리 포함",
+ "action": "i2v",
+ "engine": "ltx",
+ "sound": true,
+ "video_profile": "ltx25_i2v_long",
+ "negative_source": "node",
+ "source": {
+  "template": "video_ltx2_5_i2v",
+  "exported": "메인(사용자 ComfyUI 화면, 2026-11-16) 공식 템플릿을 app.graphToPrompt() 로 API 형식으로 바꾼 것. 바꾼 것: 해상도 선택기(403)를 빼고 너비·높이(398:372·398:360)를 숫자로, 프롬프트 확장기(398:380·398:393·398:381·398:382·398:383)를 빼고 프롬프트 글을 인코더에 바로 연결, 시드·프롬프트·첫 화면·길이(초)는 자리 표시, 900·901(검사 프레임) 추가",
+  "templates_json_version": "TBD (메인에서 확인)",
+  "frontend_version": "TBD (메인에서 확인)",
+  "removed_nodes": [
+   "403",
+   "398:380",
+   "398:393",
+   "398:381",
+   "398:382",
+   "398:383"
+  ]
+ },
+ "prompt": {
+  "75": {
+   "inputs": {
+    "filename_prefix": "video/LTX-2.5_i2v",
+    "format": "auto",
+    "format.codec": "auto",
+    "codec": "auto",
+    "video": [
+     "398:370",
+     0
+    ]
+   },
+   "class_type": "SaveVideo"
+  },
+  "395": {
+   "inputs": {
+    "image": "studio/_check/sample.png"
+   },
+   "class_type": "LoadImage"
+  },
+  "900": {
+   "class_type": "ImageFromBatch",
+   "inputs": {
+    "image": [
+     "398:374",
+     0
+    ],
+    "batch_index": 60,
+    "length": 1
+   }
+  },
+  "901": {
+   "class_type": "SaveImage",
+   "inputs": {
+    "filename_prefix": "check_frame",
+    "images": [
+     "900",
+     0
+    ]
+   }
+  },
+  "398:364": {
+   "inputs": {
+    "text": [
+     "398:376",
+     0
+    ],
+    "clip": [
+     "398:387",
+     0
+    ]
+   },
+   "class_type": "CLIPTextEncode"
+  },
+  "398:376": {
+   "inputs": {
+    "value": "a calm test scene"
+   },
+   "class_type": "PrimitiveStringMultiline"
+  },
+  "398:384": {
+   "inputs": {
+    "unet_name": "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
+    "weight_dtype": "default"
+   },
+   "class_type": "UNETLoader"
+  },
+  "398:362": {
+   "inputs": {
+    "value": 5
+   },
+   "class_type": "PrimitiveInt"
+  },
+  "398:363": {
+   "inputs": {
+    "value": false
+   },
+   "class_type": "PrimitiveBoolean"
+  },
+  "398:365": {
+   "inputs": {
+    "frame_rate": [
+     "398:359",
+     0
+    ],
+    "positive": [
+     "398:364",
+     0
+    ],
+    "negative": [
+     "398:373",
+     0
+    ]
+   },
+   "class_type": "LTXVConditioning"
+  },
+  "398:385": {
+   "inputs": {
+    "vae_name": "ltx-2.5-video-vae-bf16.safetensors"
+   },
+   "class_type": "VAELoader"
+  },
+  "398:386": {
+   "inputs": {
+    "vae_name": "ltx-2.5-audio-vae-bf16.safetensors"
+   },
+   "class_type": "VAELoader"
+  },
+  "398:372": {
+   "inputs": {
+    "value": 1280
+   },
+   "class_type": "PrimitiveInt"
+  },
+  "398:373": {
+   "inputs": {
+    "text": "pc game, console game, video game, cartoon, childish, ugly",
+    "clip": [
+     "398:387",
+     0
+    ]
+   },
+   "class_type": "CLIPTextEncode"
+  },
+  "398:387": {
+   "inputs": {
+    "clip_name": "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+    "type": "ltxv",
+    "device": "default"
+   },
+   "class_type": "CLIPLoader"
+  },
+  "398:360": {
+   "inputs": {
+    "value": 704
+   },
+   "class_type": "PrimitiveInt"
+  },
+  "398:352": {
+   "inputs": {
+    "sampler_name": "euler_ancestral"
+   },
+   "class_type": "KSamplerSelect"
+  },
+  "398:339": {
+   "inputs": {
+    "noise_seed": 875362541677469
+   },
+   "class_type": "RandomNoise"
+  },
+  "398:397": {
+   "inputs": {
+    "sigmas": "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
+   },
+   "class_type": "ManualSigmas"
+  },
+  "398:361": {
+   "inputs": {
+    "value": 24
+   },
+   "class_type": "PrimitiveInt"
+  },
+  "398:371": {
+   "inputs": {
+    "model_name": "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
+   },
+   "class_type": "LatentUpscaleModelLoader"
+  },
+  "398:388": {
+   "inputs": {
+    "video_cfg": 1,
+    "audio_cfg": 1,
+    "model": [
+     "398:384",
+     0
+    ],
+    "positive": [
+     "398:365",
+     0
+    ],
+    "negative": [
+     "398:365",
+     1
+    ]
+   },
+   "class_type": "LTXVDualCFGGuider"
+  },
+  "398:344": {
+   "inputs": {
+    "noise": [
+     "398:339",
+     0
+    ],
+    "guider": [
+     "398:388",
+     0
+    ],
+    "sampler": [
+     "398:352",
+     0
+    ],
+    "sigmas": [
+     "398:397",
+     0
+    ],
+    "latent_image": [
+     "398:377",
+     0
+    ]
+   },
+   "class_type": "SamplerCustomAdvanced"
+  },
+  "398:357": {
+   "inputs": {
+    "strength": 0.7,
+    "bypass": [
+     "398:363",
+     0
+    ],
+    "vae": [
+     "398:385",
+     0
+    ],
+    "image": [
+     "398:350",
+     0
+    ],
+    "latent": [
+     "398:356",
+     0
+    ]
+   },
+   "class_type": "LTXVImgToVideoInplace"
+  },
+  "398:366": {
+   "inputs": {
+    "frames_number": [
+     "398:378",
+     1
+    ],
+    "frame_rate": [
+     "398:359",
+     1
+    ],
+    "batch_size": 1,
+    "audio_vae": [
+     "398:386",
+     0
+    ]
+   },
+   "class_type": "LTXVEmptyLatentAudio"
+  },
+  "398:367": {
+   "inputs": {
+    "av_latent": [
+     "398:344",
+     0
+    ]
+   },
+   "class_type": "LTXVSeparateAVLatent"
+  },
+  "398:377": {
+   "inputs": {
+    "video_latent": [
+     "398:357",
+     0
+    ],
+    "audio_latent": [
+     "398:366",
+     0
+    ]
+   },
+   "class_type": "LTXVConcatAVLatent"
+  },
+  "398:351": {
+   "inputs": {
+    "resize_type": "scale longer dimension",
+    "resize_type.longer_size": 1536,
+    "scale_method": "lanczos",
+    "input": [
+     "395",
+     0
+    ]
+   },
+   "class_type": "ResizeImageMaskNode"
+  },
+  "398:353": {
+   "inputs": {
+    "expression": "a/2",
+    "values.a": [
+     "398:372",
+     0
+    ]
+   },
+   "class_type": "ComfyMathExpression"
+  },
+  "398:355": {
+   "inputs": {
+    "expression": "a/2",
+    "values.a": [
+     "398:360",
+     0
+    ]
+   },
+   "class_type": "ComfyMathExpression"
+  },
+  "398:350": {
+   "inputs": {
+    "img_compression": 18,
+    "image": [
+     "398:351",
+     0
+    ]
+   },
+   "class_type": "LTXVPreprocess"
+  },
+  "398:356": {
+   "inputs": {
+    "width": [
+     "398:353",
+     1
+    ],
+    "height": [
+     "398:355",
+     1
+    ],
+    "length": [
+     "398:378",
+     1
+    ],
+    "batch_size": 1
+   },
+   "class_type": "EmptyLTXVLatentVideo"
+  },
+  "398:348": {
+   "inputs": {
+    "samples": [
+     "398:367",
+     0
+    ],
+    "upscale_model": [
+     "398:371",
+     0
+    ],
+    "vae": [
+     "398:385",
+     0
+    ]
+   },
+   "class_type": "LTXVLatentUpsampler"
+  },
+  "398:349": {
+   "inputs": {
+    "strength": 1,
+    "bypass": [
+     "398:363",
+     0
+    ],
+    "vae": [
+     "398:385",
+     0
+    ],
+    "image": [
+     "398:350",
+     0
+    ],
+    "latent": [
+     "398:348",
+     0
+    ]
+   },
+   "class_type": "LTXVImgToVideoInplace"
+  },
+  "398:359": {
+   "inputs": {
+    "expression": "a",
+    "values.a": [
+     "398:361",
+     0
+    ]
+   },
+   "class_type": "ComfyMathExpression"
+  },
+  "398:378": {
+   "inputs": {
+    "expression": "a * b + 1",
+    "values.a": [
+     "398:362",
+     0
+    ],
+    "values.b": [
+     "398:361",
+     0
+    ]
+   },
+   "class_type": "ComfyMathExpression"
+  },
+  "398:338": {
+   "inputs": {
+    "noise_seed": 42
+   },
+   "class_type": "RandomNoise"
+  },
+  "398:340": {
+   "inputs": {
+    "video_latent": [
+     "398:349",
+     0
+    ],
+    "audio_latent": [
+     "398:367",
+     1
+    ]
+   },
+   "class_type": "LTXVConcatAVLatent"
+  },
+  "398:396": {
+   "inputs": {
+    "sigmas": "0.85, 0.7250, 0.4219, 0.0"
+   },
+   "class_type": "ManualSigmas"
+  },
+  "398:391": {
+   "inputs": {
+    "video_cfg": 1,
+    "audio_cfg": 1,
+    "model": [
+     "398:384",
+     0
+    ],
+    "positive": [
+     "398:365",
+     0
+    ],
+    "negative": [
+     "398:365",
+     1
+    ]
+   },
+   "class_type": "LTXVDualCFGGuider"
+  },
+  "398:341": {
+   "inputs": {
+    "sampler_name": "euler_ancestral"
+   },
+   "class_type": "KSamplerSelect"
+  },
+  "398:368": {
+   "inputs": {
+    "noise": [
+     "398:338",
+     0
+    ],
+    "guider": [
+     "398:391",
+     0
+    ],
+    "sampler": [
+     "398:341",
+     0
+    ],
+    "sigmas": [
+     "398:396",
+     0
+    ],
+    "latent_image": [
+     "398:340",
+     0
+    ]
+   },
+   "class_type": "SamplerCustomAdvanced"
+  },
+  "398:369": {
+   "inputs": {
+    "av_latent": [
+     "398:368",
+     0
+    ]
+   },
+   "class_type": "LTXVSeparateAVLatent"
+  },
+  "398:374": {
+   "inputs": {
+    "tile_size": 512,
+    "overlap": 64,
+    "temporal_size": 64,
+    "temporal_overlap": 16,
+    "samples": [
+     "398:369",
+     0
+    ],
+    "vae": [
+     "398:385",
+     0
+    ]
+   },
+   "class_type": "VAEDecodeTiled"
+  },
+  "398:358": {
+   "inputs": {
+    "samples": [
+     "398:369",
+     1
+    ],
+    "audio_vae": [
+     "398:386",
+     0
+    ]
+   },
+   "class_type": "LTXVAudioVAEDecode"
+  },
+  "398:370": {
+   "inputs": {
+    "fps": [
+     "398:359",
+     0
+    ],
+    "bit_depth": 8,
+    "color_space": "sRGB",
+    "codec": "none",
+    "images": [
+     "398:374",
+     0
+    ],
+    "audio": [
+     "398:358",
+     0
+    ]
+   },
+   "class_type": "CreateVideo"
+  }
+ },
+ "inject": {
+  "prompt": {
+   "node": "398:376",
+   "input": "value",
+   "type": "string",
+   "role": "positive",
+   "max_len": 8000
+  },
+  "first_frame": {
+   "node": "395",
+   "input": "image",
+   "type": "input_image"
+  },
+  "seed": {
+   "node": "398:339",
+   "input": "noise_seed",
+   "type": "int",
+   "min": 0,
+   "max": 281474976710655
+  },
+  "seconds": {
+   "node": "398:362",
+   "input": "value",
+   "type": "int",
+   "min": 2,
+   "max": 20
+  },
+  "width": {
+   "node": "398:372",
+   "input": "value",
+   "type": "int",
+   "min": 256,
+   "max": 1536,
+   "step": 64
+  },
+  "height": {
+   "node": "398:360",
+   "input": "value",
+   "type": "int",
+   "min": 256,
+   "max": 1536,
+   "step": 64
+  },
+  "check_index": {
+   "node": "900",
+   "input": "batch_index",
+   "type": "int",
+   "min": 0,
+   "max": 480
+  },
+  "save_prefix": [
+   {
+    "node": "75",
+    "input": "filename_prefix",
+    "type": "prefix",
+    "suffix": "video"
+   },
+   {
+    "node": "901",
+    "input": "filename_prefix",
+    "type": "prefix",
+    "suffix": "check_frame"
+   }
+  ]
+ },
+ "fixed": {
+  "negative": {
+   "node": "398:373",
+   "input": "text",
+   "type": "string",
+   "role": "negative"
+  }
+ },
+ "outputs": {
+  "main": {
+   "node": "75",
+   "kind": "video",
+   "ext": [
+    ".mp4",
+    ".webm"
+   ]
+  },
+  "check": {
+   "node": "901",
+   "kind": "image",
+   "ext": [
+    ".png"
+   ]
+  }
+ },
+ "defaults": {
+  "width": 1280,
+  "height": 704,
+  "fps": 24,
+  "frames": 121,
+  "size_rule": "keep_aspect_area",
+  "size_step": 64,
+  "max_side": 1280
+ },
+ "progress": {
+  "bands": [
+   {
+    "key": "load",
+    "label": "준비",
+    "weight": 10,
+    "nodes": [
+     "395",
+     "398:351",
+     "398:350",
+     "398:384",
+     "398:385",
+     "398:386",
+     "398:387",
+     "398:364",
+     "398:373",
+     "398:365",
+     "398:371",
+     "398:356",
+     "398:357",
+     "398:366",
+     "398:377",
+     "398:388"
+    ]
+   },
+   {
+    "key": "first",
+    "label": "생성 1/2",
+    "weight": 35,
+    "nodes": [
+     "398:344"
+    ],
+    "sampler": true
+   },
+   {
+    "key": "up",
+    "label": "해상도 올리기",
+    "weight": 5,
+    "nodes": [
+     "398:367",
+     "398:348",
+     "398:349",
+     "398:340",
+     "398:391"
+    ]
+   },
+   {
+    "key": "second",
+    "label": "생성 2/2",
+    "weight": 20,
+    "nodes": [
+     "398:368"
+    ],
+    "sampler": true
+   },
+   {
+    "key": "finish",
+    "label": "영상 만들기",
+    "weight": 30,
+    "nodes": [
+     "398:369",
+     "398:374",
+     "398:358",
+     "398:370",
+     "75",
+     "900",
+     "901"
+    ]
+   }
+  ]
+ },
+ "inspect": {
+  "output": "check",
+  "when": "after_delivery"
+ },
+ "estimate": {
+  "gpu_seconds": 50,
+  "ref_frames": 121,
+  "exponent": 0.73,
+  "basis": "2026-11-16 메인 실측(1280×704, 24fps, 소리 포함): 5초 49.6초·10초 57.0초·20초 137.0초. 20초가 5초의 약 2.8배"
+ },
+ "limits": {
+  "max_run_seconds": 1200
+ }
+}

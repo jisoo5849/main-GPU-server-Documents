@@ -1321,6 +1321,93 @@ def test_proper_names_are_described_not_named():
     assert "creatures, brands or real people" in promptx.META_RULES and "never a likeness" in promptx.META_RULES
 
 
+SOUND_OK = {"sound": ("Audio: A soft, steady room tone fills the quiet space, with a gentle breath of air moving past the glass. "
+                      "The slow push-in carries a faint, smooth whisper from the camera mount, and a light touch on the marble "
+                      "sounds once, clearly. A calm instrumental score of warm piano and a low synthesizer pad rises slowly, "
+                      "then fades with the final frame."),
+            "ko": "방 안의 잔잔한 소리와 부드러운 피아노 음악이 깔립니다."}
+
+
+def test_ltx_profile_settings_and_default_profile_stay_wan():
+    assert video.profile_of(None)[0] == "wan22_i2v_long"                     # 프로필을 안 고르면 예전처럼 Wan (소리 없음)
+    ltx = video.profile_of("ltx25_i2v_long")[1]
+    assert ltx["sound"] and ltx["fps"] == 24 and ltx["frame_step"] == 8 and is_long_profile(ltx)
+    assert video.suggest_settings(ltx, 5) == {"frames": 121, "fps": 24, "seconds": 5.0, "capped": False}
+    assert video.suggest_settings(ltx, 20)["frames"] == 481 and video.suggest_settings(ltx, 10)["frames"] == 241
+    assert video.suggest_settings(ltx, 30)["capped"] and video.suggest_settings(ltx, 30)["seconds"] == 20.0
+    # 길이는 정수 초: 계획·추정·결과가 실제로 만들어지는 길이와 같다 (레시피의 초 칸이 정수라서)
+    for sec, want in ((2.5, 2), (7.5, 8), (1, 2), (0.5, 2), (9.4, 9)):
+        st = video.suggest_settings(ltx, sec)
+        assert st["seconds"] == float(want) and st["frames"] == want * 24 + 1, (sec, st)
+    assert all((f - 1) % 8 == 0 for f in (video.suggest_settings(ltx, s)["frames"] for s in (2, 3, 4, 7.5, 12, 15)))
+    assert next(p for p in video.profile_list() if p["id"] == "ltx25_i2v_long")["max_seconds"] == 20.0
+
+
+def is_long_profile(p):
+    return video.is_long(p)
+
+
+def test_sound_paragraph_is_written_after_the_video_text_and_kept_separate():
+    result, calls, _ = run_render([LONG_I2V, SOUND_OK], username="alice", slug="alice-main", text="향수 광고 영상",
+                                  image_prompt=SCENE, profile_id="ltx25_i2v_long", crew=False)
+    assert result["profile"] == "ltx25_i2v_long" and result["long"] and len(calls) == 2
+    assert result["sound"] == SOUND_OK["sound"] and result["sound_left"] == []
+    assert result["prompt"] == video.assemble(LONG_I2V) + chr(10) * 2 + SOUND_OK["sound"]       # 영상 글 뒤에 소리 단락
+    assert result["ko"]["sound"] == SOUND_OK["ko"] and set(result["ko"]) == {"camera", "motion", "timing", "sound"}
+    sysmsg, usermsg = calls[1]["messages"][0]["content"], calls[1]["messages"][1]["content"]
+    assert "sound designer" in sysmsg and "quiet instrumental score" in sysmsg and "no spoken words" in sysmsg
+    assert "VIDEO TEXT" in usermsg and "close-up shot" in usermsg
+    assert set(calls[1]["format"]["properties"]) == {"sound", "ko"}
+    # Wan 프로필은 소리 단락이 없고 호출도 늘지 않는다
+    r2, calls2, _ = run_render([LONG_I2V], username="alice", slug="alice-main", text="향수 광고 영상", image_prompt=SCENE,
+                               profile_id="wan22_i2v_long", crew=False)
+    assert r2["sound"] == "" and len(calls2) == 1 and "sound" not in r2["ko"] and r2["prompt"] == video.assemble(LONG_I2V)
+
+
+def test_sound_follows_speech_and_music_requests_and_repairs_bad_answers():
+    said = '여자가 "안녕하세요, 반가워요" 라고 말하는 영상, 음악 없이'
+    speech = {"sound": ('Audio: A calm room tone with a faint clock tick. The young woman at the desk says "안녕하세요, 반가워요" '
+                        'in a warm, low voice, and her soft breath follows each phrase. The room settles quietly with the final frame.'),
+              "ko": "차분한 방 소리와 여자의 한국어 대사가 들립니다."}
+    result, calls, _ = run_render([LONG_I2V, speech], username="alice", slug="alice-main", text=said, image_prompt=SCENE,
+                                  profile_id="ltx25_i2v_long", crew=False)
+    sysmsg = calls[1]["messages"][0]["content"]
+    assert video.MUSIC_OFF in sysmsg and '"안녕하세요, 반가워요"' in sysmsg and "word for word" in sysmsg
+    assert result["sound"] == speech["sound"] and result["sound_left"] == []            # 따옴표 안의 한국어 대사는 그대로 둔다
+    # 나쁜 답(없는 대사를 따옴표로, 부정어, 한글)은 한 번 고쳐 쓴다
+    bad = {"sound": 'Audio: Someone says "hello there" and there is no music at all, 조용합니다.', "ko": "소리"}
+    result, calls, _ = run_render([LONG_I2V, bad, SOUND_OK], username="alice", slug="alice-main", text="향수 광고 영상",
+                                  image_prompt=SCENE, profile_id="ltx25_i2v_long", crew=False)
+    assert len(calls) == 3 and calls[2]["messages"][-1]["content"].startswith("Your JSON broke these rules")
+    assert result["sound"] == SOUND_OK["sound"] and result["sound_left"] == []
+    # 끝내 못 고치면 가장 나은 답을 'Audio:' 로 시작하게 하고 남은 문제를 알린다
+    weak = {"sound": "A short hum", "ko": "소리가 납니다."}
+    result, calls, _ = run_render([LONG_I2V, weak, weak], username="alice", slug="alice-main", text="향수 광고 영상",
+                                  image_prompt=SCENE, profile_id="ltx25_i2v_long", crew=False)
+    assert result["sound"] == "Audio: A short hum" and result["sound_left"] and len(calls) == 3
+
+
+def test_sound_problem_checks_and_spoken_lines():
+    ltx = video.profile_of("ltx25_i2v_long")[1]
+    assert video.sound_problems(SOUND_OK, "향수 광고", ltx) == []
+    assert video.spoken_lines('"안녕하세요, 반가워요" 라고 말해') == ["안녕하세요, 반가워요"] and video.spoken_lines("향수 광고") == []
+    assert video.spoken_lines("“오늘은 맑아요” 라고 말하고 『내일도 맑아요』 라고 말해") == ["오늘은 맑아요", "내일도 맑아요"]
+    assert video.spoken_lines('"니키"라는 이름의 고양이가 걷는 영상') == []              # 말하는 말이 없으면 따옴표는 대사가 아니다
+    assert video.spoken_lines('"안녕하세요" 라는 간판이 걸린 가게') == []
+    # 요청한 대사가 소리 단락에 없으면 고치게 한다
+    assert any("word for word" in p for p in video.sound_problems(SOUND_OK, '"안녕하세요" 라고 말해', ltx))
+    assert any("words" in p for p in video.sound_problems({"sound": "Audio: hum", "ko": "소리"}, "", ltx))
+    assert any("quoted" in p for p in video.sound_problems(dict(SOUND_OK, sound=SOUND_OK["sound"] + ' She says "hi".'), "", ltx))
+    assert not any("quoted" in p for p in video.sound_problems(dict(SOUND_OK, sound=SOUND_OK["sound"] + ' She says "hi".'), '"hi" 라고 말해', ltx))
+    assert any("positive" in p for p in video.sound_problems(dict(SOUND_OK, sound=SOUND_OK["sound"] + " It is not loud."), "", ltx))
+    assert any("English" in p for p in video.sound_problems(dict(SOUND_OK, sound=SOUND_OK["sound"] + " 조용하다"), "", ltx))
+    assert any("Korean" in p for p in video.sound_problems(dict(SOUND_OK, ko="quiet"), "", ltx))
+    assert video.sound_problems("x", "", ltx)
+    for t in ("음악 없이 만들어줘", "배경음악은 빼고", "무음악", "no music please"):
+        assert video.NO_MUSIC_RE.search(t), t
+    assert not video.NO_MUSIC_RE.search("잔잔한 음악이 흐르는 영상")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

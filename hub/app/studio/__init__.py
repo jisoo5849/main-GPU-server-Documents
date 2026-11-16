@@ -113,7 +113,7 @@ async def start():
                 api.state.reason = "스튜디오를 준비 중입니다. (AI 모델이 아직 없습니다)"
                 log.warning("Ollama 에 모델이 없어 스튜디오를 열지 않습니다: %s", ", ".join(lack))
                 return
-        if d.recipe_for("i2v") is None:
+        if d.recipe_for("i2v") is None and d.recipe_for("i2v", sound=True) is None:
             api.state.reason = "스튜디오를 준비 중입니다. (사용할 수 있는 레시피가 없습니다)"
             return
         api.state.ready = True

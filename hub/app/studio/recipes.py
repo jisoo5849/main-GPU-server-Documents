@@ -14,7 +14,7 @@ import re
 RECIPE_DIR = os.path.join(os.path.dirname(__file__), "recipes")
 ACTIONS = {"image", "i2v", "t2v", "edit"}
 SLOT_TYPES = {"string", "int", "float", "bool", "input_image", "prefix"}
-SLOT_NAMES = {"prompt", "first_frame", "edit_image", "seed", "frames", "width", "height", "check_index", "save_prefix"}
+SLOT_NAMES = {"prompt", "first_frame", "edit_image", "seed", "frames", "seconds", "width", "height", "check_index", "save_prefix"}
 ZERO_OUT = {"ConditioningZeroOut"}
 SAVE_NODES = {"SaveVideo", "SaveImage", "SaveWEBM", "SaveAnimatedWEBP", "SaveAnimatedPNG"}
 BAD_NODE_RE = re.compile(r"ollama|LoadVideo|LLM|OpenAI|Gemini|Anthropic", re.I)    # 4절: 허브가 GPU 차례를 따로 관리하는 일이다
@@ -79,11 +79,16 @@ def raw_bytes(r: dict) -> bytes:
     return json.dumps(r, sort_keys=True, ensure_ascii=False).encode("utf-8")
 
 
-def pick(recipe_map: dict, disabled, action: str, quality: str = "fast") -> dict | None:
-    """action 과 화질에 맞는 켜진 레시피 하나 (id 순서)"""
+def engine_of(recipe: dict | None) -> str:
+    """영상 엔진. 레시피에 engine 이 없으면 wan (소리 없는 Wan 2.2), LTX-2.5 레시피는 ltx (소리 포함)"""
+    return str((recipe or {}).get("engine") or "wan")
+
+
+def pick(recipe_map: dict, disabled, action: str, quality: str = "fast", engine: str = "wan") -> dict | None:
+    """action·화질·엔진에 맞는 켜진 레시피 하나 (id 순서). 엔진을 말하지 않으면 wan"""
     for rid in sorted(recipe_map):
         r = recipe_map[rid]
-        if r["action"] == action and quality_of(r) == quality and rid not in disabled:
+        if r["action"] == action and quality_of(r) == quality and engine_of(r) == engine and rid not in disabled:
             return r
     return None
 
@@ -280,15 +285,22 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
 
     # V6 첫 화면·편집 대상 자리
     e = []
-    for name, cls_in in (("first_frame", [("", "start_image")]), ("edit_image", [("TextEncodeQwenImageEdit", "image1"), ("VAEEncode", "pixels")])):
+    for name, cls_in in (("first_frame", [("", "start_image"), ("LTXVImgToVideoInplace", "image")]),
+                         ("edit_image", [("TextEncodeQwenImageEdit", "image1"), ("VAEEncode", "pixels")])):
         for s in slots_of(recipe, name):
             n = prompt.get(str(s.get("node")), {})
             if n.get("class_type") != "LoadImage":
                 e.append(f"inject.{name} 노드는 LoadImage 여야 합니다")
                 continue
-            for cls, inp in cls_in:
-                if not (reaches(prompt, str(s["node"]), cls, inp)):
-                    e.append(f"inject.{name} 의 이미지가 {cls or '노드'} 의 {inp} 입력에 닿지 않습니다")
+            # 첫 화면은 엔진마다 닿는 곳이 다르다: 하나라도 닿으면 된다. 편집 대상은 모두 닿아야 한다
+            hits = [(cls, inp) for cls, inp in cls_in if reaches(prompt, str(s["node"]), cls, inp)]
+            if name == "first_frame":
+                if not hits:
+                    e.append("inject.first_frame 의 이미지가 영상 노드(start_image 또는 LTXVImgToVideoInplace.image)에 닿지 않습니다")
+            else:
+                for cls, inp in cls_in:
+                    if (cls, inp) not in hits:
+                        e.append(f"inject.{name} 의 이미지가 {cls or '노드'} 의 {inp} 입력에 닿지 않습니다")
     if recipe.get("action") == "i2v" and not slots_of(recipe, "first_frame"):
         e.append("i2v 레시피는 inject.first_frame 이 필요합니다")
     if recipe.get("action") == "edit" and not slots_of(recipe, "edit_image"):
@@ -460,7 +472,8 @@ def sample_values(recipe: dict, frames: int | None = None) -> dict:
     inj = recipe.get("inject") or {}
     vals = {"prompt": "a calm test scene", "seed": 0, "width": int(d.get("width") or 640),
             "height": int(d.get("height") or 640), "frames": f, "check_index": max(0, min(f // 2, 80)),
-            "first_frame": SAMPLE_IMAGE, "edit_image": SAMPLE_IMAGE}
+            "first_frame": SAMPLE_IMAGE, "edit_image": SAMPLE_IMAGE,
+            "seconds": max(2, min(int(round(max(f - 1, 1) / int(d.get("fps") or 24))), 20))}
     vals["save_prefix"] = [f"_check/00000000/{s['suffix']}" for s in slots_of(recipe, "save_prefix")]
     return {k: v for k, v in vals.items() if k in inj}
 

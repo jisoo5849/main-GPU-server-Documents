@@ -57,6 +57,12 @@ ev = [{"kind": "comfy_submitted", "ts": NOW, "detail": {"recipe": "wan22_i2v_14b
                                                          "size": [848, 480], "frames": 81}}]
 p = opview.repro_prompt(turn(), ev, att)
 assert p is not None
+# 소리 포함(LTX) 요청도 다시 만들 수 있다: frames 칸이 없고 seconds 칸이 있다
+ev_ltx = [{"kind": "comfy_submitted", "ts": NOW, "detail": {"recipe": "ltx25_i2v_sound", "version": 1, "seed": 7,
+                                                             "size": [1280, 704], "frames": 241}}]
+pl = opview.repro_prompt(turn(recipe_id="ltx25_i2v_sound"), ev_ltx, att)
+assert pl is not None and pl["398:362"]["inputs"]["value"] == 10 and pl["398:339"]["inputs"]["noise_seed"] == 7
+assert pl["900"]["inputs"]["batch_index"] == 120 and pl["398:372"]["inputs"]["value"] == 1280
 assert p["129:93"]["inputs"]["text"].startswith("A calm scene") and p["129:86"]["inputs"]["noise_seed"] == 42
 assert (p["129:98"]["inputs"]["width"], p["129:98"]["inputs"]["height"], p["129:98"]["inputs"]["length"]) == (848, 480, 81)
 assert p["97"]["inputs"]["image"].startswith("studio/bob/") and p["108"]["inputs"]["filename_prefix"].startswith("repro/")
