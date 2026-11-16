@@ -6,6 +6,7 @@
     "One continuous shot for the whole clip: no cuts, scene changes or transitions.",
     "Use one main camera move and keep it steady and readable; a short settle or hold at the end is fine, except in a loop.",
     "Keep the main subject's shape, proportions and surface stable while it moves, so it stays the same object from the first frame to the last; write stability only in positive words (keeps its exact shape, stays in place) and never name a failure such as morphing, warping, distortion or flicker.",
+    "Proper names: never write the name of an existing film, franchise, character, creature, brand, artist or real person (the video model does not know it). When the request names one, describe what it looks like in plain visible terms: body shape, the number and form of limbs, surface material, colours, scale, texture, and how it moves; for a real person write a generic figure with only the requested clothing, pose and setting, never a likeness. When there is a first frame, use only what the FIRST FRAME notes show.",
     "Positive phrasing only, describe what should be seen; never write text, letters, numbers, signs, logos, labels, emblems or screen readouts (call neon or shop signs neon lights or lit shop windows, and show screens, gauges and packaging as plain, softly lit surfaces).",
     "Each menu item shows a motion pattern with an example subject. Apply the pattern to the subject of this request, never to the example subject."
   ],

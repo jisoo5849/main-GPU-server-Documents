@@ -1310,6 +1310,17 @@ def test_auto_length_is_decided_by_rule_then_llm_and_shown_to_the_user():
     assert result["profile"] == "wan22_i2v_long" and result["length_choice"] is None and len(calls) == 1
 
 
+def test_proper_names_are_described_not_named():
+    """영화·캐릭터·브랜드·실존 인물 이름은 영상 모델이 모른다: 이름 대신 눈에 보이는 묘사로 풀게 하는 규칙이 모든 프로필에 간다"""
+    from app import promptx
+    text = "영화 스타쉽트루퍼스에 나오는 공격적인 외형의 외계벌레가 공격하는 영상"
+    for prof, mode in (("wan22_i2v_long", "i2v"), ("wan22_t2v_long", "t2v"), ("wan22_i2v_mid", "i2v"), ("wan22_t2v_mid", "t2v")):
+        sys_text = video.build_messages(text, "", video.load_knowledge()["profiles"][prof], 5.0)[0]["content"]
+        assert "Proper names" in sys_text and "never a likeness" in sys_text, prof
+    assert "Proper names" in " ".join(video.load_knowledge()["global_rules"])
+    assert "creatures, brands or real people" in promptx.META_RULES and "never a likeness" in promptx.META_RULES
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
