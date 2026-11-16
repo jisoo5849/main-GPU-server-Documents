@@ -257,6 +257,7 @@
       if ($("opt-seconds").value) options.seconds = Number($("opt-seconds").value);
       if ($("opt-aspect").value) options.aspect = $("opt-aspect").value;
       if ($("opt-quality").value) options.quality = $("opt-quality").value;
+      if ($("opt-sound").value) options.sound = $("opt-sound").value;
       if (Object.keys(options).length) body.options = options;
       const r = await api("/studio/api/threads/" + state.thread + "/messages", { method: "POST", json: body });
       textEl.value = ""; textEl.style.height = ""; state.attachment = null; renderAttach();

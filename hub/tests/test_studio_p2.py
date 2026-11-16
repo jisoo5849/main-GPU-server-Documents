@@ -105,9 +105,18 @@ assert rule("새로 더 밝게 그려줘", 0, IMG) == "R9"
 
 # 글에 든 길이·비율·소리
 sp = intent.extract_spec("세로로 3초 동안 소리 있게")
-assert sp["seconds"] == 3.0 and sp["aspect"] == "portrait" and sp["sound"] and "소리는 아직 넣지 못합니다" in sp["notes"]
+assert sp["seconds"] == 3.0 and sp["aspect"] == "portrait" and sp["sound"] and not sp["notes"]     # 소리는 이제 넣는다
 sp = intent.extract_spec("10초짜리")
-assert sp["seconds"] == 5.0 and any("5초까지" in n for n in sp["notes"])
+assert sp["seconds"] == 5.0 and any("5초까지" in n for n in sp["notes"])                          # 소리 없는 영상은 5초까지
+sp = intent.extract_spec("10초짜리", intent.MAX_SECONDS_SOUND)
+assert sp["seconds"] == 10.0 and not sp["notes"]
+sp = intent.extract_spec("30초 영상", intent.MAX_SECONDS_SOUND)
+assert sp["seconds"] == 20.0 and any("20초까지" in n for n in sp["notes"])
+# '소리 없이' 는 소리 없는 영상으로, '음악 없이' 는 소리 포함에서 음악만 뺀다(영상 렌더러가 따로 본다)
+for t in ("소리 없이 만들어줘", "무음 영상", "소리는 필요 없어", "소리 빼고", "silent video", "소리 없는 영상 만들어줘", "소리 없는 클립으로"):
+    assert intent.MUTE_RE.search(t), t
+for t in ("빗소리가 들리는 영상", "음악 없이 만들어줘", "소리가 나는 영상"):
+    assert not intent.MUTE_RE.search(t), t
 
 # ── 로그인 첫 화면 (D1b) ──
 import app.studio as studio_pkg  # noqa: E402
@@ -133,7 +142,11 @@ assert intent.clean_options(None) == {} and intent.clean_options({}) == {}
 assert intent.clean_options({"seconds": "", "aspect": "auto"}) == {}
 assert intent.clean_options({"seconds": 3, "aspect": "portrait"}) == {"seconds": 3.0, "aspect": "portrait"}
 assert intent.clean_options({"seconds": "4"}) == {"seconds": 4.0}
-for bad_opt in ({"seconds": 10 ** 400}, {"seconds": 7}, {"seconds": 1}, {"seconds": "abc"}, {"seconds": True}, {"aspect": "wide"}, "x", [1]):
+assert intent.clean_options({"seconds": 20}) == {"seconds": 20.0} and intent.clean_options({"seconds": "10"}) == {"seconds": 10.0}
+assert intent.clean_options({"sound": "on"}) == {"sound": "on"} and intent.clean_options({"sound": "off"}) == {"sound": "off"}
+assert intent.clean_options({"sound": ""}) == {} and intent.clean_options({"sound": "auto"}) == {}
+for bad_opt in ({"seconds": 10 ** 400}, {"seconds": 7}, {"seconds": 1}, {"seconds": 21}, {"seconds": "abc"}, {"seconds": True},
+                {"aspect": "wide"}, {"sound": "yes"}, {"sound": True}, "x", [1]):
     try:
         intent.clean_options(bad_opt)
         raise AssertionError(bad_opt)
@@ -145,6 +158,30 @@ sp = intent.apply_options(base, {"seconds": 3.0, "aspect": "landscape"})   # 칸
 assert sp["seconds"] == 3.0 and sp["aspect"] == "landscape" and not any("5초까지" in n for n in sp["notes"])
 assert intent.apply_options(base, {}) == base
 assert base["seconds"] == 5.0                                  # 원본은 바뀌지 않는다
+
+# ── 소리 포함 영상 레시피 (LTX-2.5) ──
+ltx = R.load_all()["ltx25_i2v_sound"]
+assert R.engine_of(ltx) == "ltx" and R.engine_of(R.load_all()["wan22_i2v_14b_fast"]) == "wan" and ltx["sound"] is True
+assert R.recipe_ok(R.check_recipe(ltx, {"ltx25_i2v_long"}))
+assert R.quality_variant(ltx) is None and "ltx25_i2v_sound_quality" not in R.load_all()     # 가속 스위치가 없어 높음이 없다
+vals = R.sample_values(ltx)
+assert vals["seconds"] == 5 and "frames" not in vals and vals["check_index"] <= ltx["inject"]["check_index"]["max"]
+built = R.build(ltx, dict(vals, seconds=20, width=1280, height=704))
+assert built["398:362"]["inputs"]["value"] == 20 and built["398:372"]["inputs"]["value"] == 1280 and built["398:360"]["inputs"]["value"] == 704
+assert R.default_size(ltx) == (1280, 704) and R.default_size(ltx, aspect="portrait") == (704, 1280)
+assert R.default_size(ltx, photo=(1360, 768))[0] % 64 == 0 and R.default_size(ltx, photo=(1360, 768))[1] % 64 == 0
+for bad_v in ({"seconds": 1}, {"seconds": 21}, {"width": 1000}):
+    try:
+        R.build(ltx, dict(vals, **bad_v))
+        raise AssertionError(bad_v)
+    except R.RecipeError:
+        pass
+# 엔진을 말하지 않으면 늘 소리 없는 Wan, 소리를 고르면 LTX
+_all = R.load_all()
+assert R.pick(_all, set(), "i2v")["id"] == "wan22_i2v_14b_fast" and R.pick(_all, set(), "i2v", "fast", "ltx")["id"] == "ltx25_i2v_sound"
+assert R.pick(_all, set(), "i2v", "high")["id"] == "wan22_i2v_14b_fast_quality" and R.pick(_all, set(), "i2v", "high", "ltx") is None
+assert R.pick(_all, {"ltx25_i2v_sound"}, "i2v", "fast", "ltx") is None and R.pick(_all, set(), "t2v", "fast", "ltx") is None
+assert R.pick(_all, set(), "image")["id"] == "zimage_turbo_t2i"
 
 # ── 화질 높음 (가속 끔 변형) ──
 all_r = R.load_all()

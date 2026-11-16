@@ -69,7 +69,12 @@ def repro_prompt(turn: dict, events: list[dict], atts: dict[str, dict]) -> dict 
             vals["width"], vals["height"] = int(size[0]), int(size[1])
         if sub.get("frames"):
             vals["frames"] = int(sub["frames"])
-            vals["check_index"] = max(0, min(int(sub["frames"]) // 2, 80))
+            cap = int((recipe["inject"].get("check_index") or {}).get("max", 80))
+            vals["check_index"] = max(0, min(int(sub["frames"]) // 2, cap))
+            if "seconds" in recipe["inject"]:      # LTX: 길이를 초로 받는다 (감독의 _submit 과 같은 식)
+                sl = recipe["inject"]["seconds"]
+                fps = int((recipe.get("defaults") or {}).get("fps") or 24)
+                vals["seconds"] = max(int(sl.get("min", 2)), min(int(sl.get("max", 20)), int(round((int(sub["frames"]) - 1) / fps))))
         req = turn.get("request") or {}
         # 글→영상을 장면 이미지로 만든 요청은 첫 화면이 그 장면 이미지(숨은 첨부)다
         for aid in ([work["scene_att"]] if work.get("scene_att") else (req.get("attachment_ids") or [])):

@@ -32,6 +32,8 @@ settings.studio_progress_min_interval_ms = 0
 settings.studio_inspect = "idle"
 
 REC = recipes.load_all()["wan22_i2v_14b_fast"]
+LTX = recipes.load_all()["ltx25_i2v_sound"]
+SOUND_TEXT = "Audio: A soft room tone and a calm instrumental score of warm piano that fades with the final frame."
 IMG = recipes.load_all()["zimage_turbo_t2i"]
 # P3 레시피는 메인에서 내보낸 파일이 오기 전이라 기존 레시피를 고쳐 시험용으로 만든다 (감독 코드만 본다)
 T2V = copy.deepcopy(REC)
@@ -148,8 +150,13 @@ class FakeDeps:
     async def render(self, user, ip, env, **kw):
         self.calls.append(("render", kw))
         await asyncio.sleep(0.02)
-        return {"prompt": "P " * 300, "parts": {"a": "x"}, "ko": {"subject": "s"}, "motion": "m", "profile": "wan22_i2v_long",
-                "settings": {"frames": 81, "seconds": 5.0}, "frame": {"subject": "cockpit"},
+        ltx = kw.get("profile_id") == "ltx25_i2v_long"
+        sec = float(kw.get("seconds") or 5.0)
+        return {"prompt": "P " * 300 + (("\n\n" + SOUND_TEXT) if ltx else ""), "sound": SOUND_TEXT if ltx else "",
+                "parts": {"a": "x"}, "ko": {"subject": "s"}, "motion": "m",
+                "profile": "ltx25_i2v_long" if ltx else "wan22_i2v_long",
+                "settings": {"frames": int(sec * 24) + 1, "seconds": sec} if ltx else {"frames": 81, "seconds": 5.0},
+                "frame": {"subject": "cockpit"},
                 "violations": self.violation_seq.pop(0) if self.violation_seq else self.violations,
                 "length_choice": {"tier": "long", "reason": "자세해서", "by": "rule"}, "crew": None, "rounds": 0}
 
@@ -220,7 +227,7 @@ class FakeDeps:
             if rec["action"] in ("image", "edit"):
                 self.fs.outputs[jid] = [{"node_id": "9", "rel_path": "studio/chat/2026-11-12/bob/abcd1234/image_00001_.png", "media": "images"}]
             else:
-                self.fs.outputs[jid] = [{"node_id": "108", "rel_path": "studio/chat/2026-11-12/bob/abcd1234/video_00001_.mp4", "media": "videos"},
+                self.fs.outputs[jid] = [{"node_id": rec["outputs"]["main"]["node"], "rel_path": "studio/chat/2026-11-12/bob/abcd1234/video_00001_.mp4", "media": "videos"},
                                         {"node_id": "901", "rel_path": "studio/chat/2026-11-12/bob/abcd1234/check_frame_00001_.png", "media": "images"}]
             if r:
                 await r.send_text('{"type":"execution_success","data":{"prompt_id":"%s"}}' % jid)
@@ -634,7 +641,7 @@ async def t_all_shipped_recipes_pass_checks_and_build():
     rs = recipes.load_all()
     assert {"wan22_i2v_14b_fast", "zimage_turbo_t2i", "wan22_t2v_14b_fast", "qwen_image_edit"} <= set(rs), list(rs)
     for rid, r in rs.items():
-        rep = recipes.check_recipe(r, {"wan22_i2v_long", "wan22_t2v_long"})
+        rep = recipes.check_recipe(r, {"wan22_i2v_long", "wan22_t2v_long", "ltx25_i2v_long"})
         assert recipes.recipe_ok(rep), (rid, [x for x in rep if not x["ok"]])
         p = recipes.build(r, recipes.sample_values(r))
         assert D.negative_problem(r, p) is None, (rid, D.negative_problem(r, p))
@@ -1168,6 +1175,60 @@ async def t_via_image_again_reuses_scene_prompt_but_makes_a_new_scene():
     assert len([c for c in deps.calls if c[0] == "stage_image"]) == 2              # 장면 이미지는 새로 만든다
     subs = [c[1] for c in deps.calls if c[0] == "submit"]
     assert len(subs) == 4 and len({s["client_id"] for s in subs}) == 4, [(s["client_id"], s["extra_data"]["studio"]["recipe"]) for s in subs]
+
+
+async def t_ltx_sound_video_runs_both_stages_with_seconds_and_the_audio_paragraph():
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs, rec=LTX)
+    d = via_director(deps, LTX)
+    t = new_via(fs, rec=LTX, spec={"seconds": 10.0})
+    await d.pump(); await settle(d)
+    assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+    rk = [c[1] for c in deps.calls if c[0] == "render"][0]
+    assert rk["profile_id"] == "ltx25_i2v_long" and rk["seconds"] == 10.0 and rk["image_prompt"].startswith("IMG ")
+    body = [c[1] for c in deps.calls if c[0] == "submit"][1]["prompt"]
+    assert body["398:362"]["inputs"]["value"] == 10                                      # 길이는 초로
+    assert body["398:376"]["inputs"]["value"].endswith(SOUND_TEXT) and body["398:376"]["inputs"]["value"].count("Audio:") == 1
+    assert (body["398:372"]["inputs"]["value"], body["398:360"]["inputs"]["value"]) == (1280, 704)
+    assert body["900"]["inputs"]["batch_index"] == 120 and body["75"]["inputs"]["filename_prefix"].endswith("/video")
+    res = [m for m in fs.messages if m["kind"] == "result"]
+    assert len(res) == 1 and res[0]["data"]["media"] == "video" and fs.results[-1]["frames"] == 241
+    # 엔진 고르기: 소리를 고르면 LTX(화질 높음 없음), 아니면 늘 Wan
+    assert d.recipe_for("i2v", sound=True)["id"] == LTX["id"] and d.recipe_for("i2v", "high", True)["id"] == LTX["id"]
+    assert d.recipe_for("t2v", sound=True) is None and d.engine_of_turn(t) == "ltx" and d.engine_of_turn(None) == "wan"
+    d2 = D.Director(deps, {REC["id"]: REC, LTX["id"]: LTX, IMG["id"]: IMG})
+    assert d2.recipe_for("i2v")["id"] == REC["id"] and d2.engine_of_turn({"recipe_id": REC["id"]}) == "wan"
+
+
+async def t_ltx_plan_card_estimates_by_length_and_fix_keeps_the_audio_paragraph():
+    fs = FakeStore(); fs.patch()
+    fs.thread_cfg = {"ask": "ask_long"}
+    old = settings.studio_ask_long_seconds
+    settings.studio_ask_long_seconds = 0
+    try:
+        deps = FakeDeps(fs, rec=LTX)
+        deps.violation_seq = [["Travel keeps one steady pace for the whole clip."]]      # 영상 글을 고치게 한다
+        d = via_director(deps, LTX)
+        t = new_via(fs, rec=LTX, spec={"seconds": 20.0})
+        await d.pump(); await settle(d)
+        assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))
+        plan = plan_msgs(fs)[0]["data"]["plan"]
+        assert plan["seconds"] == 20.0 and plan["frames"] == 481 and plan["fps"] == 24 and plan["quality"] == "소리 포함"
+        assert 120 <= plan["estimate_s"] <= 160, plan["estimate_s"]                      # 실측 20초 137초 (5초는 약 50초)
+        assert await d.approve(t) == "ok"
+        await d.pump(); await settle(d)
+        assert t["state"] == "done", (t["state"], t.get("error"))
+        prompt = [c[1] for c in deps.calls if c[0] == "submit"][1]["prompt"]["398:376"]["inputs"]["value"]
+        assert prompt.startswith("FIXED") and prompt.endswith(SOUND_TEXT)                 # 고친 영상 글 뒤에도 소리 단락이 이어진다
+        # 5초 요청은 더 짧게 잡는다
+        fs2 = FakeStore(); fs2.patch(); fs2.thread_cfg = {"ask": "ask_long"}
+        deps2 = FakeDeps(fs2, rec=LTX)
+        d2 = via_director(deps2, LTX)
+        t2 = new_via(fs2, rec=LTX, spec={"seconds": 5.0})
+        await d2.pump(); await settle(d2)
+        assert 40 <= plan_msgs(fs2)[0]["data"]["plan"]["estimate_s"] <= 70
+    finally:
+        settings.studio_ask_long_seconds = old
 
 
 async def t_resume_after_prompt_done_skips_llm():
