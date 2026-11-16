@@ -71,7 +71,8 @@ def repro_prompt(turn: dict, events: list[dict], atts: dict[str, dict]) -> dict 
             vals["frames"] = int(sub["frames"])
             vals["check_index"] = max(0, min(int(sub["frames"]) // 2, 80))
         req = turn.get("request") or {}
-        for aid in req.get("attachment_ids") or []:
+        # 글→영상을 장면 이미지로 만든 요청은 첫 화면이 그 장면 이미지(숨은 첨부)다
+        for aid in ([work["scene_att"]] if work.get("scene_att") else (req.get("attachment_ids") or [])):
             a = atts.get(str(aid))
             if a and a.get("input_rel"):
                 for name in ("first_frame", "edit_image"):
@@ -211,6 +212,8 @@ async def get_detail(turn_id) -> dict | None:
         "SELECT id, role, kind, body, created_at FROM chat_messages WHERE turn_id = $1 OR id = $2 ORDER BY id",
         t["id"], t.get("message_id") or 0)]
     aids = list((t.get("request") or {}).get("attachment_ids") or []) + list((t.get("result") or {}).get("attachment_ids") or [])
+    if (t.get("work") or {}).get("scene_att"):
+        aids.append((t["work"])["scene_att"])
     atts = await store.attachments_of(aids) if aids else []
     rc = await store.latest_recipe_check(t.get("recipe_id")) if t.get("recipe_id") else None
     return build_detail(t, events, jobs, calls, msgs, atts, rc)
