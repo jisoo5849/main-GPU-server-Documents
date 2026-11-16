@@ -297,6 +297,21 @@ def pov_line() -> str:
             "scene are described normally.")
 
 
+# 1인칭으로 무언가를 조종·운전하는 요청 (드론 FPV 처럼 조종자의 손이 보이지 않는 것은 뺀다)
+OPERATE_RE = re.compile(r"운항|조종|운전|핸들|스티어링|조종간|조종석|운전석|파일럿|조종사|기장|운전자")
+FPV_RE = re.compile(r"드론|FPV|fpv")
+
+
+def operating_pov(said: str) -> bool:
+    return pov_wanted(said) and bool(OPERATE_RE.search(said or "")) and not FPV_RE.search(said or "") and not hides_hands(said)
+
+
+def operate_line() -> str:
+    return ("The viewer is operating something (flying, driving, steering): in \"shot\" or \"action\", show the viewer's own "
+            "hands or forearms gripping the real controls of that vehicle (yoke, wheel, handlebars) at the bottom edge of "
+            "the frame, with small natural movements of the hands in \"action\". Show no other person.")
+
+
 def people_ok(said: str, frame: dict | None = None, scene: str = "", known: bool = True) -> bool:
     """사람을 써도 되는지. 요청·첫 화면·장면 어디든 사람이 있으면 된다.
 
@@ -488,8 +503,9 @@ def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: 
         # 밀도 예시는 T2V 에만 준다 (I2V 는 외형을 첫 화면에서만 가져와야 해서 예시의 빛·색을 따라 쓰면 안 된다)
         ex = spec.get("example") if mode == "t2v" and not profile.get("mid") else None
         example = ("\n\nEXAMPLE of the length, density and kind of detail wanted (a different, live-action request: never "
-                   "copy its subject, objects, setting, sentences or film finish; take the medium and finish from the "
-                   "request, the LOOK REFERENCE and the STYLE line):\n"
+                   "copy its subject, objects, setting, sentences or film finish, and never use its nouns "
+                   f"({', '.join(spec.get('example_words') or [])[:120]}) unless the request itself names them; "
+                   "take the medium and finish from the request, the LOOK REFERENCE and the STYLE line):\n"
                    + "\n".join(f'- "{p["key"]}": {ex[p["key"]]}' for p in spec["parts"])) if ex else ""
         target = (lo + hi) // 2
         system = SYSTEM_LONG.format(
@@ -542,6 +558,8 @@ def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: 
                          + "\n".join(il))
     if pov:
         parts.append(pov_line())
+        if operating_pov(said):
+            parts.append(operate_line())
     if not people_ok(said, frame, scene, frame is not None or profile["mode"] == "t2v"):
         parts.append("No person appears in the request, the scene or the first frame; keep every human out of the clip.")
     if hides_hands(said):
@@ -608,6 +626,71 @@ def demand_choice_problems(demands: list[dict], picked: dict, cat: str, menus: d
         if free:
             out.append(f"The user wrote '{d['tag']}', so step \"{free[0]}\" must use an id that matches it.")
     return out
+
+
+STOP_WORDS = frozenset((
+    "about above after again against along around because before behind below beside between camera clear clearly close "
+    "closer could every exact exactly fixed frame framing from gentle gently ground hold holds holding keeps later light lights "
+    "lighting moment moves moving never other over place position positions reads remain remains scene shape shapes shot "
+    "slow slowly small soft softly stays still steady surface surfaces their there these those through toward under until "
+    "where which while whole within without would above first second third final calm same fine film look finish grain "
+    "detail details edge edges across along behind another motion pace light's one two three that this with into onto "
+    "from have been than then they them what when also each just like more most much only some such very").split())
+
+
+# 장면이 달라도 겹치기 쉬운 꾸밈말 (겹쳐도 같은 장면의 증거가 아니다)
+DECOR_WORDS = frozenset(("bright glowing warm cool large small thin thick pale dark deep faint smooth sunlit golden "
+                         "continuous background foreground midground visual hierarchy perspective soft gentle quiet "
+                         "early morning window glass surface reads first second third").split())
+
+
+def _alpha_words(text: str) -> list[str]:
+    return re.findall(r"[a-z]+", str(text or "").lower())
+
+
+def example_copy_problems(result: dict, said: str, scene: str) -> list[str]:
+    """T2V 장문은 길이 예시(찻잔 장면)를 받는다. 모델이 그것을 베껴 요청과 상관없는 찻잔·김·창가가 영상에 나온다
+    (11-16 파일럿 1인칭 요청: 앞 두 단락은 조종석, 뒤 두 단락은 찻잔). 예시 낱말이나 문장이 요청·장면에 없는데 나오면 알린다"""
+    spec = long_spec()
+    ex = spec.get("example") or {}
+    ex_words = set(spec.get("example_words") or [])
+    allowed = set(_alpha_words(scene)) | set(_alpha_words(said))
+    ex_grams = set()
+    for part in ex.values():
+        w = _alpha_words(part)
+        ex_grams |= {tuple(w[i:i + 12]) for i in range(len(w) - 11)}
+    problems = []
+    for p in spec["parts"]:
+        text = str(result.get(p["key"]) or "")
+        w = _alpha_words(text)
+        # 'teacup'·'windowsill' 처럼 합성어로 장면에 있으면 'tea'·'cup'·'sill' 도 허용한다
+        leaked = sorted(x for x in set(w) & ex_words if not any(x in a for a in allowed))
+        copied = any(tuple(w[i:i + 12]) in ex_grams for i in range(len(w) - 11))
+        if leaked or copied:
+            what = ", ".join(leaked[:6]) if leaked else "whole sentences"
+            problems.append(f'"{p["key"]}" copies the EXAMPLE ({what}). The EXAMPLE is a different request: rewrite "{p["key"]}" '
+                            "about the user's own subject, objects and setting only, and never reuse its subject, objects, "
+                            "setting or sentences.")
+    return problems
+
+
+def part_consistency_problems(result: dict) -> list[str]:
+    """네 단락은 한 장면이다. action·ending 이 shot 에서 말한 피사체·배경과 겹치는 낱말이 거의 없으면 다른 장면을 쓴 것이다"""
+    def content(key):
+        return {x for x in _alpha_words(result.get(key)) if len(x) >= 5 and x not in STOP_WORDS}
+    shot = content("shot")
+    if len(shot) < 6:
+        return []
+    problems = []
+    for key in ("action", "ending"):
+        part = content(key)
+        # 정상 글은 shot 의 피사체·배경 낱말을 1개 이상 다시 쓴다(짧은 보통 프로필 포함). 0개면 다른 장면이다.
+        # 잘못 나온 11-16 파일럿 글은 action 이 shot 과 겹치는 낱말이 모두 꾸밈말(bright·glowing)이었다
+        if part and not ((part & shot) - DECOR_WORDS):
+            main = ", ".join(sorted(shot, key=lambda x: -len(x))[:6])
+            problems.append(f'"{key}" describes a different scene from "shot": it must move and end the subject, objects and '
+                            f'setting that "shot" names (for example: {main}).')
+    return problems
 
 
 def check_video(result, profile: dict, said: str, frame: dict | None = None, scene: str = "",
@@ -699,6 +782,13 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
                             "the viewer never appears as a figure, is never framed over a shoulder or from behind, and "
                             "other people in the scene stay as they are.")
     if long:
+        if profile["mode"] == "t2v" and not profile.get("mid"):
+            problems += example_copy_problems(result, said, scene)
+        problems += part_consistency_problems(result)
+        if operating_pov(said) and not (HAND_WORDS_RE.search(prompt) and re.search(r"\b(?:hands?|forearms?|gloves?)\b", prompt, re.I)):
+            problems.append("The user asked for a first-person view of operating a vehicle: show the viewer's own hands or "
+                            "forearms on the real controls (yoke, wheel, handlebars) at the bottom edge of the frame, and "
+                            "describe their small movements in \"action\".")
         buzz = [t for t in sorted({m.group(0).lower() for m in BUZZ_RE.finditer(prompt)}) if not user_allows(t, said)]
         if buzz:
             problems.append("Replace quality buzzwords with visible details (light, lens, colour, texture): "

@@ -126,6 +126,8 @@ class FakeDeps:
         self.fs, self.violations, self.outcome = fs, violations or [], outcome
         self.rec = rec or REC
         self.outcome_seq = []        # 접수마다 차례로 쓸 outcome (없으면 outcome)
+        self.violation_seq = []      # render 호출마다 차례로 돌려줄 위반 목록 (없으면 violations)
+        self.fix_violation_seq = []  # fix 호출마다 차례로 돌려줄 남은 위반 목록 (없으면 비어 있음)
         self.calls = []
         self.receivers = {}
         self.queue_rows = []
@@ -147,7 +149,8 @@ class FakeDeps:
         self.calls.append(("render", kw))
         await asyncio.sleep(0.02)
         return {"prompt": "P " * 300, "parts": {"a": "x"}, "ko": {"subject": "s"}, "motion": "m", "profile": "wan22_i2v_long",
-                "settings": {"frames": 81, "seconds": 5.0}, "frame": {"subject": "cockpit"}, "violations": self.violations,
+                "settings": {"frames": 81, "seconds": 5.0}, "frame": {"subject": "cockpit"},
+                "violations": self.violation_seq.pop(0) if self.violation_seq else self.violations,
                 "length_choice": {"tier": "long", "reason": "자세해서", "by": "rule"}, "crew": None, "rounds": 0}
 
     async def write_edit(self, user, ip, text, frame=None):
@@ -164,7 +167,8 @@ class FakeDeps:
 
     async def fix(self, user, ip, env, **kw):
         self.calls.append(("fix", kw))
-        return {"prompt": "FIXED " * 300, "parts": {"a": "y"}, "ko": {}, "changed": True, "fixed": True, "violations": [],
+        return {"prompt": "FIXED " * 300, "parts": {"a": "y"}, "ko": {}, "changed": True, "fixed": True,
+                "violations": self.fix_violation_seq.pop(0) if self.fix_violation_seq else [],
                 "before_ko": [], "words_before": 1, "words_after": 1, "rounds": 1}
 
     async def inspect(self, user, ip, username, filename, subfolder, expect):
@@ -927,6 +931,53 @@ def t_approve_words():
         assert intent.APPROVE_RE.match(t), t
     for t in no:
         assert not intent.APPROVE_RE.match(t), t
+
+
+COPY_VIOLATION = ['"action" copies the EXAMPLE (steam, tea). The EXAMPLE is a different request: rewrite "action" about the '
+                  "user's own subject, objects and setting only."]
+
+
+async def t_copied_example_prompt_is_rewritten_once_and_never_sent_to_gpu():
+    # 고치기가 베끼기를 고치면 새로 쓰지 않고 그 글로 만든다
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    deps.violation_seq = [COPY_VIOLATION]
+    d = D.Director(deps, {REC["id"]: REC})
+    t = new_turn(fs, "비행기를 운항하는 파일럿의 1인칭 시점 영상")
+    await d.pump(); await settle(d)
+    assert t["state"] == "done" and [c[0] for c in deps.calls].count("render") == 1 and "prompt_rejected" not in kinds(fs)
+    # 첫 글이 예시를 베꼈고 고치기로도 못 고쳤지만 두 번째 새로 쓴 글이 깨끗하면 그 글로 만든다
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    deps.violation_seq = [COPY_VIOLATION, []]
+    deps.fix_violation_seq = [COPY_VIOLATION]
+    d = D.Director(deps, {REC["id"]: REC})
+    t = new_turn(fs, "비행기를 운항하는 파일럿의 1인칭 시점 영상")
+    await d.pump(); await settle(d)
+    assert t["state"] == "done", (t["state"], t.get("error"))
+    names = [c[0] for c in deps.calls]
+    assert names.count("render") == 2 and "prompt_rejected" in kinds(fs), (names, kinds(fs))
+    assert names.index("submit") > [i for i, n in enumerate(names) if n == "render"][-1]       # 접수는 두 번째 글 뒤에
+    # 두 번 다 베끼면 GPU 작업을 접수하지 않고 안내와 함께 실패한다
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    deps.violation_seq = [COPY_VIOLATION, COPY_VIOLATION]
+    deps.fix_violation_seq = [COPY_VIOLATION, COPY_VIOLATION]
+    d = D.Director(deps, {REC["id"]: REC})
+    t = new_turn(fs, "비행기를 운항하는 파일럿의 1인칭 시점 영상")
+    await d.pump(); await settle(d)
+    assert t["state"] == "failed" and t["error"]["code"] == "bad_prompt", (t["state"], t.get("error"))
+    assert "submit" not in [c[0] for c in deps.calls] and [c[0] for c in deps.calls].count("render") == 2
+    n = [m for m in fs.messages if m["kind"] == "notice"][0]
+    assert "다시 시도" in n["body"] and n["data"]["actions"][0]["id"] == "retry"
+    assert not [e for e in fs.events if e[0] == "comfy_submitted"]
+    # 낱말 수 위반처럼 영상에 문제가 되지 않는 위반은 막지 않는다
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs, violations=["The prompt has 520 words; write 250 to 450 words. Cut it"])
+    d = D.Director(deps, {REC["id"]: REC})
+    t = new_turn(fs)
+    await d.pump(); await settle(d)
+    assert t["state"] == "done" and [c[0] for c in deps.calls].count("render") == 1
 
 
 async def t_resume_after_prompt_done_skips_llm():
