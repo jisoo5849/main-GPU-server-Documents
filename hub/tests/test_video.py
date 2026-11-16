@@ -895,6 +895,73 @@ def test_direction_and_travel_rules_are_in_check_video_and_the_prompt():
     assert "Never combine a subject walking away with a camera moving backward" in rules and "never write that it begins to move" in rules
 
 
+# ── 11-16 구체성: 러다이트 1번 글은 카메라 항목, 깊이별 비, 걸음의 물리 묘사를 모두 적었고 우리 3번 글은 한 줄이었다 ──
+LUDYTE_CAMERA = ("The camera makes a smooth, eye-level lateral Tracking Shot at a matched pace, maintaining a constant distance, "
+                 "stable figure size, and level horizon as the facades pass in natural parallax.")
+LUDYTE_GAIT = ("Each shoe plants, takes his weight, and releases as the other leg swings forward; his torso follows with a small "
+               "natural rise and fall, and his arms counter-swing modestly. The dark coat's hem trails slightly, then settles.")
+LUDYTE_RAIN = ("Rain moves at different apparent depths, visible against shadowed building surfaces, while droplets stipple the "
+               "pavement and make small localized ripples.")
+FLAT_RAIN = ("Heavy rain falls in visible streaks, creating a glossy sheen on the ground. The rain continues to fall in visible, "
+             "diagonal streaks, blurring the background slightly.")
+
+
+def test_camera_sheet_needs_height_and_what_stays_constant():
+    assert video.camera_sheet_problems({"camera_light": LUDYTE_CAMERA}) == []
+    # 높이는 shot 단락에 있어도 된다 (기존 글: 'close-up shot at eye level' + 'keeping the same height and a level horizon')
+    assert video.camera_sheet_problems(LONG) == [] and video.camera_sheet_problems(PILOT_GOOD) == []
+    bare = {"shot": "A man walks down a street.", "camera_light": "The camera moves backward in one steady pull at a gentle pace."}
+    p = video.camera_sheet_problems(bare)
+    assert len(p) == 2 and "height or angle" in p[0] and "keeps constant" in p[1]
+    # 높이만 있고 유지할 것이 없으면 하나만 걸린다
+    only = video.camera_sheet_problems({"camera_light": "An eye-level camera tracks the man with a smooth, slow glide."})
+    assert len(only) == 1 and "keeps constant" in only[0]
+    assert video.camera_sheet_problems({"camera_light": ""}) == []
+
+
+def test_weather_must_be_layered_by_depth():
+    assert video.weather_depth_problems(LUDYTE_RAIN) == []
+    assert video.weather_depth_problems("Rain streaks near the lens against the dark facades while a fine drizzle hazes the distant towers.") == []
+    assert len(video.weather_depth_problems(FLAT_RAIN)) == 1                           # 3번의 '비는 줄무늬로 내린다' 는 배경 효과일 뿐이다
+    assert video.weather_depth_problems("A man walks along a dry street under a clear sky.") == []   # 비가 없으면 묻지 않는다
+    assert video.weather_depth_problems(video.assemble(LONG)) == []
+
+
+def test_walking_person_needs_a_physical_gait():
+    assert video.gait_problems(LUDYTE_GAIT + " A man walks along the street.") == []
+    assert len(video.gait_problems("A solitary man walks away from the camera down a rain-slicked street, his feet splashing "
+                                   "through puddles.")) == 1
+    assert video.gait_problems("A solitary man walks along the street.", "") != []
+    assert video.gait_problems(video.assemble(LONG), "향수 광고 영상") == []              # 걷는 사람이 없으면 묻지 않는다
+    assert video.gait_problems("The viewer walks along a forest path.", "1인칭 시점으로 숲길을 걷는 영상") == []   # 1인칭은 보지 않는다
+
+
+def test_detail_rules_apply_to_long_but_not_to_the_compact_profile():
+    flat = dict(LONG,
+                shot="Live-action cinematic shot of a man who walks down a street while heavy rain falls in visible streaks.",
+                camera_light="The camera moves backward in one steady pull. " + " ".join(["Soft light falls across the street."] * 12),
+                action=" ".join(["The man walks down the street."] * 12))
+    probs = video.check_video(flat, T2V_LONG, "비 오는 거리를 걷는 남자", None, SCENE)
+    for head in ('"camera_light" must name the camera height', '"camera_light" must say what the camera keeps constant',
+                 "The weather is a flat background effect", "Describe the walk physically"):
+        assert any(x.startswith(head) for x in probs), (head, probs)
+    ko = video.explain_ko([x for x in probs if x.startswith(('"camera_light"', "The weather", "Describe the walk"))])
+    assert any("높이" in k for k in ko) and any("유지" in k for k in ko) and any("깊이별" in k for k in ko) and any("체중" in k for k in ko)
+    # 러다이트 1번처럼 쓴 글은 걸리지 않는다
+    good = dict(LONG, shot=LONG["shot"].replace("perfume bottle", "man") , camera_light=LUDYTE_CAMERA + " " + LONG["camera_light"],
+                action=LUDYTE_GAIT + " " + LUDYTE_RAIN + " " + LONG["action"])
+    assert not any(x.startswith(('"camera_light"', "The weather", "Describe the walk")) for x in
+                   video.check_video(good, T2V_LONG, "비 오는 거리를 걷는 남자", None, SCENE))
+    # 보통 프로필은 단락이 짧아 이 세 검사를 하지 않는다
+    mid = video.profile_of("wan22_t2v_mid")[1]
+    assert not any(x.startswith(('"camera_light" must', "The weather", "Describe the walk")) for x in
+                   video.check_video(flat, mid, "비 오는 거리를 걷는 남자", None, SCENE))
+    # 지시문에도 항목표·깊이별 날씨·물리 묘사가 들어간다
+    rules = video.build_messages("남자가 걷는 영상", "", T2V_LONG, 5.0, scene=SCENE)[0]["content"]
+    for key in ("Camera sheet:", "Weather and atmosphere in depth:", "Body motion in physical terms:", "what the camera keeps constant"):
+        assert key in rules, key
+
+
 def test_pov_check_targets_only_the_viewer():
     rx = video.SELF_BODY_RE
     for bad in ("an over-the-shoulder view", "the pilot's headset", "the pilot’s head", "a view of a seated pilot",
