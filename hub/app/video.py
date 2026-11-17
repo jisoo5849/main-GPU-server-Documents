@@ -912,6 +912,25 @@ def blocking_problems(prompt: str) -> list[str]:
             f"camera as it is and show the subject growing {'smaller' if away else 'larger'} in the frame."]
 
 
+def lateral_camera_problems(prompt: str, said: str = "") -> list[str]:
+    """11-17 메인 실측: '카메라가 남자 앞에서 뒤로 물러난다' + '남자가 왼쪽에서 오른쪽으로 걷는다' 를 함께 썼더니 영상에서 남자가
+    카메라 쪽으로 걸어와 5초에 화면 밖으로 나갔다. 옆으로 가는 대상은 카메라가 나란히 따라가거나 고정이어야 하고,
+    앞뒤(깊이)로 움직이는 카메라와는 짝이 맞지 않는다. 1인칭 요청은 보지 않는다."""
+    if pov_wanted(said):
+        return []
+    text = re.sub(r"\s+", " ", prompt or "")
+    side = next((m for sent in _sentences(text) if _travels(sent) for m in [LATERAL_RE.search(sent)] if m), None)
+    if not side or SUBJECT_AWAY_RE.search(text) or SUBJECT_TOWARD_RE.search(text):
+        return []                                   # 깊이로도 가는 글이면 blocking_problems 가 본다
+    cam = CAMERA_BACK_RE.search(text) or CAMERA_FORWARD_RE.search(text)
+    if not cam or CAMERA_SIDEWAYS_RE.search(text):
+        return []
+    return [f'The subject travels sideways ("{side.group(0)}") but the camera moves in depth ("{cam.group(0)}"); the two do not '
+            "match and the video model will pick one. For sideways travel, either track alongside the subject at its pace "
+            "(camera moves left to right with it) or lock the camera off and let the subject cross the frame; keep the subject "
+            "inside the frame for the whole clip."]
+
+
 # 걷기·달리기·주행은 짧은 클립 내내 같은 속도로 (11-16: "Then he begins to stride forward", "the man's stride slows").
 # 멈춰 있다 출발하거나 느려져 멈추는 동작은 짧은 클립에서 어색해지기 쉽다 [추정]. 사용자가 출발·멈춤을 말했으면 보지 않는다
 _TRAVEL = (r"(?:walk(?:s|ing)?|strid(?:e|es|ing)|run(?:s|ning)?|jog(?:s|ging)?|march(?:es|ing)?|stroll(?:s|ing)?"
@@ -1357,6 +1376,7 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
         problems += extra_subject_problems(prompt, said)
         problems += hand_focus_problems(result, said)
         problems += blocking_problems(prompt)
+        problems += lateral_camera_problems(prompt, said)
         problems += travel_problems(prompt, said, profile["mode"])
         if not profile.get("mid"):   # 보통 프로필은 단락이 짧아 항목표·깊이·걸음 묘사까지 요구하지 않는다
             problems += camera_sheet_problems(result)

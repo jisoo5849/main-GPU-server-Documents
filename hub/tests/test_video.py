@@ -1515,6 +1515,20 @@ def test_ltx_draft_repairs_a_missing_timeline_and_passes_the_clip_length():
     assert any("timed beats" in p for p in video.check_video(LONG_I2V, ltx, "x", FRAME, SCENE, seconds=5.0))
 
 
+def test_sideways_travel_does_not_pair_with_a_camera_that_moves_in_depth():
+    """11-17 메인 실측: 카메라 후퇴 + 남자 left to right → 영상에서 남자가 카메라 쪽으로 오다 5초에 화면 밖으로"""
+    bad = "The camera moves backward ahead of the man at the same pace. From 0 to 3 seconds, the man walks from left to right slowly."
+    probs = video.lateral_camera_problems(bad, "x")
+    assert probs and "moves in depth" in probs[0] and "sideways" in probs[0]
+    assert not video.lateral_camera_problems("The camera tracks alongside the man at his pace. The man walks from left to right.", "x")
+    assert not video.lateral_camera_problems("The camera is locked off. The man walks from left to right.", "x")
+    assert not video.lateral_camera_problems("The camera pushes in toward the cup. A man walks toward the camera.", "x")   # 깊이 이동은 다른 검사
+    assert not video.lateral_camera_problems(bad, "1인칭 시점으로 걷는 영상")
+    ltx = video.profile_of("ltx25_i2v_long")[1]
+    res = dict(LTX_LONG, camera_light=bad)
+    assert any("moves in depth" in p for p in video.check_video(res, ltx, "x", FRAME, SCENE, seconds=5.0))
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
