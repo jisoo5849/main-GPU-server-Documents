@@ -570,7 +570,8 @@ class Director:
             await self._watch_job(ctx, work)
 
     # ── 글→영상: 장면 이미지를 먼저 만들고 그 이미지로 영상을 만든다 (사용자에게는 한 작업) ──
-    SCENE_HINT = "(Make this the first instant of the scene as one still photograph, not a sequence.)"
+    SCENE_HINT = ("(Make this the first instant of the scene as one still photograph, not a sequence. If someone or something moves, "
+                  "show it already in motion, slightly off-center with open space ahead of its direction.)")
     SCENE_HINT_POV = (" The view is first-person: no head or shoulders of the viewer; if the viewer is operating something, "
                       "only a small pair of hands at the bottom edge, and the whole interior and the view ahead in clear detail.")
 
