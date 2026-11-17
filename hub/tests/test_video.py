@@ -1327,8 +1327,8 @@ LTX_LONG = dict(LONG_I2V, action="From 0 to 2 seconds, " + LONG_I2V["action"]
 
 SOUND_OK = {"sound": ("Audio: A soft, steady room tone fills the quiet space, with a gentle breath of air moving past the glass. "
                       "The slow push-in carries a faint, smooth whisper from the camera mount, and a light touch on the marble "
-                      "sounds once, clearly. A calm instrumental score of warm piano and a low synthesizer pad rises slowly, "
-                      "then fades with the final frame."),
+                      "sounds once, clearly. A calm instrumental score of warm piano and a low synthesizer pad holds one steady "
+                      "level through the whole clip."),
             "ko": "방 안의 잔잔한 소리와 부드러운 피아노 음악이 깔립니다."}
 
 
@@ -1448,11 +1448,24 @@ def test_a_walker_who_carries_something_needs_a_hand_and_a_mood_needs_the_body()
 
 def test_the_sound_paragraph_names_only_heard_things():
     ltx = video.profile_of("ltx25_i2v_long")[1]
-    bad = dict(SOUND_OK, sound=SOUND_OK["sound"].replace("then fades with the final frame.",
+    bad = dict(SOUND_OK, sound=SOUND_OK["sound"].replace("holds one steady level through the whole clip.",
                                                          "fading gently into the background bokeh lights."))
     probs = video.sound_problems(bad, "", ltx)
     assert any("only seen" in p and "bokeh" in p for p in probs)
     assert not any("only seen" in p for p in video.sound_problems(SOUND_OK, "", ltx))
+
+
+def test_sound_paragraph_keeps_one_steady_level_from_first_to_last_second():
+    """11-17 메인 실측: 소리가 5~8초부터 갑자기 커진다 → 소리 글에 시작·고조·사라짐 표현을 쓰지 않는다"""
+    ltx = video.profile_of("ltx25_i2v_long")[1]
+    assert not any("steady level" in p for p in video.sound_problems(SOUND_OK, "", ltx))
+    for drift in ("then fades with the final frame.", "that slowly builds toward the end.", "that grows louder as he approaches.",
+                  "that begins to swell near the end.", "that rises slowly and then fades."):
+        bad = dict(SOUND_OK, sound=SOUND_OK["sound"].replace("holds one steady level through the whole clip.", drift))
+        assert any("steady level" in p for p in video.sound_problems(bad, "", ltx)), drift
+    system = video.SOUND_SYSTEM.format(seconds=10, lo=35, hi=120, music_rule=video.MUSIC_ON, speech_rule=video.SPEECH_OFF)
+    assert "already audible in the first second" in system and "no swell and no fade" in system
+    assert "fade with the ending" not in system
 
 
 def test_timeline_beats_scale_with_the_clip_and_only_the_ltx_profile_asks_for_them():
