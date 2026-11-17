@@ -136,11 +136,13 @@ Rules:
 - Sound only what the picture shows or implies, and never add a sound source that is not in the video text. When a thing makes no sound (space, a still lake), let a quiet bed and the music carry it instead of inventing noise.
 - Music: {music_rule}
 - Speech: {speech_rule}
+- Level over time: every sound you name is already audible in the first second and keeps the same steady level to the last second. Never write that a sound starts later, builds, swells, rises, grows louder, fades in or out, or draws nearer; the ambient bed, the footsteps and the music all sound the same from start to end.
 - Describe only what is heard; never mention light, colour, bokeh, reflections or anything that is only seen.
 - Positive phrasing only: describe what is heard; never write what is absent (no "no", "not", "without").
 - Never name songs, bands, artists, brands or real people, and never write lyrics."""
 MUSIC_ON = ("add a quiet instrumental score under the sounds: name its mood, its tempo (slow, steady or driving) and two or three "
-            "instruments or synthesizer textures that fit the picture; keep it clearly below the sound effects and let it fade with the ending.")
+            "instruments or synthesizer textures that fit the picture; keep it clearly below the sound effects and at one steady level "
+            "from the first second to the last, with no swell and no fade.")
 MUSIC_OFF = "the user asked for no music: write no music at all, only the ambient bed and the sound effects."
 SPEECH_OFF = "the clip has no spoken words: write no speech, singing or narration."
 SPEECH_ON = ("the user gave these spoken lines: {lines}. Put each line in double quotes, word for word and in its original language, "
@@ -153,6 +155,11 @@ SPEECH_CUE_RE = re.compile(r"말(?:한|해|하|을|이)|라고\s*(?:말|외|속�
 QUOTED_OUT_RE = re.compile(r'["“”][^"“”]*["“”]')
 SOUND_NEGATION_RE = re.compile(r"\b(?:no|not|without)\b", re.I)
 # 소리 단락은 들리는 것만: 11-17 '...fading gently into the background bokeh lights' (소리가 보케 불빛으로 사라진다)
+# 11-17 메인 실측: 소리가 5~8초부터 갑자기 커진다 (초당 크기 2 2 2 2 2 9 32 72 133 189). 시간에 따라 변하는 말은 쓰지 않는다
+SOUND_DRIFT_RE = re.compile(
+    r"\b(?:fad(?:e|es|ed|ing)|swell(?:s|ed|ing)?|crescendo|builds?|building|grow(?:s|ing)? (?:louder|stronger|fuller)|louder|"
+    r"ris(?:es|ing) (?:slowly|gradually|steadily|to|in)|intensif\w+|gradually|(?:begins?|starts?|starting|beginning) to|"
+    r"dies? (?:down|away)|draws? (?:near|closer)|nearer|approach\w*|crescendos?|ramps? up|slowly emerg\w+|emerg(?:es|ing))\b", re.I)
 SOUND_SEEN_RE = re.compile(r"\b(?:bokeh|reflections?|reflective|shadows?|silhouettes?|haze|hazy|blurry|blurred)\b", re.I)
 
 
@@ -184,6 +191,10 @@ def sound_problems(data, said: str, profile: dict) -> list[str]:
             problems.append(f'Say the user\'s spoken line word for word in double quotes: "{line}".')
     if SOUND_NEGATION_RE.search(QUOTED_OUT_RE.sub("", snd)):
         problems.append('Use positive phrasing only: describe what is heard, never write "no", "not" or "without".')
+    drift = SOUND_DRIFT_RE.search(QUOTED_OUT_RE.sub("", snd))
+    if drift:
+        problems.append(f'Every sound must keep one steady level from the first second to the last, but the text says it changes over '
+                        f'time ("{drift.group(0)}"): write each sound as already present and constant, with no start, swell or fade.')
     seen = SOUND_SEEN_RE.search(QUOTED_OUT_RE.sub("", snd))
     if seen:
         problems.append(f'The sound paragraph must describe only what is heard, but it mentions something only seen ("{seen.group(0)}"): '
