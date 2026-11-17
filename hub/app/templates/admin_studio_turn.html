@@ -29,6 +29,23 @@
 {% if d.plan %}<h2>연출 계획표 <span class="muted small">(프롬프트를 쓰기 전에 감독이 짠 장소·빛·공기·디테일·구간별 연기. 장소·빛·디테일은 장면 이미지에, 연기는 영상 글에 들어간다)</span></h2>
 <div class="card small"><pre style="white-space:pre-wrap;">{{ pretty(d.plan) }}</pre></div>{% endif %}
 
+{% if d.long %}<h2>긴 영상 <span class="muted small">(구성안 → 장면마다 계획표·첫 화면·영상 글·클립 → 배경음악 → 합치기. docs/long-video-design.md 7절)</span></h2>
+<div class="card small">
+  <div><b>{{ d.long.title }}</b> · {{ d.long.seconds }}초 · 장면 {{ d.long.scenes|length }}개</div>
+  <div class="muted">{{ d.long.logline }}</div>
+  <details><summary>설정집·배경음악</summary><pre style="white-space:pre-wrap;">{{ pretty({"bible": d.long.bible, "music": d.long.music}) }}</pre></details>
+  {% for s in d.long.scenes %}<details><summary>장면 {{ s.index }} · {{ s.seconds }}초{% if s.continues %} · 이어짐{% endif %} · {{ s.ko }}{% if s.clip_rel %} · 클립 있음{% endif %}{% if s.first_from %} · 첫 화면: {{ "앞 장면 마지막 프레임" if s.first_from == "last" else "장면 이미지" }}{% endif %}</summary>
+    <div class="muted">카메라: {{ s.shot }} · 동작: {{ s.action }} · 소리: {{ s.sound }}</div>
+    {% if s.plan %}<pre style="white-space:pre-wrap;">{{ pretty(s.plan) }}</pre>{% endif %}
+    {% if s.scene_prompt %}<div class="muted">장면 이미지 글</div><pre style="white-space:pre-wrap;">{{ s.scene_prompt }}</pre>{% endif %}
+    {% if s.prompt %}<div class="muted">영상 글</div><pre style="white-space:pre-wrap;">{{ s.prompt }}</pre>{% endif %}
+    {% if s.violations %}<div class="muted">남은 위반</div><pre style="white-space:pre-wrap;">{{ pretty(s.violations) }}</pre>{% endif %}
+    <div class="muted">{{ s.clip_rel or "" }} {{ s.last_rel or "" }}</div>
+  </details>{% endfor %}
+  <div class="muted">음악: {{ d.long.music_rel or "없음" }} · 합친 결과: {{ d.long.final_rel or "아직" }}</div>
+  {% if d.long.events %}<details><summary>긴 영상 기록</summary><pre style="white-space:pre-wrap;">{{ pretty(d.long.events) }}</pre></details>{% endif %}
+</div>{% endif %}
+
 {% if d.scene %}<h2>장면 이미지 프롬프트 <span class="muted small">(글→영상의 첫 단계, 이미지 모델에 들어간 글)</span></h2>
 <div class="card small">
   <div class="muted">크기 {{ d.scene.size }}</div>

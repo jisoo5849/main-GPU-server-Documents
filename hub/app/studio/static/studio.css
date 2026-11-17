@@ -25,6 +25,8 @@ button { font:inherit; cursor:pointer; }
 .plan dl { margin:0; display:grid; grid-template-columns:auto 1fr; gap:2px 12px; font-size:13.5px; }
 .plan dt { color:var(--sub); } .plan dd { margin:0; word-break:break-word; }
 .plan .ko { color:var(--sub); font-size:13px; margin-top:8px; white-space:pre-wrap; }
+.plan ol.scenes { margin:8px 0 0; padding-left:22px; font-size:13px; color:var(--sub); max-height:260px; overflow-y:auto; }
+.plan ol.scenes li { margin:2px 0; word-break:break-word; }
 .plan .acts { margin-top:10px; display:flex; gap:8px; }
 .plan .acts button.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
 .plan .status { margin-top:10px; font-size:13px; color:var(--sub); }

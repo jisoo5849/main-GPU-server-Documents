@@ -9,12 +9,13 @@ GPU 는 직접 쓰지 않는다. 모든 GPU 사용은 기존 대기열(llm_turn�
 import asyncio
 import contextlib
 import logging
+import os
 import random
 import re
 import time
 
 from ..config import settings
-from . import files, intent, progress, recipes, store
+from . import assemble, files, intent, progress, recipes, store
 
 log = logging.getLogger("mgs.studio")
 
@@ -56,7 +57,22 @@ FAIL_TEXT = {
     "bad_prompt": ("요청과 다른 장면으로 프롬프트가 써져서 만들지 않았습니다. 다시 시도해 볼까요?", RETRY_FULL),
     "changed": ("결과 파일이 바뀌어 이어서 만들 수 없습니다.", []),
     "gone": ("결과 파일을 찾을 수 없어 이어서 만들 수 없습니다.", []),
+    "assemble": ("장면을 이어 붙이지 못했습니다. 다시 시도해 볼까요? (만든 장면은 그대로 씁니다)", RETRY_FULL),
 }
+# 긴 영상: 장면 작업이 이렇게 실패하면 그 장면만 시드를 바꿔 한 번 더 한다 (docs/long-video-design.md 7.2)
+LONG_RETRY_CODES = {"run_error", "run_oom", "lost", "no_output", "run_timeout", "gpu_prepare"}
+# 긴 영상의 실패 안내: 버튼은 늘 '다시 시도'(같은 구성안, 끝난 장면은 그대로, 남은 장면부터). '다시 만들기'(새 시드)는 장면을 모두 버린다
+LONG_KEEP = " (만든 장면은 그대로 씁니다)"
+LONG_FAIL_TEXT = {
+    "gone": ("장면 파일이 없어져 이어 붙이지 못했습니다. 다시 시도하면 그 장면부터 다시 만듭니다.", RETRY_FULL),
+    "changed": ("장면 파일이 바뀌어 이어 붙이지 못했습니다. 다시 시도하면 그 장면부터 다시 만듭니다.", RETRY_FULL),
+    "no_image": ("장면의 첫 화면을 찾지 못했습니다. 다시 시도해 볼까요?" + LONG_KEEP, RETRY_FULL),
+}
+LONG_SCENE_OVERHEAD = 135      # 장면마다 GPU 실행 말고 더 걸리는 시간(초) [추정]: 장면 이미지 약 25 + LLM 약 90 + 콜드 스타트 약 20
+LONG_TAIL = 70                 # 음악 약 40 + 합치기 약 30 [추정]
+LONG_RESUME_MAX = 5            # 허브가 다시 시작될 때 긴 영상을 자동으로 이어 가는 횟수 (재시작이 되풀이될 때 끝없이 돌지 않게)
+LONG_SCENE_KEYS = ("plan", "scene_prompt", "image_rel", "first_from", "prompt", "ko", "profile", "settings", "frame_known",
+                   "clip_rel", "clip_sha", "last_rel", "check_rel", "seed", "seconds", "violations")
 # 고쳐 쓴 뒤에도 남으면 그 프롬프트로 영상을 만들지 않는 위반: 요청과 다른 장면(예시 베끼기)이다 (11-16 파일럿 요청)
 BLOCKING_RE = re.compile(r"copies the EXAMPLE|describes a different scene")
 PLAN_ACTIONS = [{"id": "approve", "label": "승인"}, {"id": "cancel", "label": "취소"}]
@@ -123,6 +139,10 @@ class Ctx:
         self.job_step = "generate"    # chat_turn_jobs 에 남기는 단계 이름 (장면 이미지는 scene)
         self.pend_key = "pending"     # work 에 접수 정보를 남기는 키 (장면 이미지는 scene_pending)
         self.req_text = ""          # 사용자가 쓴 요청 글. (text 는 진행 카드에 보이는 글이라 따로 둔다)
+        self.long: dict | None = None    # 긴 영상의 진행(단계·지금 장면·끝난 장면 수). 장면마다의 작업 ctx 가 같은 dict 를 나눠 쓴다
+        self.client_tag: str | None = None   # ComfyUI client_id 끝 표시 (긴 영상은 장면·종류마다 다르게)
+        self.sub = False              # 긴 영상의 장면·음악 작업: 결과를 채팅에 내지 않고 돌려준다
+        self.outs: list | None = None # sub 작업의 모든 결과 (마지막 프레임 등)
 
 
 def _note_node(self, node: str):
@@ -253,6 +273,15 @@ class RealDeps:
         from .. import video
         return await video.plan(user, ip, env["username"], env["slug"], kw.pop("text"), **kw)
 
+    async def storyboard(self, user, ip, env, **kw):
+        """긴 영상 구성안: 설정집·배경음악·장면표 (docs/long-video-design.md 7.2)"""
+        from .. import video
+        return await video.storyboard(user, ip, env["username"], env["slug"], kw.pop("text"), **kw)
+
+    def assemble(self, clips, music, out, sound=True):
+        """장면 클립 + 음악 합치기 (ffmpeg, 스레드에서 부른다)"""
+        return assemble.run(clips, music, out, sound)
+
     async def inspect(self, user, ip, username, filename, subfolder, expect):
         from .. import promptx
         return await promptx.inspect(user, ip, username, filename, subfolder, expect)
@@ -316,6 +345,16 @@ def video_plan_scene_text(plan) -> str:
     return video.plan_scene_text(plan)
 
 
+def video_scene_notes(story: dict, i: int) -> str:
+    from .. import video
+    return video.scene_notes(story, i)
+
+
+def video_scene_image_text(story: dict, i: int, plan) -> str:
+    from .. import video
+    return video.scene_image_text(story, i, plan)
+
+
 def needs_fix(violations: list[str]) -> bool:
     """낱말 수 위반만 남았으면 고치지 않는다 (5.12). 모델은 낱말 수를 잘 줄이지 못하고 해롭지 않다"""
     return any(not WORDS_ONLY_RE.match(v) for v in violations or [])
@@ -375,21 +414,46 @@ class Director:
         if not force and now - ctx.last_emit < self.min_interval:
             return
         ctx.last_emit = now
-        card = "pipeline" if ctx.via else ctx.action
-        title, _ = progress.CARD.get(card, progress.CARD["i2v"])
-        has_fix = ctx.has_fix or any(progress.PURPOSE_STAGE.get(e["purpose"]) == "fix" for e in ctx.bag)
-        shown = shown_stage(ctx)
-        pct_ok = ctx.stage in ("generate", "collect") and not ctx.scene_phase     # 장면 이미지 단계는 % 를 보이지 않는다
-        prog = {"title": title, "stage": shown, "text": ctx.text,
-                "pct": ctx.tracker.pct if pct_ok else None,
-                "band": ctx.tracker.band_label() if pct_ok and ctx.stage == "generate" else None,
-                "chips": progress.chips(card, has_fix, CHIP_OF_STAGE.get(shown, shown))}
+        if ctx.long is not None:
+            prog = self._long_progress(ctx)
+            stage = prog["stage"]
+        else:
+            card = "pipeline" if ctx.via else ctx.action
+            title, _ = progress.CARD.get(card, progress.CARD["i2v"])
+            has_fix = ctx.has_fix or any(progress.PURPOSE_STAGE.get(e["purpose"]) == "fix" for e in ctx.bag)
+            shown = shown_stage(ctx)
+            pct_ok = ctx.stage in ("generate", "collect") and not ctx.scene_phase     # 장면 이미지 단계는 % 를 보이지 않는다
+            prog = {"title": title, "stage": shown, "text": ctx.text,
+                    "pct": ctx.tracker.pct if pct_ok else None,
+                    "band": ctx.tracker.band_label() if pct_ok and ctx.stage == "generate" else None,
+                    "chips": progress.chips(card, has_fix, CHIP_OF_STAGE.get(shown, shown))}
+            stage = ctx.stage
         await store.save_progress(ctx.tid, prog)
-        if ctx.stage != ctx.saved_stage:       # 운영자 화면이 보는 chat_turns.stage 도 단계가 바뀔 때 갱신한다
-            ctx.saved_stage = ctx.stage
-            await store.set_stage(ctx.tid, ctx.stage)
+        if stage != ctx.saved_stage:       # 운영자 화면이 보는 chat_turns.stage 도 단계가 바뀔 때 갱신한다
+            ctx.saved_stage = stage
+            await store.set_stage(ctx.tid, stage)
         await self.push(ctx.user["id"], {"type": "turn.progress", "thread_id": str(ctx.turn["thread_id"]),
                                          "turn_id": str(ctx.tid), "progress": prog})
+
+    @staticmethod
+    def _long_progress(ctx: Ctx) -> dict:
+        """긴 영상의 진행 카드: 칩은 구성안 → 장면 → 음악 → 합치기, 글은 '장면 3/18 · 생성 45%'"""
+        L = ctx.long
+        phase = L.get("phase") or "story"
+        n = int(L.get("n") or 0)
+        text = ctx.text or ""
+        frac = 0.0
+        if phase == "scenes":
+            if ctx.sub and not ctx.scene_phase and ctx.stage in ("generate", "collect"):
+                frac = ctx.tracker.pct / 100.0
+            head = f"장면 {int(L.get('i') or 0) + 1}/{max(1, n)}"
+            text = f"{head} · {text}" if text else head
+        pct = progress.long_pct(int(L.get("done") or 0), n, phase, frac)
+        if pct is not None:
+            pct = max(pct, int(L.get("pct") or 0))     # 줄지 않게
+            L["pct"] = pct
+        return {"title": progress.CARD["long"][0], "stage": phase, "text": text, "pct": pct, "band": None,
+                "chips": progress.chips("long", False, phase)}
 
     def schedule_emit(self, ctx: Ctx):
         """화면 갱신을 따로 돌린다. 이미 돌고 있으면 한 번만 더 돌게 표시한다"""
@@ -425,6 +489,12 @@ class Director:
 
     async def fail(self, turn: dict, code: str, detail=None):
         text, actions = FAIL_TEXT.get(code, FAIL_TEXT["unknown"])
+        if (turn.get("request") or {}).get("long"):
+            text, actions = LONG_FAIL_TEXT.get(code, (text, actions))
+            if actions != RETRY_FULL and actions:
+                text, actions = text.replace("다시 만들어 볼까요?", "다시 시도해 볼까요?") + LONG_KEEP, RETRY_FULL
+            elif actions == RETRY_FULL and LONG_KEEP not in text and "그 장면부터" not in text:
+                text += LONG_KEEP
         if await self.finish_state(turn, "failed", error={"code": code, "detail": detail}):
             await store.event(turn["id"], "notice", {"code": code, "text": text})
             await self.message(turn, "assistant", "notice", text, {"level": "error", "actions": actions})
@@ -551,6 +621,9 @@ class Director:
                                                        "default_text": bool(req.get("used_default"))})
         await store.event(turn["id"], "spec", ctx.spec)
         work = dict(turn.get("work") or {})
+        if req.get("long"):          # 여러 장면을 이어 붙이는 긴 영상 (docs/long-video-design.md 7절)
+            await self._run_long(ctx, work)
+            return
         ctx.motion = bool(work.get("scene_att"))
         if resume and work.get("pending") is not None and not ctx.job_id:
             found = await store.job_by_client(env["id"], work["pending"]["client_id"])
@@ -698,6 +771,475 @@ class Director:
         ctx.stage = "frame"
         return work
 
+    # ── 긴 영상: 구성안 → 계획 카드 → 장면마다(계획표 → 첫 화면 → 영상 글 → LTX) → 배경음악 → 합치기 (docs/long-video-design.md 7절) ──
+    async def _run_long(self, ctx: Ctx, work: dict):
+        turn = ctx.turn
+        ctx.long = {"phase": "story", "i": 0, "n": 0, "done": 0, "pct": 0}
+        ctx.stage = "prompt"
+        if recipes.engine_of(ctx.recipe) != "ltx":
+            # 장면표(10초 안팎, 효과음)는 소리 포함 LTX 레시피 기준이다. 소리 없는 Wan(5초)으로 조용히 바꾸지 않는다
+            raise StepError("unavailable", "긴 영상은 소리 포함(LTX) 레시피로만 만듭니다")
+        work = await self._long_inherit(ctx, work)
+        if not work.get("story"):
+            work = await self._write_story(ctx, work)
+        story = work["story"]
+        n = len(story["scenes"])
+        ctx.long["n"] = n
+        if not work.get("long_size"):
+            work["long_size"] = list(recipes.default_size(ctx.recipe, aspect=(ctx.spec or {}).get("aspect")))
+            await store.merge_work(turn["id"], {"long_size": work["long_size"]})
+        if not work.get("approved"):
+            await self._park_long(ctx, work)
+            return
+        scenes = [dict(s or {}) for s in (work.get("scenes") or [])][:n]
+        scenes += [{} for _ in range(n - len(scenes))]
+        ctx.long.update(phase="scenes", done=sum(1 for s in scenes if s.get("clip_rel")))
+        for i in range(n):
+            s = scenes[i]
+            if s.get("clip_rel"):
+                ok = (await self._long_file_ok(s["clip_rel"], s["clip_sha"]) if s.get("clip_sha")
+                      else bool(files.result_path(s["clip_rel"])))
+                if ok:
+                    continue
+                await self._long_reset(ctx, work, scenes, i)
+            st = await self._long_scene(ctx, work, scenes, i)
+            if st is None:
+                return           # 취소됐다 (_collect 가 상태를 끝냈다)
+            scenes[i] = st
+            ctx.long["done"] = sum(1 for s in scenes if s.get("clip_rel"))
+        work["scenes"] = scenes
+        music = await self._long_music(ctx, work)
+        if music is False:
+            return               # 취소됐다
+        await self._long_finish(ctx, work, scenes, music)
+
+    async def _long_reset(self, ctx: Ctx, work: dict, scenes: list, i: int):
+        """끝난 장면 i 의 클립이 없어졌거나 바뀌었다: 그 장면과, 그 장면에서 이어지는 뒤 장면들(첫 화면이 i 의 마지막 프레임)을
+        계획표·그림 글만 남기고 비운다. 끝난 옛 작업을 이어받지 않게 접수 정보도 비운다(시도 번호는 이어서 늘린다).
+        재시작해도 옛 클립이 되살아나지 않게 바로 저장한다"""
+        story = work["story"]
+        idx = [i]
+        while idx[-1] + 1 < len(scenes) and story["scenes"][idx[-1] + 1].get("continues"):
+            idx.append(idx[-1] + 1)
+        patch = {}
+        for k in idx:
+            if scenes[k].get("clip_rel") or scenes[k].get("first_att"):
+                await store.event(ctx.turn["id"], "long_scene_redo", {"index": k, "chained": k != i})
+            scenes[k] = {key: v for key, v in scenes[k].items() if key in ("plan", "scene_prompt")}
+            for key in (f"L{k}i_pending", f"L{k}v_pending"):
+                if work.get(key):
+                    work[key] = patch[key] = {"client_id": None, "attempt": int((work[key] or {}).get("attempt") or 0)}
+        work["scenes"] = scenes
+        patch["scenes"] = [{k: s[k] for k in LONG_SCENE_KEYS + ("first_att",) if k in s} for s in scenes]
+        await store.merge_work(ctx.turn["id"], patch)
+        ctx.long["done"] = sum(1 for s in scenes if s.get("clip_rel"))
+
+    async def _long_inherit(self, ctx: Ctx, work: dict) -> dict:
+        """다시 만들기(새 시드)는 원래 구성안을 그대로 쓰고 계획 카드를 다시 보인다. 실패한 요청의 다시 시도는 구성안·승인·끝난 장면을
+        이어받아 남은 장면부터 만든다 (지문이 같은 클립만, 처음 빠진 장면부터는 다시: 이어지는 장면의 첫 화면이 앞 장면에 기대므로)"""
+        req = ctx.turn.get("request") or {}
+        if work.get("story") or not req.get("source_turn"):
+            return work
+        src = await store.get_turn(req["source_turn"], ctx.turn["user_id"])
+        sw = (src or {}).get("work") or {}
+        if not sw.get("story"):
+            return work
+        patch = {"story": sw["story"]}
+        if sw.get("long_size"):
+            patch["long_size"] = sw["long_size"]
+        kept = 0
+        if (src or {}).get("state") != "done":
+            # 실패·중단·취소된 요청을 다시 하면(버튼은 '다시 시도', 말로 한 '다시 만들기'도) 끝난 장면부터 잇는다
+            scenes = []
+            for s in sw.get("scenes") or []:
+                if not (s.get("clip_rel") and await self._long_file_ok(s["clip_rel"], s.get("clip_sha"))):
+                    break
+                if s.get("last_rel") and not files.result_path(s["last_rel"]):
+                    s = {k: v for k, v in s.items() if k != "last_rel"}
+                scenes.append({k: s[k] for k in LONG_SCENE_KEYS if k in s})
+            kept = len(scenes)
+            patch["scenes"] = scenes
+            if sw.get("music_rel") and files.result_path(sw["music_rel"]):
+                patch["music_rel"] = sw["music_rel"]
+            if sw.get("approved"):
+                patch["approved"] = True        # 승인한 적 없는 계획은 카드를 다시 보인다 (승인 없이 GPU 를 쓰지 않게)
+        await store.merge_work(ctx.turn["id"], patch)
+        await store.event(ctx.turn["id"], "long_inherited", {"source": str(req["source_turn"]), "mode": req.get("mode"),
+                                                             "scenes_kept": kept})
+        return {**work, **patch}
+
+    @staticmethod
+    async def _long_file_ok(rel: str, sha: str | None) -> bool:
+        """결과 폴더는 누구나 고칠 수 있다: 남겨 둔 지문과 같을 때만 그 장면 클립을 다시 쓴다"""
+        if not files.result_path(rel):
+            return False
+        if not sha:
+            return False
+        try:
+            _n, now = await asyncio.to_thread(files.fingerprint, rel)
+        except OSError:
+            return False
+        return now == sha
+
+    async def _write_story(self, ctx: Ctx, work: dict) -> dict:
+        turn = ctx.turn
+        ip = turn.get("client_ip") and str(turn["client_ip"]) or ""
+        with self.deps.llm_context() as bag:
+            ctx.bag = bag
+            ctx.stage, ctx.text = "story", "구성안 쓰는 중"
+            await self.emit(ctx, True)
+            r = await self._guard_llm(ctx, self.deps.storyboard(ctx.user, ip, ctx.env, text=ctx.req_text,
+                                                                seconds=(ctx.spec or {}).get("seconds")))
+            for e in bag:
+                await store.event(turn["id"], "llm_job", {k: e.get(k) for k in LLM_JOB_KEYS})
+            bag.clear()
+        story = r.get("story") if isinstance(r, dict) else None
+        if not story or not story.get("scenes"):
+            raise StepError("llm_error", "구성안을 만들지 못했습니다")
+        await store.event(turn["id"], "story", {"scenes": len(story["scenes"]), "seconds": story.get("seconds"),
+                                                "violations": r.get("violations"), "rounds": r.get("rounds")})
+        work = {**work, "story": story}
+        await store.merge_work(turn["id"], {"story": story})
+        return work
+
+    async def estimate_long(self, ctx: Ctx, story: dict) -> int:
+        """긴 영상 완료까지 예상 시간(초) [추정]: 장면마다 LTX 실행(레시피 추정식) + 장면 이미지·LLM, 음악·합치기, 앞 줄"""
+        est = ctx.recipe.get("estimate") or {}
+        own = float(est.get("gpu_seconds") or 60)
+        ref = float(est.get("ref_frames") or 121)
+        exp = float(est.get("exponent") or 1.0)
+        fps = int(ctx.recipe["defaults"].get("fps") or 24)
+        total = LONG_TAIL
+        for sc in story["scenes"]:
+            frames = int(sc["seconds"]) * fps + 1
+            total += own * max(0.4, min(8.0, (frames / ref) ** exp)) + LONG_SCENE_OVERHEAD
+        try:
+            med = await self.deps.medians() or {}
+            q = await self.deps.queue()
+            total += sum(1 for j in q if j.get("kind") == "comfy") * float(med.get("comfy") or own)
+            total += sum(1 for j in q if j.get("kind") == "llm") * float(med.get("llm") or 30)
+        except Exception:  # noqa: BLE001 - 앞 줄을 못 세도 계획은 보인다
+            log.exception("긴 영상 앞 줄 세기 실패")
+        return int(total)
+
+    async def _park_long(self, ctx: Ctx, work: dict):
+        """긴 영상 계획 카드: 장면표·배경음악·총 길이·예상 시간. 긴 영상은 대화 설정과 상관없이 늘 승인을 받는다 (GPU 를 오래 쓴다)"""
+        turn, recipe, story = ctx.turn, ctx.recipe, work["story"]
+        plan = {"action": "long", "title": story.get("title_ko") or "", "logline": story.get("logline_ko") or "",
+                "seconds": story.get("seconds"), "label": intent.long_label(story.get("seconds")),
+                "scenes": [{"seconds": s["seconds"], "ko": s["ko"], "continues": bool(s.get("continues"))} for s in story["scenes"]],
+                "music": (story.get("music") or {}).get("ko") or "", "size": work.get("long_size"),
+                "fps": recipe["defaults"].get("fps"), "quality": recipe.get("quality_label"),
+                "estimate_s": await self.estimate_long(ctx, story), "recipe_version": recipe["version"],
+                "ttl_hours": settings.studio_plan_ttl_hours, "attachment_ids": []}
+        old_mid = (turn.get("work") or {}).get("plan_message_id")
+        if old_mid:
+            await store.set_message_data(old_mid, {"status": "replanned", "actions": []})
+        m = await self.message(turn, "assistant", "plan", "", {"plan": plan, "status": "pending", "actions": PLAN_ACTIONS})
+        plan["message_id"] = m["id"]
+        await store.merge_work(turn["id"], {"plan_message_id": m["id"]})
+        ctx.stage = "plan"
+        await store.event(turn["id"], "plan", {"seconds": plan["seconds"], "scenes": len(plan["scenes"]), "size": plan["size"],
+                                               "estimate_s": plan["estimate_s"], "long": True})
+        if not await self.finish_state(turn, "awaiting_approval", stage="plan", plan=plan):
+            await store.set_message_data(m["id"], {"status": "cancelled"})
+
+    def _sub_ctx(self, ctx: Ctx, recipe: dict, tag: str, step: str, pend: str, label: str,
+                 scene_phase: bool = False) -> Ctx:
+        """긴 영상의 장면 이미지·장면 영상·음악 작업 하나의 ctx (진행 표시는 부모의 long 을 나눠 쓴다)"""
+        sub = Ctx(ctx.turn, ctx.user, ctx.env, recipe)
+        sub.via, sub.sub, sub.scene_phase = True, True, scene_phase
+        sub.job_step, sub.pend_key, sub.client_tag, sub.label = step, pend, tag, label
+        sub.spec, sub.notes, sub.first_person, sub.req_text = ctx.spec, ctx.notes, ctx.first_person, ctx.req_text
+        sub.stage, sub.text = "queue", "대기 중"
+        sub.long = ctx.long
+        return sub
+
+    async def _run_sub(self, ctx: Ctx, sub: Ctx, swork: dict, fresh: bool = False):
+        """작업 하나를 접수(또는 재시작 전에 접수한 작업을 이어서)하고 결과를 기다린다. 취소면 None.
+        취소·예기치 못한 오류로 빠져나가면 ctxs 를 sub 로 남긴다: _on_cancel·_run_guarded 가 지금 작업을 멈추게 (_pipeline_front 와 같다).
+        StepError 는 작업이 이미 끝났거나(실패) 접수되지 않은 것이라 부모로 되돌린다 (긴 영상은 그 장면을 다시 할 수 있다)"""
+        turn = ctx.turn
+        self.ctxs[turn["id"]] = sub            # 취소는 지금 돌고 있는 작업을 멈춘다
+        try:
+            found = None
+            prev = (swork.get(sub.pend_key) or {}).get("client_id")
+            if prev and not fresh:
+                found = await store.job_by_client(ctx.env["id"], prev)
+            if found:
+                sub.job_id = found["prompt_id"]
+                await store.event(turn["id"], "long_resumed", {"job_id": str(sub.job_id), "key": sub.pend_key})
+            else:
+                sub.job_id = await self._submit(sub, swork)
+            main = await self._watch_job(sub, swork)
+            if main is not None:
+                sub.close_nodes()
+                if sub.node_log:
+                    await store.event(turn["id"], "node_timing", {"key": sub.pend_key, "nodes": sub.node_log[:200]})
+        except StepError:
+            self.ctxs[turn["id"]] = ctx
+            raise
+        finally:
+            self._release(sub)
+        self.ctxs[turn["id"]] = ctx
+        return main
+
+    async def _save_scene(self, ctx: Ctx, work: dict, scenes: list, i: int, st: dict):
+        scenes[i] = st
+        work["scenes"] = scenes
+        await store.merge_work(ctx.turn["id"], {"scenes": [{k: s[k] for k in LONG_SCENE_KEYS + ("first_att",) if k in s}
+                                                           for s in scenes]})
+
+    async def _long_scene(self, ctx: Ctx, work: dict, scenes: list, i: int) -> dict | None:
+        turn, story = ctx.turn, work["story"]
+        sc = story["scenes"][i]
+        st = dict(scenes[i] or {})
+        ip = turn.get("client_ip") and str(turn["client_ip"]) or ""
+        ctx.long.update(phase="scenes", i=i)
+        ctx.motion, ctx.has_fix = False, False
+        notes = video_scene_notes(story, i)
+        prev = scenes[i - 1] if i > 0 else {}
+        chain = prev.get("last_rel") if sc.get("continues") and prev.get("last_rel") else None
+        if chain and not files.result_path(chain):
+            chain = None                      # 앞 장면의 마지막 프레임이 없어졌다: 새 장면 이미지로 시작한다
+        await store.event(turn["id"], "long_scene_start", {"index": i, "seconds": sc["seconds"], "chain": bool(chain)})
+        # 1) 연출 계획표와 (새 장면이면) 장면 이미지 글
+        if st.get("plan") is None or (not chain and not st.get("scene_prompt")):
+            with self.deps.llm_context() as bag:
+                ctx.bag = bag
+                ctx.stage, ctx.text = "prompt", "연출 계획 중"
+                await self.emit(ctx, True)
+                if st.get("plan") is None:
+                    try:
+                        st["plan"] = await self._guard_llm(ctx, self.deps.plan(
+                            ctx.user, ip, ctx.env, text=sc["ko"], notes=notes, profile_id=ctx.recipe["video_profile"],
+                            seconds=sc["seconds"], staging=None))
+                    except StepError as e:
+                        if e.code == "queue_wait":
+                            raise
+                        await store.event(turn["id"], "plan_failed", {"index": i, "code": e.code, "detail": e.detail})
+                        st["plan"] = None
+                if not chain and not st.get("scene_prompt"):
+                    ctx.text = "장면 그림 글 쓰는 중"
+                    r = await self._guard_llm(ctx, self.deps.expand_image(
+                        ctx.user, ip, video_scene_image_text(story, i, st.get("plan")) + "\n" + self.SCENE_HINT))
+                    if not (r.get("prompt") or "").strip():
+                        raise StepError("llm_error", f"장면 {i + 1} 의 그림 글을 만들지 못했습니다")
+                    st["scene_prompt"] = r["prompt"]
+                for e in bag:
+                    await store.event(turn["id"], "llm_job", {k: e.get(k) for k in LLM_JOB_KEYS})
+                bag.clear()
+            await self._save_scene(ctx, work, scenes, i, st)
+        # 2) 첫 화면: 이어지는 장면은 앞 장면 마지막 프레임, 아니면 장면 이미지(Z-Image)
+        if not st.get("first_att"):
+            if chain:
+                att = await self.deps.stage_image(ctx.env, ctx.user, turn, chain)
+                st["first_from"] = "last"
+            else:
+                att = await self._long_image(ctx, work, i, st)
+                if att is None:
+                    return None
+                st["first_from"] = "image"
+            st["first_att"] = att["id"]
+            await self._save_scene(ctx, work, scenes, i, st)
+        # 3) 영상 글 (첫 화면 읽기 → 계획표·설정집을 지킨 네 단락 + 음악 없는 소리 단락)
+        if not st.get("prompt"):
+            st.update(await self._long_prompt(ctx, work, i, st, notes))
+            await self._save_scene(ctx, work, scenes, i, st)
+        # 4) 장면 영상 (실패하면 시드를 바꿔 한 번 더)
+        got = await self._long_video(ctx, work, i, st)
+        if got is None:
+            return None
+        st.update(got)
+        await self._save_scene(ctx, work, scenes, i, st)
+        await store.event(turn["id"], "long_scene_done", {"index": i, "clip": st["clip_rel"], "first_from": st.get("first_from")})
+        return st
+
+    async def _long_image(self, ctx: Ctx, work: dict, i: int, st: dict) -> dict | None:
+        img_recipe = self.recipe_for("image")
+        if img_recipe is None:
+            raise StepError("prepare_down")
+        vsz = work["long_size"]
+        ssz = list(recipes.default_size(img_recipe, photo=(vsz[0], vsz[1])))
+        pend = f"L{i}i_pending"
+        swork = {"prompt": st["scene_prompt"], "size": ssz, pend: work.get(pend)}
+        ctx.text = "장면 준비 중"
+        for attempt in (1, 2):          # 장면 이미지도 실패하면 시드를 바꿔 한 번 더 (한 번의 메모리 부족으로 요청 전체를 잃지 않게)
+            sub = self._sub_ctx(ctx, img_recipe, f"L{i}i", "scene", pend, "장면 준비", scene_phase=True)
+            try:
+                main = await self._run_sub(ctx, sub, swork, fresh=attempt > 1)
+                break
+            except StepError as e:
+                if e.code not in LONG_RETRY_CODES or attempt == 2:
+                    raise
+                await store.event(ctx.turn["id"], "long_image_retry", {"index": i, "code": e.code, "detail": e.detail})
+        if main is None:
+            return None
+        work[pend] = swork.get(pend)
+        st["image_rel"] = main["rel_path"]
+        return await self.deps.stage_image(ctx.env, ctx.user, ctx.turn, main["rel_path"])
+
+    async def _long_prompt(self, ctx: Ctx, work: dict, i: int, st: dict, notes: str) -> dict:
+        turn, story = ctx.turn, work["story"]
+        sc = story["scenes"][i]
+        ip = turn.get("client_ip") and str(turn["client_ip"]) or ""
+        atts = await store.attachments_of([st["first_att"]])
+        img = next((a for a in atts if a["media"] == "image" and a.get("input_rel")), None)
+        if img is None:
+            raise StepError("no_image")
+        image = {"filename": img["input_rel"].split("/")[-1], "subfolder": "/".join(img["input_rel"].split("/")[:-1]),
+                 "type": "input"}
+        with self.deps.llm_context() as bag:
+            ctx.bag = bag
+            ctx.motion = True
+            ctx.stage, ctx.text = "frame", "움직임 설계 중"
+            await self.emit(ctx, True)
+            for attempt in (1, 2):
+                r = await self._guard_llm(ctx, self.deps.render(
+                    ctx.user, ip, ctx.env, text=sc["ko"], notes=notes, style="", profile_id=ctx.recipe["video_profile"],
+                    seconds=sc["seconds"], image=image, image_prompt=st.get("scene_prompt") or "", staging=None,
+                    plan=st.get("plan"), crew=None, read_frame_on=True, auto_length=True, frame=None, music=False))
+                f = None
+                if needs_fix(r.get("violations")):
+                    ctx.has_fix = True
+                    ctx.stage = "fix"
+                    await self.emit(ctx, True)
+                    f = await self._guard_llm(ctx, self.deps.fix(
+                        ctx.user, ip, ctx.env, text=sc["ko"], notes=notes, style="", profile_id=r["profile"],
+                        seconds=r["settings"]["seconds"], current={"ko": r["ko"], "parts": r["parts"], "motion": r["motion"]},
+                        frame=r["frame"], scene=r.get("scene") or "", staging=None, plan=r.get("plan") or st.get("plan")))
+                left = (f if f is not None else r).get("violations") or []
+                blocking = [v for v in left if BLOCKING_RE.search(v)]
+                if not blocking:
+                    break
+                await store.event(turn["id"], "prompt_rejected", {"index": i, "attempt": attempt, "violations": blocking})
+            else:
+                for e in bag:
+                    await store.event(turn["id"], "llm_job", {k: e.get(k) for k in LLM_JOB_KEYS})
+                raise StepError("bad_prompt", f"장면 {i + 1}: " + "; ".join(blocking)[:280])
+            for e in bag:
+                await store.event(turn["id"], "llm_job", {k: e.get(k) for k in LLM_JOB_KEYS})
+            bag.clear()
+        final = f["prompt"] if f and f.get("changed") else r["prompt"]
+        if r.get("sound") and r["sound"] not in final:
+            final = f"{final}\n\n{r['sound']}"
+        await store.event(turn["id"], "render", {"index": i, "profile": r.get("profile"), "violations": r.get("violations"),
+                                                 "rounds": r.get("rounds"), "fixed": bool(f), "left": left,
+                                                 "frame_read": self.deps.frame_known(r.get("frame"))})
+        return {"prompt": final, "ko": {**(r.get("ko") or {}), **((f or {}).get("ko") or {})}, "profile": r.get("profile"),
+                "settings": r.get("settings"), "frame_known": self.deps.frame_known(r.get("frame")), "violations": left}
+
+    async def _long_video(self, ctx: Ctx, work: dict, i: int, st: dict) -> dict | None:
+        recipe = ctx.recipe
+        sc = work["story"]["scenes"][i]
+        fps = int(recipe["defaults"].get("fps") or 24)
+        frames = int((st.get("settings") or {}).get("frames") or (int(sc["seconds"]) * fps + 1))
+        pend = f"L{i}v_pending"
+        swork = {"prompt": st["prompt"], "scene_att": st["first_att"], "settings": {"frames": frames},
+                 "size": list(work["long_size"]), pend: work.get(pend)}
+        ctx.text = "생성 대기"
+        for attempt in (1, 2):
+            sub = self._sub_ctx(ctx, recipe, f"L{i}v", "generate", pend, "생성")
+            try:
+                main = await self._run_sub(ctx, sub, swork, fresh=attempt > 1)
+                break
+            except StepError as e:
+                if e.code not in LONG_RETRY_CODES or attempt == 2:
+                    raise
+                await store.event(ctx.turn["id"], "long_scene_retry", {"index": i, "code": e.code, "detail": e.detail})
+        if main is None:
+            return None
+        work[pend] = swork.get(pend)
+        outs = sub.outs or []
+        last_o = (recipe.get("outputs") or {}).get("last")
+        check_o = (recipe.get("outputs") or {}).get("check")
+        last = files.pick_output(outs, last_o["node"], last_o["kind"], last_o.get("ext")) if last_o else None
+        check = files.pick_output(outs, check_o["node"], check_o["kind"], check_o.get("ext")) if check_o else None
+        try:
+            _n, sha = await asyncio.to_thread(files.fingerprint, main["rel_path"])
+        except OSError:
+            sha = None
+        return {"clip_rel": main["rel_path"], "clip_sha": sha, "last_rel": (last or {}).get("rel_path"),
+                "check_rel": (check or {}).get("rel_path"), "seed": swork.get("seed"), "seconds": sc["seconds"]}
+
+    async def _long_music(self, ctx: Ctx, work: dict):
+        """배경음악 한 곡 (rel). 레시피가 없거나 실패하면 None (음악 없이 합친다), 취소면 False"""
+        turn, story = ctx.turn, work["story"]
+        if work.get("music_rel") and files.result_path(work["music_rel"]):
+            return work["music_rel"]
+        music = story.get("music") or {}
+        mrec = self.recipe_for("music")
+        if mrec is None or not music.get("tags"):
+            await store.event(turn["id"], "long_music", {"skipped": "음악 레시피가 없음" if mrec is None else "구성안에 음악 없음"})
+            return None
+        ctx.long["phase"] = "music"
+        ctx.text = "배경음악 만드는 중"
+        await self.emit(ctx, True)
+        sub = self._sub_ctx(ctx, mrec, "M", "music", "music_pending", "배경음악")
+        total = float(sum(int(s["seconds"]) for s in story["scenes"]))
+        swork = {"prompt": music["tags"], "duration": min(400.0, total + 2.0), "bpm": music.get("bpm"), "keyscale": music.get("key"),
+                 "music_pending": work.get("music_pending")}
+        try:
+            main = await self._run_sub(ctx, sub, swork)
+        except StepError as e:
+            if e.code in ("queue_wait",):
+                raise
+            await store.event(turn["id"], "long_music", {"failed": e.code, "detail": e.detail})
+            return None
+        if main is None:
+            return False
+        work["music_rel"] = main["rel_path"]
+        await store.merge_work(turn["id"], {"music_rel": main["rel_path"]})
+        await store.event(turn["id"], "long_music", {"rel": main["rel_path"]})
+        return main["rel_path"]
+
+    async def _long_finish(self, ctx: Ctx, work: dict, scenes: list, music_rel):
+        turn, story = ctx.turn, work["story"]
+        ctx.long["phase"] = "assemble"
+        ctx.stage, ctx.text = "collect", "영상 합치는 중"
+        await self.emit(ctx, True)
+        if await store.cancel_requested(turn["id"]):
+            await self.finish_state(turn, "cancelled")
+            return
+        clips = []
+        for i, s in enumerate(scenes):
+            p = files.result_path(s.get("clip_rel") or "")
+            if p is None:
+                raise StepError("gone", f"장면 {i + 1} 클립이 없습니다")
+            if s.get("clip_sha") and not await self._long_file_ok(s["clip_rel"], s["clip_sha"]):
+                raise StepError("changed", f"장면 {i + 1} 클립이 바뀌었습니다")
+            clips.append(p)
+        music_abs = files.result_path(music_rel) if music_rel else None
+        out_rel = f"{os.path.dirname(scenes[0]['clip_rel'])}/long_{str(turn['id'])[:8]}.mp4"
+        out_abs = os.path.join(os.path.realpath(settings.results_dir), out_rel)
+        try:
+            info = await asyncio.to_thread(self.deps.assemble, clips, music_abs, out_abs, True)
+        except assemble.AssembleError as e:
+            await store.event(turn["id"], "error", {"where": "assemble", "detail": str(e)[:500]})
+            raise StepError("assemble", str(e)[:300]) from None
+        await store.event(turn["id"], "long_assembled", info)
+        await store.merge_work(turn["id"], {"final_rel": out_rel})
+        try:
+            nbytes, sha = await asyncio.to_thread(files.fingerprint, out_rel)
+        except OSError:
+            nbytes, sha = None, None
+        import uuid
+        size = work.get("long_size") or []
+        att = {"id": uuid.uuid4(), "thread_id": turn["thread_id"], "user_id": turn["user_id"], "source": "result",
+               "media": "video", "mime": files.mime_of(out_rel), "width": size[0] if size else None,
+               "height": size[1] if len(size) > 1 else None, "frames": None, "bytes": nbytes, "sha256": sha,
+               "result_rel": out_rel, "job_id": None, "meta": {"long": True, "scenes": len(scenes)}}
+        await store.add_attachment(att)
+        notes = list(ctx.notes) + list((ctx.spec or {}).get("notes") or [])
+        if not music_rel and (story.get("music") or {}).get("tags"):
+            notes.append("배경음악을 만들지 못해 음악 없이 이어 붙였습니다")
+        ctx.text = "마무리"
+        await self.emit(ctx, True)
+        msg = await self.message(ctx, "assistant", "result", "", {"attachment_ids": [str(att["id"])], "notes": notes,
+                                                                  "media": "video", "actions": RETRY})
+        await self.finish_state(turn, "done", result={"attachment_ids": [str(att["id"])], "message_id": msg["id"],
+                                                      "notices": notes, "media": "video"})
+
     # ── 프롬프트 만들기 (LLM 차례) ──
     async def _reuse_prompt(self, ctx: Ctx) -> dict | None:
         """다시 만들기: 저장된 프롬프트·설정으로 시드만 새로 뽑는다 (LLM 차례 없음)"""
@@ -826,8 +1368,11 @@ class Director:
         if recipe is None or recipe["id"] in self.disabled:
             via = bool((turn.get("request") or {}).get("via_image"))
             act = "i2v" if via else (turn.get("action") or "i2v")
-            recipe = (self.recipe_for(act, self.quality_of_turn(turn), self.engine_of_turn(turn) == "ltx")
-                      or self.recipe_for(act, self.quality_of_turn(turn)))        # 소리 포함 레시피가 꺼졌으면 소리 없는 레시피로 잇는다
+            if (turn.get("request") or {}).get("long"):
+                recipe = self.recipe_for("i2v", self.quality_of_turn(turn), True)     # 긴 영상은 LTX 만 (높음이 꺼지면 빠른 LTX)
+            else:
+                recipe = (self.recipe_for(act, self.quality_of_turn(turn), self.engine_of_turn(turn) == "ltx")
+                          or self.recipe_for(act, self.quality_of_turn(turn)))        # 소리 포함 레시피가 꺼졌으면 소리 없는 레시피로 잇는다
         if recipe is None:
             if await self._cancel_awaiting(turn):
                 await self._plan_status(turn, "cancelled")
@@ -836,7 +1381,9 @@ class Director:
             return "conflict"
         stale = recipe["version"] != turn.get("recipe_version") or recipe["id"] != turn.get("recipe_id")
         if stale:
-            if not await store.replan_turn(turn["id"], first_stage(turn.get("action")), recipe["id"], recipe["version"]):
+            old = turn.get("work") or {}
+            keep = ({"story": old["story"]} if (turn.get("request") or {}).get("long") and old.get("story") else None)
+            if not await store.replan_turn(turn["id"], first_stage(turn.get("action")), recipe["id"], recipe["version"], keep):
                 return "conflict"
             await self._plan_status(turn, "replanned")
             if recipes.quality_of(recipe) != self.quality_of_turn(turn):      # 계획한 높음 레시피가 꺼져 낮은 화질로 잇는다: 말없이 바꾸지 않는다
@@ -1068,10 +1615,18 @@ class Director:
             size = list(recipes.default_size(recipe, photo=photo, aspect=(ctx.spec or {}).get("aspect")))
         seed = random.randint(0, inject["seed"].get("max", 2 ** 32))
         attempt = int((work.get(ctx.pend_key) or {}).get("attempt", 0)) + 1
-        client_id = f"studio-{turn['id']}-{'s' if ctx.scene_phase else 'g'}{attempt}"     # 장면 이미지(s)와 영상(g)은 이름이 겹치지 않는다
+        # 장면 이미지(s)와 영상(g)은 이름이 겹치지 않는다. 긴 영상은 장면·종류마다 표시가 다르다 (L3i·L3v·M)
+        tag = ctx.client_tag or ("s" if ctx.scene_phase else "g")
+        client_id = f"studio-{turn['id']}-{tag}{attempt}"
         prefix_slots = recipes.slots_of(recipe, "save_prefix")
         values = {"prompt": work["prompt"], "seed": seed,
                   "save_prefix": [recipes.prefix_value(s, env_user(ctx), ctx.user["id"], str(turn["id"])) for s in prefix_slots]}
+        if "duration" in inject:        # 음악: 길이 자리가 둘(빈 잠재·글 인코더)이라 같은 값을 둘에
+            values["duration"] = [float(work["duration"])] * len(recipes.slots_of(recipe, "duration"))
+        if "bpm" in inject:
+            values["bpm"] = int(work.get("bpm") or 90)
+        if "keyscale" in inject:
+            values["keyscale"] = str(work.get("keyscale") or "C major")
         if size:
             values["width"], values["height"] = size[0], size[1]
         if img is not None:
@@ -1097,7 +1652,9 @@ class Director:
         work["size"], work["seed"] = list(size), seed
         pend = {"client_id": client_id, "attempt": attempt}
         work[ctx.pend_key] = pend
-        await store.merge_work(turn["id"], {"size": list(size), "seed": seed, ctx.pend_key: pend})
+        # 긴 영상의 장면 작업은 접수 정보만 남긴다 (요청 전체의 size·seed 를 장면 값으로 덮지 않게)
+        await store.merge_work(turn["id"], {ctx.pend_key: pend} if ctx.sub else
+                               {"size": list(size), "seed": seed, ctx.pend_key: pend})
         ctx.stage = "queue"
         ctx.text = "대기 중"
         body = {"prompt": prompt, "client_id": client_id,
@@ -1185,7 +1742,7 @@ class Director:
                 elif state == "running":
                     if ctx.stage != "generate":
                         ctx.stage = "generate"
-                    ctx.text = "장면 준비 중" if ctx.scene_phase else f"생성 {ctx.tracker.pct}%"
+                    ctx.text = "장면 준비 중" if ctx.scene_phase else f"{ctx.label} {ctx.tracker.pct}%"
                     started = st.get("started_at")
                     if started is not None and time.time() - started.timestamp() > max_run:
                         await self._stop_job(ctx)
@@ -1256,7 +1813,8 @@ class Director:
         if await store.cancel_requested(turn["id"]):     # 취소 요청 뒤에 끝난 결과는 채팅에 내지 않는다 (5.9)
             await self.finish_state(turn, "cancelled")
             return
-        if ctx.scene_phase:       # 장면 이미지: 채팅에는 내지 않고 다음 단계가 첫 화면으로 쓴다
+        if ctx.scene_phase or ctx.sub:       # 장면 이미지·긴 영상의 장면: 채팅에는 내지 않고 다음 단계가 쓴다
+            ctx.outs = outs
             return main
         ctx.close_nodes()
         if ctx.node_log:
@@ -1334,6 +1892,19 @@ class Director:
         env = await store.studio_env(settings.studio_env_slug)
         for t in await store.active_turns():
             if t["id"] in self.tasks:      # 허브가 막 열린 사이 pump 가 이미 돌린 요청이다
+                continue
+            if (t.get("request") or {}).get("long"):
+                # 긴 영상은 장면마다 기록이 남아 끝난 장면을 건너뛰고 접수한 작업을 이어서 본다. 재시작이 되풀이되면 멈춘다
+                n = int((t.get("work") or {}).get("long_resumes") or 0)
+                if n < LONG_RESUME_MAX:
+                    await store.merge_work(t["id"], {"long_resumes": n + 1})
+                    await store.event(t["id"], "recovered", {"result": "resumed", "long": True, "count": n + 1})
+                    self.spawn(t, resume=True)
+                    continue
+                await store.event(t["id"], "recovered", {"result": "interrupted", "long": True})
+                if await self.finish_state(t, "interrupted"):
+                    await self.message(t, "assistant", "notice", FAIL_TEXT["interrupted"][0],
+                                       {"level": "warn", "actions": RETRY_FULL})
                 continue
             jid = await store.turn_job(t["id"], "generate")
             if jid is None and env is not None:

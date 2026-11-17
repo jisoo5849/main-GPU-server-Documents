@@ -98,9 +98,33 @@
     s.textContent = PLAN_STATUS[status] || "";
   }
 
+  function longPlanBody(card, p) {
+    // 긴 영상(여러 장면을 이어 붙임): 장면표·배경음악·총 길이·예상 시간
+    card.append(el("h4", null, "긴 영상 만들기 계획 (승인하면 시작합니다)"));
+    const dl = el("dl");
+    const row = (k, v) => { if (v) { dl.append(el("dt", null, k), el("dd", null, v)); } };
+    row("제목", p.title);
+    row("줄거리", p.logline);
+    row("길이", (p.label || (p.seconds ? p.seconds + "초" : "")) + (p.scenes ? " · 장면 " + p.scenes.length + "개" : ""));
+    row("크기", p.size && p.size.length ? p.size[0] + "×" + p.size[1] : "");
+    row("품질", p.quality);
+    row("배경음악", p.music);
+    row("완료까지", p.estimate_s ? "약 " + Math.max(1, Math.round(p.estimate_s / 60)) + "분 (예상)" : "");
+    card.append(dl);
+    const ol = el("ol", "scenes");
+    for (const s of (p.scenes || [])) {
+      ol.append(el("li", null, "(" + s.seconds + "초) " + s.ko + (s.continues ? " · 앞 장면에서 이어짐" : "")));
+    }
+    card.append(ol);
+  }
+
   function planCard(m, data) {
     const p = data.plan || {};
     const card = el("div", "plan");
+    if (p.action === "long") {
+      longPlanBody(card, p);
+      return planActions(card, m, data);
+    }
     card.append(el("h4", null, (p.action === "edit" ? "이미지 편집 계획" : "영상 만들기 계획") + " (승인하면 시작합니다)"));
     if (p.attachment_ids && p.attachment_ids[0]) card.append(attachmentNode(p.attachment_ids[0], "image"));
     const dl = el("dl");
@@ -114,6 +138,10 @@
     card.append(dl);
     const ko = Object.values(p.ko || {}).filter(Boolean).join("\n");
     if (ko) card.append(el("div", "ko", ko));
+    return planActions(card, m, data);
+  }
+
+  function planActions(card, m, data) {
     if (data.status && data.status !== "pending") { setPlanStatus(card, data.status); return card; }
     const acts = el("div", "acts");
     const ok = el("button", "primary", "승인"); ok.type = "button";

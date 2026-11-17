@@ -1,7 +1,7 @@
 {
  "schema": "studio-recipe-1",
  "id": "ltx23_dev_i2v_sound_quality",
- "version": 1,
+ "version": 2,
  "title": "LTX-2.3 dev 이미지→영상 · 소리 포함 · 높음(증류 없이 30스텝·CFG)",
  "quality": "high",
  "quality_label": "높음",
@@ -12,7 +12,7 @@
  "negative_source": "node",
  "source": {
   "template": "video_ltx2_3_i2v",
-  "exported": "메인(스튜디오 작업공간 ComfyUI, 2026-11-17) 공식 템플릿을 app.graphToPrompt() 로 API 형식으로 바꾼 것. 바꾼 것: 1단계 샘플러를 증류 LoRA 없는 dev 모델로(CFGGuider cfg 3.5 + LTXVScheduler 30스텝), 2단계 보정(증류 LoRA 0.5, 3스텝)은 그대로, 프롬프트 확장기(325·324·326·327·328)를 빼고 프롬프트 글을 인코더에 바로 연결, 너비·높이·길이(초)·시드·프롬프트·첫 화면은 자리 표시, 부정 프롬프트는 '만화·게임' 을 막는 템플릿 문구 대신 중립 문구, 900·901(검사 프레임) 추가",
+  "exported": "메인(스튜디오 작업공간 ComfyUI, 2026-11-17) 공식 템플릿을 app.graphToPrompt() 로 API 형식으로 바꾼 것. 바꾼 것: 1단계 샘플러를 증류 LoRA 없는 dev 모델로(CFGGuider cfg 3.5 + LTXVScheduler 30스텝), 2단계 보정(증류 LoRA 0.5, 3스텝)은 그대로, 프롬프트 확장기(325·324·326·327·328)를 빼고 프롬프트 글을 인코더에 바로 연결, 너비·높이·길이(초)·시드·프롬프트·첫 화면은 자리 표시, 부정 프롬프트는 '만화·게임' 을 막는 템플릿 문구 대신 중립 문구, 900·901(검사 프레임) 추가 / 2026-11-17: 902·903(마지막 프레임 저장, ImageFromBatch batch_index -1 = 끝에서 첫 프레임) 추가. 긴 영상에서 이어지는 장면의 첫 화면으로 쓴다",
   "templates_json_version": "TBD (메인에서 확인)",
   "frontend_version": "TBD (메인에서 확인)",
   "removed_nodes": [
@@ -602,6 +602,27 @@
      0
     ]
    }
+  },
+  "902": {
+   "class_type": "ImageFromBatch",
+   "inputs": {
+    "image": [
+     "320:315",
+     0
+    ],
+    "batch_index": -1,
+    "length": 1
+   }
+  },
+  "903": {
+   "class_type": "SaveImage",
+   "inputs": {
+    "filename_prefix": "last_frame",
+    "images": [
+     "902",
+     0
+    ]
+   }
   }
  },
  "inject": {
@@ -666,6 +687,12 @@
     "input": "filename_prefix",
     "type": "prefix",
     "suffix": "check_frame"
+   },
+   {
+    "node": "903",
+    "input": "filename_prefix",
+    "type": "prefix",
+    "suffix": "last_frame"
    }
   ]
  },
@@ -688,6 +715,13 @@
   },
   "check": {
    "node": "901",
+   "kind": "image",
+   "ext": [
+    ".png"
+   ]
+  },
+  "last": {
+   "node": "903",
    "kind": "image",
    "ext": [
     ".png"
@@ -772,7 +806,9 @@
      "320:310",
      "75",
      "900",
-     "901"
+     "901",
+     "902",
+     "903"
     ]
    }
   ]

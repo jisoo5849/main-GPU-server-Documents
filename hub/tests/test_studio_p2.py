@@ -112,6 +112,26 @@ sp = intent.extract_spec("10초짜리", intent.MAX_SECONDS_SOUND)
 assert sp["seconds"] == 10.0 and not sp["notes"]
 sp = intent.extract_spec("30초 영상", intent.MAX_SECONDS_SOUND)
 assert sp["seconds"] == 20.0 and any("20초까지" in n for n in sp["notes"])
+assert "한 번에 20초까지라 20초로 만들었습니다" in sp["notes"]
+# 분 단위 길이와 긴 영상 (docs/long-video-design.md 7.1)
+for txt, want in (("3분짜리 영상", 180.0), ("1분 30초 영상", 90.0), ("1분 반 영상", 90.0), ("90초 영상", 90.0),
+                  ("2분 영상", 120.0), ("0.5분", 30.0), ("영상 만들어줘", None), ("이 부분을 충분히 보여줘", None),
+                  ("3분만 만들어줘", 180.0), ("3분 동안 걷는 영상", 180.0), ("처음 10초는 천천히, 전체 3분 영상", 180.0),
+                  # 길이가 아닌 '분' (11-17 검토): 시각·거리·비율·분할·분기·전후
+                  ("해 지기 10분 전 바닷가 영상", None), ("역에서 5분 거리 공원 영상", None), ("화면의 3분의 1 을 하늘로", None),
+                  ("4분할 화면 영상", None), ("1분기 실적 발표 영상", None), ("3시 15분 시계탑 영상", None),
+                  ("10분 후 폭발하는 영상", None), ("5분마다 바뀌는 신호등", None), ("10초짜리 영상, 5분 거리 공원", 10.0),
+                  ("3시 15분 시계탑, 20초 영상", 20.0)):
+    assert intent.asked_seconds(txt) == want, (txt, intent.asked_seconds(txt))
+sp = intent.extract_spec("비 오는 거리 3분 영상", intent.MAX_SECONDS_LONG)
+assert sp["seconds"] == 180.0 and not sp["notes"]
+sp = intent.extract_spec("5분짜리 영상", intent.MAX_SECONDS_LONG)
+assert sp["seconds"] == 180.0 and "한 번에 3분까지라 3분으로 만들었습니다" in sp["notes"]     # 받침 있는 말 뒤는 '으로'
+assert intent.is_long(30) and intent.is_long(180) and not intent.is_long(20) and not intent.is_long(None)
+assert intent.long_label(180) == "3분" and intent.long_label(90) == "1분 30초" and intent.long_label(45) == "45초"
+assert intent.clean_options({"seconds": 180}) == {"seconds": 180.0} and intent.clean_options({"seconds": "60"}) == {"seconds": 60.0}
+sp = intent.apply_options(intent.extract_spec("5분 영상", intent.MAX_SECONDS_LONG), {"seconds": 60.0})
+assert sp["seconds"] == 60.0 and not sp["notes"]                                    # 칸이 글보다 우선, '3분까지' 안내는 뺀다
 # '소리 없이' 는 소리 없는 영상으로, '음악 없이' 는 소리 포함에서 음악만 뺀다(영상 렌더러가 따로 본다)
 for t in ("소리 없이 만들어줘", "무음 영상", "소리는 필요 없어", "소리 빼고", "silent video", "소리 없는 영상 만들어줘", "소리 없는 클립으로"):
     assert intent.MUTE_RE.search(t), t
@@ -145,7 +165,8 @@ assert intent.clean_options({"seconds": "4"}) == {"seconds": 4.0}
 assert intent.clean_options({"seconds": 20}) == {"seconds": 20.0} and intent.clean_options({"seconds": "10"}) == {"seconds": 10.0}
 assert intent.clean_options({"sound": "on"}) == {"sound": "on"} and intent.clean_options({"sound": "off"}) == {"sound": "off"}
 assert intent.clean_options({"sound": ""}) == {} and intent.clean_options({"sound": "auto"}) == {}
-for bad_opt in ({"seconds": 10 ** 400}, {"seconds": 7}, {"seconds": 1}, {"seconds": 21}, {"seconds": "abc"}, {"seconds": True},
+for bad_opt in ({"seconds": 10 ** 400}, {"seconds": 7}, {"seconds": 1}, {"seconds": 21}, {"seconds": 240}, {"seconds": "abc"},
+                {"seconds": True},
                 {"aspect": "wide"}, {"sound": "yes"}, {"sound": True}, "x", [1]):
     try:
         intent.clean_options(bad_opt)
@@ -163,6 +184,19 @@ assert base["seconds"] == 5.0                                  # 원본은 바�
 ltx = R.load_all()["ltx25_i2v_sound"]
 assert R.engine_of(ltx) == "ltx" and R.engine_of(R.load_all()["wan22_i2v_14b_fast"]) == "wan" and ltx["sound"] is True
 assert R.recipe_ok(R.check_recipe(ltx, {"ltx25_i2v_long"}))
+# 긴 영상: LTX 레시피 둘은 마지막 프레임(끝에서 첫 프레임)을 따로 저장하고, 배경음악 레시피가 있다
+for rid in ("ltx25_i2v_sound", "ltx23_dev_i2v_sound_quality"):
+    r_ = R.load_all()[rid]
+    assert r_["outputs"]["last"]["node"] == "903" and r_["prompt"]["902"]["inputs"]["batch_index"] == -1
+    assert any(s["node"] == "903" and s["suffix"] == "last_frame" for s in r_["inject"]["save_prefix"])
+mus = R.load_all()["ace_step_music"]
+assert mus["action"] == "music" and R.recipe_ok(R.check_recipe(mus)) and R.pick(R.load_all(), set(), "music")["id"] == "ace_step_music"
+assert R.pick(R.load_all(), {"ace_step_music"}, "music") is None
+mv = R.sample_values(mus)
+assert mv["duration"] == [60.0, 60.0] and mv["bpm"] == 90 and mv["keyscale"] == "C major" and "frames" not in mv
+mb = R.build(mus, dict(mv, duration=[182.0, 182.0], prompt="calm piano instrumental"))
+assert mb["98"]["inputs"]["seconds"] == 182.0 and mb["94"]["inputs"]["duration"] == 182.0 and mb["94"]["inputs"]["lyrics"] == "[Instrumental]"
+assert mb["94"]["inputs"]["tags"] == "calm piano instrumental" and mb["111"]["inputs"]["filename_prefix"].endswith("/music")
 assert R.quality_variant(ltx) is None and "ltx25_i2v_sound_quality" not in R.load_all()     # 가속 스위치가 없어 높음이 없다
 vals = R.sample_values(ltx)
 assert vals["seconds"] == 5 and "frames" not in vals and vals["check_index"] <= ltx["inject"]["check_index"]["max"]

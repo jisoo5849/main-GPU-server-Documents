@@ -9,6 +9,7 @@ import datetime
 import inspect
 import os
 import sys
+import tempfile
 import types
 import uuid
 
@@ -24,7 +25,7 @@ app.db = _db
 
 from app.config import settings  # noqa: E402
 from app.studio import director as D  # noqa: E402
-from app.studio import intent, recipes, store  # noqa: E402
+from app.studio import files, intent, recipes, store  # noqa: E402
 
 D.POLL = 0.01
 D.LLM_POLL = 0.01
@@ -112,11 +113,11 @@ class FakeStore:
                 return False
             t.update(state="pending", stage=stage, work={**(t.get("work") or {}), "approved": True})
             return True
-        async def replan_turn(tid, stage, rid, ver):
+        async def replan_turn(tid, stage, rid, ver, keep=None):
             t = fs.turns[tid]
             if t["state"] != "awaiting_approval":
                 return False
-            t.update(state="pending", stage=stage, work={}, plan=None, recipe_id=rid, recipe_version=ver)
+            t.update(state="pending", stage=stage, work=dict(keep or {}), plan=None, recipe_id=rid, recipe_version=ver)
             return True
 
         for k, v in list(locals().items()):
@@ -292,7 +293,7 @@ def new_turn(fs, text="천천히 앞으로 나아가는 영상으로 만들어�
     if mode:
         req["mode"] = mode
     t = {"id": uuid.uuid4(), "thread_id": uuid.uuid4(), "user_id": 7, "client_ip": "10.0.0.5", "state": "pending",
-         "stage": None, "recipe_id": rec["id"], "recipe_version": 1, "request": req, "work": None, "depends_on": None,
+         "stage": None, "recipe_id": rec["id"], "recipe_version": rec["version"], "request": req, "work": None, "depends_on": None,
          "action": rec["action"]}
     fs.turns[t["id"]] = t
     return t
@@ -659,7 +660,7 @@ async def t_all_shipped_recipes_pass_checks_and_build():
         assert recipes.recipe_ok(rep), (rid, [x for x in rep if not x["ok"]])
         p = recipes.build(r, recipes.sample_values(r))
         assert D.negative_problem(r, p) is None, (rid, D.negative_problem(r, p))
-    assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit"}
+    assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music"}
     # 4스텝 LoRA 는 레시피가 켠 채로 고정한다
     assert rs["wan22_t2v_14b_fast"]["prompt"]["128:129"]["inputs"]["value"] is True
     assert rs["qwen_image_edit"]["prompt"]["170:168"]["inputs"]["value"] is True
@@ -1531,6 +1532,438 @@ def t_unit_helpers():
     assert "부정 자리" in D.negative_problem(REC, q)
     q = copy.deepcopy(p); q["129:98"]["inputs"]["positive"] = ["129:89", 0]
     assert D.negative_problem(REC, q) is not None
+
+
+# ── 긴 영상 (11-17, docs/long-video-design.md 7절) ──
+MUS = recipes.load_all()["ace_step_music"]
+LONG_STORY = {
+    "title_ko": "비 오는 귀갓길", "logline_ko": "비 오는 저녁 남자가 집으로 돌아간다.",
+    "bible": {"characters": [{"id": "A", "look": "a man in his forties, navy wool coat, black umbrella"}],
+              "places": [{"id": "P1", "look": "a wet city street"}, {"id": "P2", "look": "an apartment entrance"}],
+              "time": "early evening, steady rain", "light": "cool dusk with warm windows"},
+    "music": {"tags": "melancholic cinematic instrumental, soft piano", "bpm": 70, "key": "D minor", "ko": "잔잔한 피아노"},
+    "scenes": [
+        {"seconds": 10, "place": "P1", "characters": ["A"], "continues": False, "shot": "wide shot", "action": "He walks.",
+         "sound": "rain on the umbrella", "ko": "남자가 비 오는 거리를 걷는다."},
+        {"seconds": 10, "place": "P1", "characters": ["A"], "continues": True, "shot": "medium tracking shot",
+         "action": "He looks up.", "sound": "footsteps on wet stone", "ko": "남자가 고개를 든다."},
+        {"seconds": 10, "place": "P2", "characters": ["A"], "continues": False, "shot": "close shot", "action": "He folds the umbrella.",
+         "sound": "the umbrella snapping shut", "ko": "남자가 현관에서 우산을 접는다."}],
+    "seconds": 30}
+
+
+class LongDeps(FakeDeps):
+    """긴 영상 시험용: 구성안·합치기를 가짜로, 작업마다 결과 파일을 실제로 만든다 (클립 지문·마지막 프레임 확인을 시험하려고)"""
+
+    def __init__(self, fs, root, **kw):
+        super().__init__(fs, rec=LTX, **kw)
+        self.root, self.n = root, 0
+        self.recs = {LTX["id"]: LTX, IMG["id"]: IMG, MUS["id"]: MUS}
+        self.hold_run = False       # True 면 작업이 running 에 머문다 (hold 는 queued 에 머문다)
+        self.log = []               # 접수·work 저장 순서 (다시 만들 때 옛 기록을 먼저 비우는지 본다)
+
+    async def storyboard(self, user, ip, env, **kw):
+        self.calls.append(("storyboard", kw))
+        await asyncio.sleep(0.01)
+        return {"story": copy.deepcopy(LONG_STORY), "violations": [], "rounds": 1}
+
+    def assemble(self, clips, music, out, sound=True):
+        self.calls.append(("assemble", (list(clips), music, out)))
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(b"final video")
+        return {"scenes": len(clips), "seconds": 30.0, "music": bool(music), "duration": 30.0}
+
+    def _file(self, name):
+        rel = f"studio/bob/long/{name}"
+        p = os.path.join(self.root, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(name.encode())
+        return rel
+
+    async def submit(self, env, user, body, ip):
+        self.calls.append(("submit", body))
+        self.log.append(("submit", body["client_id"]))
+        jid = str(uuid.uuid4())
+        cid = body["client_id"]
+        self.fs.jobs[jid] = {"id": jid, "seq": 5, "state": "queued", "outcome": None, "error": None, "started_at": None}
+        self.fs.by_client[cid] = {"prompt_id": jid, "number": 5, "node_errors": {}}
+        outcome = self.outcome_seq.pop(0) if self.outcome_seq else self.outcome
+        asyncio.ensure_future(self._drive(jid, cid, outcome, self.recs[body["extra_data"]["studio"]["recipe"]]))
+        return {"prompt_id": jid, "number": 5, "node_errors": {}}
+
+    async def _drive(self, jid, cid, outcome, rec=None):
+        j = self.fs.jobs[jid]
+        r = self.receivers.get(cid)
+        await asyncio.sleep(0.01)
+        while self.hold and j["state"] == "queued":
+            await asyncio.sleep(0.01)
+        if j["state"] != "queued":
+            return                      # 대기 중에 취소됐다
+        j["state"] = "running"
+        j["started_at"] = datetime.datetime.now(datetime.timezone.utc)
+        if r:
+            await r.send_text('{"type":"execution_start","data":{"prompt_id":"%s"}}' % jid)
+        await asyncio.sleep(0.01)
+        while self.hold_run and j["state"] == "running":
+            await asyncio.sleep(0.01)
+        if j["state"] != "running":
+            return                      # 실행 중에 중단됐다
+        if outcome == "success":
+            self.n += 1
+            main = rec["outputs"]["main"]["node"]
+            if rec["action"] == "image":
+                outs = [{"node_id": main, "rel_path": self._file(f"img_{self.n}.png"), "media": "images"}]
+            elif rec["action"] == "music":
+                outs = [{"node_id": main, "rel_path": self._file(f"music_{self.n}.mp3"), "media": "audio"}]
+            else:
+                outs = [{"node_id": main, "rel_path": self._file(f"video_{self.n}.mp4"), "media": "videos"},
+                        {"node_id": "901", "rel_path": self._file(f"check_{self.n}.png"), "media": "images"},
+                        {"node_id": "903", "rel_path": self._file(f"last_{self.n}.png"), "media": "images"}]
+            self.fs.outputs[jid] = outs
+            if r:
+                await r.send_text('{"type":"execution_success","data":{"prompt_id":"%s"}}' % jid)
+        j["state"] = "finished"
+        j["outcome"] = outcome
+        if outcome == "error":
+            j["error"] = {"message": "boom"}
+
+
+def long_turn(fs, seconds=30.0):
+    t = new_via(fs, "비 오는 저녁 우산 쓴 남자가 집에 가는 30초 영상", rec=LTX, spec={"seconds": seconds})
+    t["request"]["long"] = True
+    return t
+
+
+def recipe_of(call):
+    return call[1]["extra_data"]["studio"]["recipe"]
+
+
+async def t_long_video_story_plan_scenes_music_and_assembly():
+    old = settings.results_dir
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            await d.pump(); await settle(d, 10)
+            # 1) 구성안 → 계획 카드 (긴 영상은 늘 승인을 받는다). GPU 작업은 아직 없다
+            assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))
+            plan = plan_msgs(fs)[-1]["data"]["plan"]
+            assert plan["action"] == "long" and plan["label"] == "30초" and len(plan["scenes"]) == 3 and plan["scenes"][1]["continues"]
+            assert plan["music"] == "잔잔한 피아노" and plan["estimate_s"] > 3 * D.LONG_SCENE_OVERHEAD and plan["size"] == [1280, 704]
+            assert [c[1]["seconds"] for c in deps.calls if c[0] == "storyboard"] == [30.0]
+            assert not [c for c in deps.calls if c[0] == "submit"]
+            # 2) 승인 → 장면 셋 → 음악 → 합치기 → 결과 하나
+            assert await d.approve(t) == "ok"
+            await d.pump(); await settle(d, 15)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            assert [recipe_of(c) for c in subs] == [IMG["id"], LTX["id"], LTX["id"], IMG["id"], LTX["id"], MUS["id"]]   # 이어지는 장면은 그림을 새로 안 그린다
+            tid = str(t["id"])
+            assert [c[1]["client_id"] for c in subs] == [f"studio-{tid}-{x}" for x in ("L0i1", "L0v1", "L1v1", "L2i1", "L2v1", "M1")]
+            staged = [c[1] for c in deps.calls if c[0] == "stage_image"]
+            assert staged[0].endswith("img_1.png") and staged[1].endswith("last_2.png") and staged[2].endswith("img_4.png")
+            renders = [c[1] for c in deps.calls if c[0] == "render"]
+            assert len(renders) == 3 and all(r["music"] is False and r["staging"] is None for r in renders)
+            assert renders[1]["text"] == "남자가 고개를 든다." and "scene 2 of 3" in renders[1]["notes"]
+            assert renders[1]["image_prompt"] == "" and renders[0]["image_prompt"].startswith("IMG ")    # 이어진 장면은 첫 화면만 읽는다
+            plans = [c[1] for c in deps.calls if c[0] == "plan"]
+            assert len(plans) == 3 and plans[2]["text"] == "남자가 현관에서 우산을 접는다." and "apartment entrance" in plans[2]["notes"]
+            assert len([c for c in deps.calls if c[0] == "expand_image"]) == 2
+            video = subs[2][1]["prompt"]
+            assert video["398:362"]["inputs"]["value"] == 10 and video["902"]["inputs"]["batch_index"] == -1
+            assert video["398:372"]["inputs"]["value"] == 1280 and video["398:360"]["inputs"]["value"] == 704    # 모든 장면이 같은 크기
+            music = subs[5][1]["prompt"]
+            assert music["94"]["inputs"]["tags"] == LONG_STORY["music"]["tags"] and music["98"]["inputs"]["seconds"] == 32.0
+            assert music["94"]["inputs"]["bpm"] == 70 and music["94"]["inputs"]["keyscale"] == "D minor"
+            clips, mus, out = [c[1] for c in deps.calls if c[0] == "assemble"][0]
+            assert [os.path.basename(c) for c in clips] == ["video_2.mp4", "video_3.mp4", "video_5.mp4"] and mus.endswith("music_6.mp3")
+            assert out.endswith(f"long_{tid[:8]}.mp4") and os.path.isfile(out)
+            res = [m for m in fs.messages if m["kind"] == "result"]
+            assert len(res) == 1 and res[0]["data"]["media"] == "video"
+            att = fs.atts[res[0]["data"]["attachment_ids"][0]]
+            assert att["job_id"] is None and att["result_rel"].endswith(f"long_{tid[:8]}.mp4") and att["sha256"]
+            work = t["work"]
+            assert len(work["scenes"]) == 3 and all(s.get("clip_sha") for s in work["scenes"]) and work["music_rel"].endswith(".mp3")
+            assert work["scenes"][1]["first_from"] == "last" and work["scenes"][0]["first_from"] == "image"
+            assert {"story", "scenes", "music", "assemble"} <= set(fs.stages)
+            prog = fs.progress[t["id"]]
+            assert prog["title"] == "긴 영상 만드는 중" and [c["key"] for c in prog["chips"]] == ["story", "scenes", "music", "assemble"]
+            assert "long_assembled" in kinds(fs) and kinds(fs).count("long_scene_done") == 3
+        finally:
+            settings.results_dir = old
+
+
+async def t_long_video_failure_keeps_done_scenes_and_retry_continues():
+    old = settings.results_dir
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}        # 승인한 뒤라고 본다
+            # 셋째 장면 영상이 두 번 다 실패한다 (한 번은 시드를 바꿔 자동으로 다시 한다)
+            deps.outcome_seq = ["success", "success", "success", "success", "error", "error"]
+            await d.pump(); await settle(d, 15)
+            assert t["state"] == "failed" and t["error"]["code"] == "run_error", (t["state"], t.get("error"))
+            assert kinds(fs).count("long_scene_retry") == 1 and len(t["work"]["scenes"]) == 3
+            assert [bool(s.get("clip_rel")) for s in t["work"]["scenes"]] == [True, True, False]
+            # 안내 버튼은 '다시 시도'(남은 장면부터). '다시 만들기'(새 시드)는 끝난 장면을 버리므로 붙이지 않는다
+            note = [m for m in fs.messages if m["kind"] == "notice"][-1]
+            assert note["data"]["actions"] == D.RETRY_FULL and note["body"].endswith(D.LONG_KEEP), note
+            # 다시 시도: 끝난 장면 둘은 그대로, 셋째 장면부터 (계획 카드 없이)
+            r = new_via(fs, "다시 시도", rec=LTX, spec={"seconds": 30.0})
+            r["request"].update(long=True, mode="rewrite", source_turn=str(t["id"]))
+            n_before = len([c for c in deps.calls if c[0] == "submit"])
+            await d.pump(); await settle(d, 15)
+            assert r["state"] == "done", (r["state"], r.get("error"), fs.events[-4:])
+            subs = [recipe_of(c) for c in deps.calls if c[0] == "submit"][n_before:]
+            assert subs == [IMG["id"], LTX["id"], MUS["id"]]
+            assert ("long_inherited", {"source": str(t["id"]), "mode": "rewrite", "scenes_kept": 2}) in fs.events
+            clips = [c[1] for c in deps.calls if c[0] == "assemble"][-1][0]
+            assert [os.path.basename(c) for c in clips] == ["video_2.mp4", "video_3.mp4", "video_6.mp4"]
+            # 결과 폴더의 클립이 바뀌었으면 그 장면부터 다시 만든다 (지문이 다르다)
+            with open(os.path.join(root, t["work"]["scenes"][1]["clip_rel"]), "wb") as f:
+                f.write(b"edited by someone")
+            r2 = new_via(fs, "다시 시도", rec=LTX, spec={"seconds": 30.0})
+            r2["request"].update(long=True, mode="rewrite", source_turn=str(t["id"]))
+            await d.pump(); await settle(d, 15)
+            assert r2["state"] == "done", (r2["state"], r2.get("error"))
+            assert [dd for k, dd in fs.events if k == "long_inherited"][-1]["scenes_kept"] == 1
+        finally:
+            settings.results_dir = old
+
+
+async def t_long_video_without_music_recipe_joins_scene_sound_only():
+    old = settings.results_dir
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            d = D.Director(deps, {LTX["id"]: LTX, IMG["id"]: IMG})        # 음악 레시피가 없다
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+            await d.pump(); await settle(d, 15)
+            assert t["state"] == "done", (t["state"], t.get("error"))
+            assert MUS["id"] not in [recipe_of(c) for c in deps.calls if c[0] == "submit"]
+            assert [c[1] for c in deps.calls if c[0] == "assemble"][0][1] is None
+            res = [m for m in fs.messages if m["kind"] == "result"][0]
+            assert "배경음악을 만들지 못해 음악 없이 이어 붙였습니다" in res["data"]["notes"]
+        finally:
+            settings.results_dir = old
+
+
+async def t_long_video_resumes_after_hub_restart():
+    old = settings.results_dir
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            clip = deps._file("video_old.mp4")
+            sha = files.fingerprint(clip)[1]
+            t["state"] = "active"
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True, "long_size": [1280, 704],
+                         "scenes": [{"clip_rel": clip, "clip_sha": sha, "last_rel": deps._file("last_old.png"), "first_from": "image"}]}
+            await d.recover(); await settle(d, 15)
+            assert t["state"] == "done", (t["state"], t.get("error"))
+            assert t["work"]["long_resumes"] == 1
+            subs = [recipe_of(c) for c in deps.calls if c[0] == "submit"]
+            assert subs == [LTX["id"], IMG["id"], LTX["id"], MUS["id"]]          # 둘째 장면(앞 장면에서 이어짐)부터
+            assert [c[1] for c in deps.calls if c[0] == "stage_image"][0].endswith("last_old.png")
+            # 재시작이 되풀이되면 멈춘다
+            t2 = long_turn(fs)
+            t2["state"] = "active"
+            t2["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True, "long_resumes": D.LONG_RESUME_MAX}
+            await d.recover(); await settle(d, 5)
+            assert t2["state"] == "interrupted"
+        finally:
+            settings.results_dir = old
+
+
+async def t_long_video_remakes_a_changed_clip_and_the_scene_chained_to_it():
+    old = settings.results_dir
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            c0, c1 = deps._file("video_a.mp4"), deps._file("video_b.mp4")
+            sha1 = files.fingerprint(c1)[1]
+            t["state"] = "active"
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True, "long_size": [1280, 704],
+                         "L0v_pending": {"client_id": f"studio-{t['id']}-L0v1", "attempt": 1},
+                         "scenes": [{"clip_rel": c0, "clip_sha": "0" * 64, "last_rel": deps._file("last_a.png"),
+                                     "plan": dict(FakeDeps.PLAN)},
+                                    {"clip_rel": c1, "clip_sha": sha1, "last_rel": deps._file("last_b.png")}]}
+            fs.by_client[f"studio-{t['id']}-L0v1"] = {"prompt_id": "old-job"}          # 옛 작업을 이어받으면 안 된다
+            await d.recover(); await settle(d, 15)
+            assert t["state"] == "done", (t["state"], t.get("error"))
+            redo = [dd for k, dd in fs.events if k == "long_scene_redo"]
+            assert redo == [{"index": 0, "chained": False}, {"index": 1, "chained": True}]      # 첫 장면이 바뀌어 이어진 둘째도 다시
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            assert [recipe_of(c) for c in subs] == [IMG["id"], LTX["id"], LTX["id"], IMG["id"], LTX["id"], MUS["id"]]
+            assert subs[1][1]["client_id"].endswith("-L0v2")                                   # 시도 번호는 이어서 늘린다
+            assert not [c for c in deps.calls if c[0] == "plan" and "scene 1 of 3" in c[1]["notes"]]    # 계획표는 남겨 둔 것을 쓴다
+        finally:
+            settings.results_dir = old
+
+
+async def _first_submit(deps, n=1, timeout=3.0):
+    for _ in range(int(timeout / 0.01)):
+        if len([c for c in deps.calls if c[0] == "submit"]) >= n:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("접수가 없었다")
+
+
+async def t_long_video_cancel_stops_the_running_scene_job():
+    """11-17 검토: 장면 작업을 기다리다 취소하면 그 작업을 멈춰야 한다 (대기 중이면 취소, 실행 중이면 중단)"""
+    old = settings.results_dir
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            for stage in ("queued", "running"):
+                fs = FakeStore(); fs.patch()
+                deps = LongDeps(fs, root)
+                d = D.Director(deps, dict(deps.recs))
+                t = long_turn(fs)
+                t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+                deps.hold, deps.hold_run = stage == "queued", stage == "running"
+                await d.pump()
+                await _first_submit(deps)
+                jid = fs.by_client[f"studio-{t['id']}-L0i1"]["prompt_id"]
+                for _ in range(300):
+                    if fs.jobs[jid]["state"] == stage:
+                        break
+                    await asyncio.sleep(0.01)
+                await asyncio.sleep(0.05)
+                assert await d.cancel(t)
+                await settle(d, 5)
+                assert t["state"] == "cancelled", (stage, t["state"])
+                stop = ("cancel_queued", [jid]) if stage == "queued" else ("interrupt", jid)
+                assert stop in deps.calls, (stage, [c for c in deps.calls if c[0] in ("cancel_queued", "interrupt")])
+                assert fs.jobs[jid]["outcome"] == "cancelled"
+                deps.hold = deps.hold_run = False
+        finally:
+            settings.results_dir = old
+
+
+async def t_long_video_retry_modes_and_approval_inheritance():
+    old = settings.results_dir
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            d = D.Director(deps, dict(deps.recs))
+            src = long_turn(fs)
+            c0, c1 = deps._file("video_a.mp4"), deps._file("video_b.mp4")
+            src.update(state="failed", work={"story": copy.deepcopy(LONG_STORY), "approved": True, "long_size": [1280, 704],
+                                             "scenes": [{"clip_rel": c0, "clip_sha": files.fingerprint(c0)[1],
+                                                         "last_rel": deps._file("last_a.png")},
+                                                        {"clip_rel": c1, "clip_sha": files.fingerprint(c1)[1]}]})
+            # 실패한 요청에 말로 '다시 만들기'(새 시드)를 해도 끝난 장면부터 잇는다
+            r = new_via(fs, "다시 만들기", rec=LTX, spec={"seconds": 30.0})
+            r["request"].update(long=True, mode="new_seed", source_turn=str(src["id"]))
+            await d.pump(); await settle(d, 15)
+            assert r["state"] == "done", (r["state"], r.get("error"))
+            assert [recipe_of(c) for c in deps.calls if c[0] == "submit"] == [IMG["id"], LTX["id"], MUS["id"]]
+            # 승인한 적 없는 계획을 이어받으면 카드를 다시 보인다 (승인 없이 GPU 를 쓰지 않는다)
+            fs2 = FakeStore(); fs2.patch()
+            deps2 = LongDeps(fs2, root)
+            d2 = D.Director(deps2, dict(deps2.recs))
+            src2 = long_turn(fs2)
+            src2.update(state="failed", work={"story": copy.deepcopy(LONG_STORY)})
+            r2 = new_via(fs2, "다시 시도", rec=LTX, spec={"seconds": 30.0})
+            r2["request"].update(long=True, mode="rewrite", source_turn=str(src2["id"]))
+            await d2.pump(); await settle(d2, 10)
+            assert r2["state"] == "awaiting_approval" and not [c for c in deps2.calls if c[0] == "submit"]
+            assert not [c for c in deps2.calls if c[0] == "storyboard"]          # 구성안은 다시 쓰지 않는다
+        finally:
+            settings.results_dir = old
+
+
+async def t_long_video_scene_image_retries_once_and_stays_on_ltx():
+    old = settings.results_dir
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+            deps.outcome_seq = ["error"]           # 첫 장면 이미지가 한 번 실패한다
+            await d.pump(); await settle(d, 15)
+            assert t["state"] == "done", (t["state"], t.get("error"))
+            assert kinds(fs).count("long_image_retry") == 1
+            cids = [c[1]["client_id"] for c in deps.calls if c[0] == "submit"]
+            assert cids[0].endswith("-L0i1") and cids[1].endswith("-L0i2")
+            # 긴 영상은 소리 없는 Wan 레시피로 바꾸지 않는다: 승인할 때 LTX 가 꺼져 있으면 계획을 접는다
+            fs2 = FakeStore(); fs2.patch()
+            deps2 = LongDeps(fs2, root)
+            d2 = D.Director(deps2, {**deps2.recs, REC["id"]: REC})
+            t2 = long_turn(fs2)
+            await d2.pump(); await settle(d2, 10)
+            assert t2["state"] == "awaiting_approval"
+            d2.disabled.add(LTX["id"])
+            assert await d2.approve(t2) == "gone" and t2["state"] == "cancelled"
+            # 레시피가 LTX 가 아니면 긴 영상을 시작하지 않는다
+            t3 = long_turn(fs2)
+            t3["recipe_id"], t3["recipe_version"] = REC["id"], REC["version"]
+            d2.disabled.clear()
+            await d2.pump(); await settle(d2, 10)
+            assert t3["state"] == "failed" and t3["error"]["code"] == "unavailable"
+        finally:
+            settings.results_dir = old
+
+
+async def t_long_video_reset_is_saved_before_the_new_job():
+    """11-17 검토: 다시 만들 장면과 거기서 이어지는 장면의 옛 기록을 새 작업을 접수하기 전에 저장해야 재시작해도 옛 클립이 되살아나지 않는다"""
+    old = settings.results_dir
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            orig_merge = store.merge_work
+
+            async def merge_work(tid, patch):
+                deps.log.append(("merge", copy.deepcopy(patch)))
+                await orig_merge(tid, patch)
+            store.merge_work = merge_work
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            c0, c1 = deps._file("video_a.mp4"), deps._file("video_b.mp4")
+            t["state"] = "active"
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True, "long_size": [1280, 704],
+                         "L0v_pending": {"client_id": f"studio-{t['id']}-L0v1", "attempt": 1},
+                         "L1v_pending": {"client_id": f"studio-{t['id']}-L1v1", "attempt": 1},
+                         "scenes": [{"clip_rel": c0, "clip_sha": "0" * 64, "last_rel": deps._file("last_a.png")},
+                                    {"clip_rel": c1, "clip_sha": files.fingerprint(c1)[1], "first_att": "x"}]}
+            await d.recover(); await settle(d, 15)
+            assert t["state"] == "done", (t["state"], t.get("error"))
+            first_submit = next(i for i, e in enumerate(deps.log) if e[0] == "submit")
+            resets = [e[1] for e in deps.log[:first_submit] if e[0] == "merge" and "scenes" in e[1]
+                      and not any(s.get("clip_rel") for s in e[1]["scenes"][:2])]
+            assert resets, "다시 만들 장면 기록을 접수 전에 비우지 않았다"
+            assert resets[0]["L0v_pending"]["client_id"] is None and resets[0]["L1v_pending"]["client_id"] is None
+            assert "first_att" not in resets[0]["scenes"][1]
+        finally:
+            store.merge_work = orig_merge
+            settings.results_dir = old
 
 
 async def main():

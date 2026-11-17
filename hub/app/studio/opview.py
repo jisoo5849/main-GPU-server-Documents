@@ -91,7 +91,29 @@ def repro_prompt(turn: dict, events: list[dict], atts: dict[str, dict]) -> dict 
 
 PURPOSE_KO = {"prompt_expand": "이미지 프롬프트 확장", "video_frame": "첫 화면 읽기", "video_expand": "영상 프롬프트 작성",
               "video_fix": "영상 프롬프트 고치기", "edit_prompt": "편집 지시문", "image_inspect": "결과 검사",
-              "video_plan": "연출 계획표"}
+              "video_plan": "연출 계획표", "video_story": "긴 영상 구성안"}
+LONG_EVENT_KINDS = ("story", "long_inherited", "long_scene_start", "long_scene_retry", "long_scene_done", "long_resumed",
+                    "long_music", "long_assembled")
+
+
+def long_view(work: dict, events: list[dict]) -> dict | None:
+    """긴 영상(여러 장면) 요청의 구성안·장면별 기록·음악·합친 결과. 긴 영상이 아니면 None"""
+    story = work.get("story")
+    if not story:
+        return None
+    scenes = []
+    done = {i: s for i, s in enumerate(work.get("scenes") or [])}
+    for i, sc in enumerate(story.get("scenes") or []):
+        s = done.get(i) or {}
+        scenes.append({"index": i + 1, "seconds": sc.get("seconds"), "ko": sc.get("ko"), "continues": sc.get("continues"),
+                       "shot": sc.get("shot"), "action": sc.get("action"), "sound": sc.get("sound"),
+                       "first_from": s.get("first_from"), "plan": s.get("plan"), "scene_prompt": s.get("scene_prompt"),
+                       "prompt": s.get("prompt"), "violations": s.get("violations"), "clip_rel": s.get("clip_rel"),
+                       "last_rel": s.get("last_rel"), "image_rel": s.get("image_rel")})
+    return {"title": story.get("title_ko"), "logline": story.get("logline_ko"), "seconds": story.get("seconds"),
+            "bible": story.get("bible"), "music": story.get("music"), "scenes": scenes,
+            "music_rel": work.get("music_rel"), "final_rel": work.get("final_rel"),
+            "events": [{"kind": e.get("kind"), "detail": e.get("detail")} for e in events if e.get("kind") in LONG_EVENT_KINDS]}
 
 
 def system_prompts(llm_jobs: list) -> list[dict]:
@@ -145,6 +167,7 @@ def build_detail(turn: dict, events: list[dict], jobs: list[dict], llm_calls: li
                    "expand": [d for d in by_kind.get("expand", []) if d and d.get("scene")]}
                   if work.get("scene_prompt") else None),
         "plan": work.get("plan"),
+        "long": long_view(work, events),
         "prompt": {"text": work.get("prompt"), "parts": work.get("parts"), "ko": work.get("ko"), "profile": work.get("profile")},
         "length": {"tier": lc.get("tier"), "reason": lc.get("reason"), "by": LENGTH_BY_KO.get(lc.get("by"), lc.get("by"))},
         "crew": {"work": work.get("crew"), "events": [d.get("crew") for d in by_kind.get("render", []) + by_kind.get("expand", [])

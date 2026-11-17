@@ -12,11 +12,13 @@ import os
 import re
 
 RECIPE_DIR = os.path.join(os.path.dirname(__file__), "recipes")
-ACTIONS = {"image", "i2v", "t2v", "edit"}
+ACTIONS = {"image", "i2v", "t2v", "edit", "music"}       # music: 긴 영상의 배경음악 (ACE-Step, docs/long-video-design.md 7절)
 SLOT_TYPES = {"string", "int", "float", "bool", "input_image", "prefix"}
-SLOT_NAMES = {"prompt", "first_frame", "edit_image", "seed", "frames", "seconds", "width", "height", "check_index", "save_prefix"}
+SLOT_NAMES = {"prompt", "first_frame", "edit_image", "seed", "frames", "seconds", "width", "height", "check_index", "save_prefix",
+              "duration", "bpm", "keyscale"}
 ZERO_OUT = {"ConditioningZeroOut"}
-SAVE_NODES = {"SaveVideo", "SaveImage", "SaveWEBM", "SaveAnimatedWEBP", "SaveAnimatedPNG"}
+SAVE_NODES = {"SaveVideo", "SaveImage", "SaveWEBM", "SaveAnimatedWEBP", "SaveAnimatedPNG",
+              "SaveAudio", "SaveAudioMP3", "SaveAudioOpus", "SaveAudioAdvanced"}
 BAD_NODE_RE = re.compile(r"ollama|LoadVideo|LLM|OpenAI|Gemini|Anthropic", re.I)    # 4절: 허브가 GPU 차례를 따로 관리하는 일이다
 USER_DIR_RE = re.compile(r"^[a-z][a-z0-9_-]{1,30}$")
 
@@ -85,10 +87,12 @@ def engine_of(recipe: dict | None) -> str:
 
 
 def pick(recipe_map: dict, disabled, action: str, quality: str = "fast", engine: str = "wan") -> dict | None:
-    """action·화질·엔진에 맞는 켜진 레시피 하나 (id 순서). 엔진을 말하지 않으면 wan"""
+    """action·화질·엔진에 맞는 켜진 레시피 하나 (id 순서). 엔진을 말하지 않으면 wan. 음악은 엔진·화질을 보지 않는다"""
     for rid in sorted(recipe_map):
         r = recipe_map[rid]
-        if r["action"] == action and quality_of(r) == quality and engine_of(r) == engine and rid not in disabled:
+        if rid in disabled or r["action"] != action:
+            continue
+        if action == "music" or (quality_of(r) == quality and engine_of(r) == engine):
             return r
     return None
 
@@ -473,8 +477,11 @@ def sample_values(recipe: dict, frames: int | None = None) -> dict:
     vals = {"prompt": "a calm test scene", "seed": 0, "width": int(d.get("width") or 640),
             "height": int(d.get("height") or 640), "frames": f, "check_index": max(0, min(f // 2, 80)),
             "first_frame": SAMPLE_IMAGE, "edit_image": SAMPLE_IMAGE,
-            "seconds": max(2, min(int(round(max(f - 1, 1) / int(d.get("fps") or 24))), 20))}
+            "seconds": max(2, min(int(round(max(f - 1, 1) / int(d.get("fps") or 24))), 20)),
+            "bpm": 90, "keyscale": "C major"}
     vals["save_prefix"] = [f"_check/00000000/{s['suffix']}" for s in slots_of(recipe, "save_prefix")]
+    if "duration" in inj:      # 음악 길이는 자리가 둘(빈 잠재·글 인코더)이라 자리마다 같은 값
+        vals["duration"] = [float(d.get("duration") or 30)] * len(slots_of(recipe, "duration"))
     return {k: v for k, v in vals.items() if k in inj}
 
 

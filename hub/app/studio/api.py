@@ -21,7 +21,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from .. import security
 from ..config import settings
-from . import engine, files, intent, store
+from . import assemble, engine, files, intent, store
 from .ws import hub
 
 log = logging.getLogger("mgs.studio.api")
@@ -173,7 +173,8 @@ async def me(request: Request):
                          "features": {a: bool(d and d.recipe_for(a)) for a in ("image", "i2v", "t2v", "edit")},
                          "sound": {"available": bool(d and d.recipe_for("i2v", sound=True)),
                                    "default": bool(settings.studio_sound_default),
-                                   "max_seconds": {"sound": int(intent.MAX_SECONDS_SOUND), "silent": int(intent.MAX_SECONDS)}},
+                                   "max_seconds": {"sound": int(intent.MAX_SECONDS_SOUND), "silent": int(intent.MAX_SECONDS),
+                                                   "long": int(intent.MAX_SECONDS_LONG) if assemble.available() else 0}},
                          "quality_high": {a: bool(d and d.recipe_for(a, "high")) for a in ("i2v", "t2v", "edit")}})
 
 
@@ -371,15 +372,30 @@ async def _post_message(request: Request, user: dict, thread: dict):
         if dec["action"] == "i2v":
             turn_atts = list(lreq.get("attachment_ids") or [])
             reuse = {"reuse_frame_of": str(last["turn"]["id"])}
-    spec = intent.apply_options(intent.extract_spec(req_text if not used_default else "",
-                                                    intent.MAX_SECONDS_SOUND if use_sound else intent.MAX_SECONDS), options)
+    # 긴 영상(20초 넘게, 여러 장면을 이어 붙임)은 소리 포함 글→영상만, 허브에 합치기 도구(ffmpeg)가 있을 때만 (docs/long-video-design.md 7.1)
+    long_ok = bool(use_sound and via_image and assemble.available())
+    max_sec = intent.MAX_SECONDS_LONG if long_ok else (intent.MAX_SECONDS_SOUND if use_sound else intent.MAX_SECONDS)
+    spec = intent.extract_spec(req_text if not used_default else "", max_sec)
+    if dec["carry"] == "revise" and intent.asked_seconds(text) is not None:
+        spec = {**spec, **{k: v for k, v in intent.extract_spec(text, max_sec).items() if k in ("seconds", "notes")}}
+    spec = intent.apply_options(spec, options)
+    asked = options.get("seconds") or intent.asked_seconds(req_text) or 0
     if not use_sound and (spec.get("seconds") or 0) > intent.MAX_SECONDS:      # 칸에서 5초보다 길게 골랐다
         spec["seconds"] = intent.MAX_SECONDS
-        spec["notes"] = list(spec.get("notes") or []) + [f"소리 없는 영상은 {int(intent.MAX_SECONDS)}초까지라 {int(intent.MAX_SECONDS)}초로 만들었습니다"]
+        spec["notes"] = [n for n in spec.get("notes") or [] if "까지라" not in n] + [
+            "20초 넘는 긴 영상은 소리 포함으로만 만들 수 있어 5초로 만들었습니다" if intent.is_long(asked)
+            else f"소리 없는 영상은 {int(intent.MAX_SECONDS)}초까지라 {int(intent.MAX_SECONDS)}초로 만들었습니다"]
+    elif use_sound and not long_ok and (spec.get("seconds") or 0) > intent.MAX_SECONDS_SOUND:
+        spec["seconds"] = intent.MAX_SECONDS_SOUND
+        why = ("사진으로 만드는 영상은 한 번에 20초까지라" if not via_image
+               else "긴 영상을 이어 붙일 도구가 허브에 아직 없어")
+        spec["notes"] = [n for n in spec.get("notes") or [] if "까지라" not in n] + [f"{why} 20초로 만들었습니다"]
     req = {"text": req_text, "used_default": used_default, "attachment_ids": turn_atts, "spec": spec, "mode": "new",
            "notes": dec["notes"], "rule": dec["rule"], "carry": dec["carry"], **reuse}
     if via_image:
         req["via_image"] = True
+    if long_ok and intent.is_long(spec.get("seconds")):
+        req["long"] = True
     turn = await store.create_turn(thread["id"], user["id"], _client_ip(request), req, m["id"], recipe["id"],
                                    recipe["version"], dec["action"])
     await store.set_decision(turn["id"], {"action": dec["action"], "source": dec["source"], "carry": dec["carry"],
@@ -535,8 +551,8 @@ async def turn_retry(request: Request):
         return err(400, "bad_request", "요청 형식이 올바르지 않습니다.")
     if src["state"] in store.OPEN_STATES:
         return err(409, "state_changed", "아직 진행 중인 요청입니다.")
-    if mode == "new_seed" and not (src.get("work") or {}).get("prompt"):
-        mode = "rewrite"      # 저장된 프롬프트가 없으면 처음부터 (13.2)
+    if mode == "new_seed" and not ((src.get("work") or {}).get("prompt") or (src.get("work") or {}).get("story")):
+        mode = "rewrite"      # 저장된 프롬프트(긴 영상은 구성안)가 없으면 처음부터 (13.2)
     if not _rate_ok(user["id"]):
         return err(429, "too_many_messages", "잠시 뒤 다시 눌러 주세요.")
     if await store.count_open(user["id"]) >= settings.studio_max_open_per_user:
@@ -562,7 +578,10 @@ async def _spawn_retry(request: Request, user: dict, thread: dict, src: dict, mo
     if recipe is None or recipe["id"] in d.disabled:
         via = bool((src.get("request") or {}).get("via_image"))
         act = "i2v" if via else (src.get("action") or "i2v")
-        recipe = d.recipe_for(act, d.quality_of_turn(src), d.engine_of_turn(src) == "ltx") or d.recipe_for(act, d.quality_of_turn(src))
+        if (src.get("request") or {}).get("long"):
+            recipe = d.recipe_for("i2v", d.quality_of_turn(src), True)        # 긴 영상은 소리 포함 LTX 만 (Wan 으로 바꾸지 않는다)
+        else:
+            recipe = d.recipe_for(act, d.quality_of_turn(src), d.engine_of_turn(src) == "ltx") or d.recipe_for(act, d.quality_of_turn(src))
     if recipe is None:
         return err(503, "studio_not_ready", "이 기능은 지금 준비 중입니다.")
     if cmid:

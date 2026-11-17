@@ -1656,6 +1656,180 @@ def test_sideways_travel_does_not_pair_with_a_camera_that_moves_in_depth():
     assert any("moves in depth" in p for p in video.check_video(res, ltx, "x", FRAME, SCENE, seconds=5.0))
 
 
+# ── 긴 영상 구성안 (11-17, docs/long-video-design.md 7절) ──
+STORY_OK = {
+    "title_ko": "비 오는 귀갓길", "logline_ko": "비 오는 저녁, 우산을 쓴 남자가 집으로 돌아간다.",
+    "bible": {"characters": [{"id": "A", "look": "a man in his forties, short black hair, navy wool coat, black umbrella"}],
+              "places": [{"id": "P1", "look": "a narrow city street with wet asphalt, shop fronts and warm windows"},
+                         {"id": "P2", "look": "a small apartment entrance with a glass door and a brass handle"}],
+              "time": "early evening, steady rain", "light": "cool blue dusk with warm window light"},
+    "music": {"tags": "melancholic cinematic instrumental, soft piano, warm strings, low synth pad", "bpm": 70, "key": "D minor",
+              "ko": "잔잔한 피아노와 현악기가 깔립니다."},
+    "scenes": [
+        {"seconds": 10, "place": "P1", "characters": ["A"], "continues": False, "shot": "wide shot, slow push-in",
+         "action": "The man walks along the wet street under his umbrella, shoulders slightly hunched.",
+         "sound": "steady rain on the umbrella and asphalt, distant traffic", "ko": "남자가 비 오는 거리를 걷는다."},
+        {"seconds": 10, "place": "P1", "characters": ["A"], "continues": True, "shot": "medium tracking shot from the side",
+         "action": "He keeps walking past the shop windows and lifts his gaze to the road ahead.",
+         "sound": "rain on the umbrella, footsteps on wet stone", "ko": "남자가 상점 앞을 지나며 고개를 든다."},
+        {"seconds": 10, "place": "P2", "characters": ["A"], "continues": False, "shot": "close shot, static",
+         "action": "He folds the umbrella at the glass door and shakes off the water.",
+         "sound": "rain dripping, the umbrella snapping shut", "ko": "남자가 현관에서 우산을 접는다."}]}
+
+
+def _story(**over):
+    s = copy.deepcopy(STORY_OK)
+    s.update(over)
+    return s
+
+
+def test_story_counts_follow_ten_second_scenes():
+    assert video.story_counts(180) == (18, 12, 26) and video.story_tolerance(180) == 18
+    assert video.story_counts(30) == (3, 2, 5) and video.story_tolerance(30) == 3
+    assert video.story_counts(60)[0] == 6
+
+
+def test_story_problems_catch_bad_storyboards():
+    assert video.story_problems(STORY_OK, 30) == []
+
+    def scene(i, **kw):
+        s = _story()
+        s["scenes"][i].update(kw)
+        return s
+    checks = [
+        (scene(0, seconds=25), "whole number from 5 to 20"),
+        (scene(2, place="P9"), 'place "P9"'),
+        (scene(2, continues=True), "different place"),
+        (scene(0, continues=True), "first scene"),
+        (scene(1, action="남자가 걷는다"), "must be English"),
+        (scene(1, ko="He walks"), "Korean sentence"),
+        (scene(1, sound="rain and a soft piano melody"), "must not name music"),
+        (scene(0, characters=["Z"]), 'character "Z"'),
+        (_story(music=dict(STORY_OK["music"], key="H major")), "music.key"),
+        (_story(music=dict(STORY_OK["music"], bpm=300)), "music.bpm"),
+        (_story(scenes=[dict(s, seconds=5) for s in STORY_OK["scenes"]]), "add up to 15"),
+        (_story(scenes=STORY_OK["scenes"][:1]), "Write 2 to 5 scenes"),
+        (_story(title_ko="Rainy way home"), '"title_ko" must be Korean'),
+    ]
+    for data, needle in checks:
+        probs = video.story_problems(data, 30)
+        assert any(needle in p for p in probs), (needle, probs)
+    # 요청에 사람이 없으면 설정집·장면에 사람을 더하지 않는다
+    assert any("adds a person" in p for p in video.story_problems(STORY_OK, 30, person_ok=False))
+    assert video.story_problems("x", 30) and video.story_problems({}, 30)
+
+
+def test_clean_story_fits_total_and_breaks_long_chains():
+    short = _story(scenes=[dict(s, seconds=9) for s in STORY_OK["scenes"]])
+    st = video.clean_story(short, 30)
+    assert st["seconds"] == 30 and sorted(s["seconds"] for s in st["scenes"]) == [10, 10, 10]     # 27초 → 30초로 고르게
+    first = _story()
+    first["scenes"][0]["continues"] = True
+    first["scenes"][2].update(continues=True)          # 장소가 바뀌는 이어짐은 이어짐이 아니다
+    st = video.clean_story(first, 30)
+    assert [s["continues"] for s in st["scenes"]] == [False, True, False]
+    st = video.clean_story(_story(scenes=[dict(STORY_OK["scenes"][0], place="P1", continues=i > 0) for i in range(6)]), 60)
+    assert [s["continues"] for s in st["scenes"]] == [False, True, True, True, False, True]     # 세 번 이으면 새 장면 이미지
+    assert video.clean_story(_story(scenes=[dict(STORY_OK["scenes"][0], place="P9")] * 2), 20)["scenes"][0]["place"] == "P1"
+    assert video.clean_story(_story(scenes=[dict(s, shot="와이드 샷") for s in STORY_OK["scenes"]]), 30) is None
+    assert video.clean_story(_story(scenes=STORY_OK["scenes"][:1]), 30) is None
+    assert video.clean_story(_story(music={"tags": "", "bpm": 999, "key": "Q"}), 30)["music"]["key"] == "C major"
+
+
+def test_scene_notes_and_image_text_carry_the_bible():
+    st = video.clean_story(STORY_OK, 30)
+    notes = video.scene_notes(st, 1)
+    assert "scene 2 of 3" in notes and "navy wool coat" in notes and "wet asphalt" in notes
+    assert "medium tracking shot" in notes and "footsteps on wet stone" in notes
+    # 앞뒤 장면은 넣지 않는다: '반드시 지킬 말' 검사가 다른 장면의 날씨·카메라를 이 장면에 요구하게 된다 (11-17 검토)
+    assert "Previous scene" not in notes and "Next scene" not in notes and "현관" not in notes
+    plan = {"place": ["the sidewalk", "the curb", "the shop fronts"], "light": "warm window light from the left", "air": "rain",
+            "details": ["a glistening wet sleeve"], "acting": ["a", "b", "c"]}
+    img = video.scene_image_text(st, 0, plan)
+    assert img.startswith("남자가 비 오는 거리를 걷는다.") and "wide shot" in img and "Director's plan" in img and "navy wool coat" in img
+    huge = dict(plan, place=["x" * 600] * 4)
+    assert len(video.scene_image_text(st, 0, huge)) <= 1750                     # 이미지 확장 2000자 안 (힌트 자리를 남긴다)
+
+
+def test_write_story_repairs_then_accepts():
+    bad = _story(scenes=[dict(s, seconds=5) for s in STORY_OK["scenes"]])
+    call = Call([bad, STORY_OK])
+    story, left, rounds = asyncio.run(video.write_story(call, "비 오는 저녁 우산 쓴 남자가 집에 가는 30초 영상", "", 30))
+    assert rounds == 2 and left == [] and story["seconds"] == 30 and len(story["scenes"]) == 3
+    system = call.calls[0]["messages"][0]["content"]
+    assert "about 3 scenes (2 to 5)" in system and "D minor" in system and call.calls[0]["format"] is video.STORY_SCHEMA
+    assert call.calls[1]["messages"][-1]["content"].startswith("Your JSON broke these rules")
+    # 끝내 고치지 못해도 다듬어 쓸 수 있으면 돌려준다 (길이 합은 다듬을 때 맞춘다)
+    story, left, rounds = asyncio.run(video.write_story(Call([bad, bad, bad]), "남자 영상", "", 30))
+    assert story is not None and story["seconds"] == 30 and left and rounds == 3
+    # 쓸 수 없는 모양이면 None
+    story, left, _ = asyncio.run(video.write_story(Call(["x", "x", "x"]), "남자 영상", "", 30))
+    assert story is None and left
+
+
+def test_storyboard_runs_in_one_llm_turn_and_clamps_length():
+    turns = []
+    fake = types.ModuleType("app.llm")
+
+    class HelperBusy(Exception):
+        pass
+
+    @contextlib.asynccontextmanager
+    async def llm_turn(user, ip, model, purpose, wait_seconds=None):
+        turns.append(purpose)
+
+        async def call(payload):
+            turns.append(payload["messages"][0]["content"])
+            return {"message": {"content": json.dumps(STORY_OK)}}
+        yield call
+
+    fake.HelperBusy, fake.llm_turn = HelperBusy, llm_turn
+    saved = sys.modules.get("app.llm")
+    sys.modules["app.llm"] = fake
+    try:
+        r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", "비 오는 저녁 남자 영상", seconds=30))
+        assert turns[0] == "video_story" and "screenwriter" in turns[1] and r["story"]["seconds"] == 30
+        assert r["violations"] == [] and r["rounds"] == 1
+        turns.clear()
+        r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", "남자 영상", seconds=900))
+        assert "about 18 scenes (12 to 26)" in turns[1] and "add up to 180" in turns[1]      # 3분으로 맞춰 쓴다
+        assert r["violations"] and r["rounds"] == 3              # 3장면짜리 답은 3분을 채우지 못해 위반이 남는다
+    finally:
+        if saved is None:
+            sys.modules.pop("app.llm", None)
+        else:
+            sys.modules["app.llm"] = saved
+
+
+SOUND_NO_MUSIC = {"sound": ("Audio: A steady rain bed covers the narrow street, with water ticking on the umbrella canopy close to "
+                            "the camera. His leather shoes press on the wet stones in an even rhythm, a car hisses past far behind, "
+                            "and the rain keeps the same soft level through the whole clip."),
+                  "ko": "빗소리와 발소리가 고르게 들립니다."}
+
+
+def test_scene_sound_has_no_music_when_the_film_adds_one_track():
+    ltx = video.profile_of("ltx25_i2v_long")[1]
+    assert video.music_rule("", False) == video.MUSIC_LATER and video.music_rule("음악 없이", None) == video.MUSIC_OFF
+    assert video.music_rule("", None) == video.MUSIC_ON
+    assert any("no music" in p for p in video.sound_problems(SOUND_OK, "", ltx, music=False))      # 피아노 음악이 들어 있다
+    assert video.sound_problems(SOUND_NO_MUSIC, "", ltx, music=False) == []
+    assert not any("no music" in p for p in video.sound_problems(SOUND_OK, "", ltx))               # 짧은 영상은 지금처럼 음악 포함
+    # 화면 속에서 실제로 연주하는 악기 소리는 음악 낱말이어도 된다 (장면 글에 그 악기가 있을 때)
+    played = dict(SOUND_NO_MUSIC, sound=SOUND_NO_MUSIC["sound"] + " Her fingers press the piano keys softly.")
+    assert any("no music" in p for p in video.sound_problems(played, "비 오는 거리", ltx, music=False))
+    assert not any("no music" in p for p in video.sound_problems(played, "소녀가 피아노를 친다 Action: A girl plays the piano.",
+                                                                  ltx, music=False))
+    assert video.music_words("soft piano and a warm score", "she plays the piano") == ["score"]
+    s = _story()
+    s["scenes"][0].update(action="A girl plays the piano by the window.", sound="the piano notes she plays, rain on the glass")
+    assert not any("must not name music" in p for p in video.story_problems(s, 30))
+    result, calls, _ = run_render([LTX_LONG, SOUND_OK, SOUND_NO_MUSIC], username="alice", slug="alice-main",
+                                  text="향수 광고 영상", image_prompt=SCENE, profile_id="ltx25_i2v_long",
+                                  crew=False, music=False)
+    assert video.MUSIC_LATER in calls[1]["messages"][0]["content"]
+    assert result["sound"] == SOUND_NO_MUSIC["sound"] and result["sound_left"] == []     # 음악이 든 첫 답은 고쳐 쓴다
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

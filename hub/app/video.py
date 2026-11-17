@@ -144,6 +144,11 @@ MUSIC_ON = ("add a quiet instrumental score under the sounds: name its mood, its
             "instruments or synthesizer textures that fit the picture; keep it clearly below the sound effects and at one steady level "
             "from the first second to the last, with no swell and no fade.")
 MUSIC_OFF = "the user asked for no music: write no music at all, only the ambient bed and the sound effects."
+# 긴 영상의 장면: 배경음악은 합칠 때 한 곡으로 따로 깐다 (docs/long-video-design.md 7절). 장면 소리에 음악이 있으면 두 음악이 겹친다
+MUSIC_LATER = ("the film's background music is laid over all scenes later as one track, so write no music at all: "
+               "only the ambient bed and the sounds of the action.")
+MUSIC_WORD_RE = re.compile(r"\b(?:music|musical|score|soundtrack|melod(?:y|ies|ic)|piano|violin|cello|synth(?:esizer)?s?|"
+                           r"orchestra(?:l)?|chords?|instrumental)\b", re.I)
 SPEECH_OFF = "the clip has no spoken words: write no speech, singing or narration."
 SPEECH_ON = ("the user gave these spoken lines: {lines}. Put each line in double quotes, word for word and in its original language, "
              "say which visible person speaks it, and describe the voice in a few words. Add no other speech.")
@@ -170,7 +175,8 @@ def spoken_lines(said: str) -> list[str]:
     return [m.strip() for m in QUOTE_RE.findall(said or "") if m.strip()][:4]
 
 
-def sound_problems(data, said: str, profile: dict) -> list[str]:
+def sound_problems(data, said: str, profile: dict, music: bool | None = None) -> list[str]:
+    """music=False 면 음악이 없어야 한다 (긴 영상의 장면: 배경음악은 따로 깐다)"""
     if not isinstance(data, dict):
         return ["Return a JSON object with sound and ko."]
     lo, hi = profile.get("sound_words") or [35, 120]
@@ -199,17 +205,34 @@ def sound_problems(data, said: str, profile: dict) -> list[str]:
     if seen:
         problems.append(f'The sound paragraph must describe only what is heard, but it mentions something only seen ("{seen.group(0)}"): '
                         "name the sound it makes or drop it.")
+    mus = music_words(QUOTED_OUT_RE.sub("", snd), said) if music is False else []
+    if mus:
+        problems.append(f'This clip must have no music (the film\'s music is added later), but the text names "{mus[0]}": '
+                        "remove every music word and keep only the ambient bed and the sounds of the action.")
     return problems
 
 
+def music_words(text: str, allowed: str = "") -> list[str]:
+    """음악 낱말. 장면에서 실제로 연주하는 악기('피아노 치는 소녀'의 piano)처럼 요청·장면 글(allowed)에 있는 말은 뺀다"""
+    allow = (allowed or "").lower()
+    return [m.group(0) for m in MUSIC_WORD_RE.finditer(text or "") if m.group(0).lower() not in allow]
+
+
+def music_rule(said: str, music: bool | None = None) -> str:
+    if music is False:
+        return MUSIC_LATER
+    return MUSIC_OFF if NO_MUSIC_RE.search(said or "") else MUSIC_ON
+
+
 async def write_sound(call, text: str, notes: str, video_prompt: str, seconds: float, profile: dict,
-                      rounds: int = 2) -> dict:
-    """영상 프롬프트를 본 뒤 소리 단락을 쓴다 (같은 LLM 차례 안). {'sound': 'Audio: ...', 'ko': '...', 'rounds': n, 'left': [...]}"""
+                      rounds: int = 2, music: bool | None = None) -> dict:
+    """영상 프롬프트를 본 뒤 소리 단락을 쓴다 (같은 LLM 차례 안). {'sound': 'Audio: ...', 'ko': '...', 'rounds': n, 'left': [...]}.
+    music=False 는 음악 없이 (긴 영상의 장면)"""
     said = f"{text} {notes}".strip()
     lo, hi = profile.get("sound_words") or [35, 120]
     lines = spoken_lines(said)
     system = SOUND_SYSTEM.format(
-        seconds=seconds, lo=lo, hi=hi, music_rule=MUSIC_OFF if NO_MUSIC_RE.search(said) else MUSIC_ON,
+        seconds=seconds, lo=lo, hi=hi, music_rule=music_rule(said, music),
         speech_rule=SPEECH_ON.format(lines=" | ".join(f'"{x}"' for x in lines)) if lines else SPEECH_OFF)
     user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "") \
         + f"VIDEO TEXT (what the picture and the motion show):\n{video_prompt}"
@@ -224,7 +247,7 @@ async def write_sound(call, text: str, notes: str, video_prompt: str, seconds: f
         except PromptxError as e:
             data, problems = {}, [str(e)]
         else:
-            problems = sound_problems(data, said, profile)
+            problems = sound_problems(data, said, profile, music)
         if isinstance(data, dict) and str(data.get("sound") or "").strip() and (best is None or len(problems) < len(best[1])):
             best = (data, problems)
         if not problems:
@@ -606,6 +629,313 @@ def plan_problems(result, plan: dict | None) -> list[str]:
         return []
     return ["The director's plan items missing from the prompt: " + "; ".join(miss[:5])
             + ". Work each into the paragraph named in the plan, in your own words, keeping the plan's key nouns."]
+
+
+# ── 긴 영상 구성안 (11-17, docs/long-video-design.md 7절) ──
+# 영상 모델은 한 번에 5~20초 한 컷이라, 긴 요청은 장면표로 나눠 한 장면씩 만들고 컷으로 잇는다.
+# 설정집(인물·장소의 고정된 모습)을 한 번 정해 모든 장면의 글에 그대로 넣는다 (장면 사이 모습을 맞추려고).
+STORY_SCENE_MIN, STORY_SCENE_MAX = 5, 20
+STORY_MIN_SECONDS, STORY_MAX_SECONDS = 25, 180
+# ACE-Step 1.5 TextEncode 의 keyscale 값 (메인 object_info, 11-17)
+MUSIC_KEYS = tuple(f"{n} {m}" for m in ("major", "minor")
+                   for n in ("C", "C#", "Db", "D", "D#", "Eb", "E", "F", "F#", "Gb", "G", "G#", "Ab", "A", "A#", "Bb", "B"))
+STORY_SYSTEM = """You are the director and screenwriter of a small film crew. The user wants one film of about {seconds} seconds. The video model shoots one continuous shot of 5 to 20 seconds at a time, so you split the film into scenes that are shot one by one and joined with hard cuts.
+Return JSON only:
+- "title_ko": a short Korean title.
+- "logline_ko": one Korean sentence: what the whole film shows.
+- "bible": the fixed look of everything that appears in more than one scene; it is copied word for word into every scene so the scenes match:
+  - "characters": for each recurring person or animal, {{"id": "A", "look": "..."}}: age range, build, hair, face, clothing with exact colours and materials, and one signature item, in English, at most 45 words. An empty list when the film has no people or animals.
+  - "places": for each place, {{"id": "P1", "look": "..."}}: the ground, the main surfaces and objects and their colours, in English, at most 45 words.
+  - "time": time of day and weather in English, the same in every scene unless the request asks for a change.
+  - "light": the light and colour palette of the whole film in English.
+- "music": the background music laid under the whole film as one track: "tags" (English: genre, mood, three or four instruments, and the word instrumental), "bpm" (a whole number from 50 to 180), "key" (one of: {keys}), "ko" (one Korean sentence).
+- "scenes": about {count} scenes ({n_min} to {n_max}). Each scene: "seconds" (a whole number from 5 to 20; most scenes about 10), "place" (a place id), "characters" (the character ids in the shot), "continues" (true only when the shot follows the previous scene in the same place with no time jump, so its first frame is the previous scene's last frame), "shot" (shot size and one camera move, in English), "action" (the one main action of the shot in English, at most 35 words; show mood through the body), "sound" (the ambient sound and the sounds of the action in English; never music), "ko" (one Korean sentence for the user).
+Rules:
+- Honour every word of the request first; it is the top priority. Build a clear arc: an opening that sets the place, a development, and a closing image.
+- The scene seconds add up to {seconds} (within {tolerance}).
+- Vary the shot sizes (wide, medium, close) and keep the screen direction of a moving subject the same from scene to scene.
+- Every scene can be shot from one still frame: one place, one main action, no cut inside it, no flashback, and no text, signs or logos.
+- Name no brands, songs, artists or real people. English everywhere except "title_ko", "logline_ko" and "ko".
+- A person must not be added when the request has none."""
+STORY_SCHEMA = {"type": "object", "required": ["title_ko", "logline_ko", "bible", "music", "scenes"], "properties": {
+    "title_ko": {"type": "string"}, "logline_ko": {"type": "string"},
+    "bible": {"type": "object", "required": ["characters", "places", "time", "light"], "properties": {
+        "characters": {"type": "array", "items": {"type": "object", "required": ["id", "look"],
+                                                  "properties": {"id": {"type": "string"}, "look": {"type": "string"}}}},
+        "places": {"type": "array", "items": {"type": "object", "required": ["id", "look"],
+                                              "properties": {"id": {"type": "string"}, "look": {"type": "string"}}}},
+        "time": {"type": "string"}, "light": {"type": "string"}}},
+    "music": {"type": "object", "required": ["tags", "bpm", "key", "ko"], "properties": {
+        "tags": {"type": "string"}, "bpm": {"type": "integer"}, "key": {"type": "string"}, "ko": {"type": "string"}}},
+    "scenes": {"type": "array", "items": {"type": "object",
+                                          "required": ["seconds", "place", "characters", "continues", "shot", "action", "sound", "ko"],
+                                          "properties": {"seconds": {"type": "integer"}, "place": {"type": "string"},
+                                                         "characters": {"type": "array", "items": {"type": "string"}},
+                                                         "continues": {"type": "boolean"}, "shot": {"type": "string"},
+                                                         "action": {"type": "string"}, "sound": {"type": "string"},
+                                                         "ko": {"type": "string"}}}}}}
+CHAIN_MAX = 3     # 마지막 프레임으로 이어 쓰기는 연속 세 번까지 (색·선명도 변화가 쌓이는 것을 막는 [추정] 값)
+
+
+def story_counts(seconds: float) -> tuple[int, int, int]:
+    """(권장 장면 수, 최소, 최대). 장면은 대개 10초, 5~20초"""
+    s = float(seconds)
+    n_min = max(2, math.ceil(s / 15))
+    n_max = max(n_min, math.ceil(s / 7))
+    return max(n_min, min(n_max, round(s / 10))), n_min, n_max
+
+
+def story_tolerance(seconds: float) -> int:
+    return max(3, round(float(seconds) * 0.1))
+
+
+def _s(v) -> str:
+    return re.sub(r"\s+", " ", str(v or "")).strip()
+
+
+def _sec(v) -> int | None:
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)) and float(v).is_integer():
+        return int(v)
+    return None
+
+
+def story_problems(data, seconds: float, person_ok: bool = True) -> list[str]:
+    """구성안 검사. 고칠 말을 영어로 돌려준다 (모델에게 다시 보낸다)"""
+    if not isinstance(data, dict):
+        return ["Return one JSON object with title_ko, logline_ko, bible, music and scenes."]
+    p: list[str] = []
+    bible = data.get("bible") if isinstance(data.get("bible"), dict) else {}
+    chars = {_s(c.get("id")): c for c in bible.get("characters") or [] if isinstance(c, dict) and _s(c.get("id"))}
+    places = {_s(c.get("id")): c for c in bible.get("places") or [] if isinstance(c, dict) and _s(c.get("id"))}
+    if not places:
+        p.append('bible.places needs at least one place with an "id" and a "look".')
+    for kind, group in (("character", chars), ("place", places)):
+        for cid, c in group.items():
+            look = _s(c.get("look"))
+            if not look or HANGUL_RE.search(look):
+                p.append(f'The {kind} "{cid}" needs an English "look".')
+            elif len(look.split()) > 60:
+                p.append(f'The {kind} "{cid}" look has {len(look.split())} words; keep it under 45.')
+    for k in ("time", "light"):
+        if not _s(bible.get(k)) or HANGUL_RE.search(_s(bible.get(k))):
+            p.append(f'bible.{k} must be an English sentence.')
+    for k in ("title_ko", "logline_ko"):
+        if not HANGUL_RE.search(_s(data.get(k))):
+            p.append(f'"{k}" must be Korean.')
+    music = data.get("music") if isinstance(data.get("music"), dict) else {}
+    tags = _s(music.get("tags"))
+    if not tags or HANGUL_RE.search(tags):
+        p.append('music.tags must be English genre, mood and instrument words.')
+    bpm = _sec(music.get("bpm"))
+    if bpm is None or not 50 <= bpm <= 180:
+        p.append("music.bpm must be a whole number from 50 to 180.")
+    if _s(music.get("key")) not in MUSIC_KEYS:
+        p.append(f'music.key must be one of: {", ".join(MUSIC_KEYS)}.')
+    scenes = data.get("scenes") if isinstance(data.get("scenes"), list) else []
+    _, n_min, n_max = story_counts(seconds)
+    if not n_min <= len(scenes) <= n_max:
+        p.append(f"Write {n_min} to {n_max} scenes (you wrote {len(scenes)}).")
+    total, prev_place = 0, None
+    for i, sc in enumerate(scenes, 1):
+        if not isinstance(sc, dict):
+            p.append(f"Scene {i} must be an object.")
+            continue
+        sec = _sec(sc.get("seconds"))
+        if sec is None or not STORY_SCENE_MIN <= sec <= STORY_SCENE_MAX:
+            p.append(f'Scene {i}: "seconds" must be a whole number from {STORY_SCENE_MIN} to {STORY_SCENE_MAX}.')
+        total += sec or 0
+        place = _s(sc.get("place"))
+        if place not in places:
+            p.append(f'Scene {i}: place "{place}" is not in bible.places.')
+        for c in sc.get("characters") or []:
+            if _s(c) not in chars:
+                p.append(f'Scene {i}: character "{_s(c)}" is not in bible.characters.')
+        if sc.get("continues") is True and (i == 1 or place != prev_place):
+            p.append(f"Scene {i} cannot continue: " + ("it is the first scene." if i == 1 else "it is in a different place from the previous scene."))
+        for k in ("shot", "action", "sound"):
+            v = _s(sc.get(k))
+            if not v:
+                p.append(f'Scene {i}: "{k}" is empty.')
+            elif HANGUL_RE.search(v):
+                p.append(f'Scene {i}: "{k}" must be English.')
+        if len(_s(sc.get("action")).split()) > 45:
+            p.append(f'Scene {i}: "action" is too long; keep it under 35 words.')
+        if music_words(_s(sc.get("sound")), _s(sc.get("action")) + " " + _s(sc.get("shot"))):
+            p.append(f'Scene {i}: "sound" must not name music; the music is one separate track '
+                     "(an instrument played on screen is fine when the action shows it).")
+        if not HANGUL_RE.search(_s(sc.get("ko"))):
+            p.append(f'Scene {i}: "ko" must be a Korean sentence.')
+        if not person_ok and PERSON_NOTE_RE.search(_s(sc.get("action")) + " " + _s(sc.get("shot"))):
+            p.append(f"Scene {i} adds a person, but the request has none.")
+        prev_place = place
+    if not person_ok and any(PERSON_NOTE_RE.search(_s(c.get("look"))) for c in chars.values()):
+        p.append("The bible adds a person, but the request has none.")
+    tol = story_tolerance(seconds)
+    if scenes and abs(total - float(seconds)) > tol:
+        p.append(f"The scene seconds add up to {total}; make them add up to {int(seconds)} (within {tol}).")
+    return p[:14]
+
+
+def clean_story(data, seconds: float) -> dict | None:
+    """구성안을 다듬는다. 길이 합이 조금 어긋나면 장면 길이를 고르게 고친다. 쓸 수 없는 모양이면 None"""
+    if not isinstance(data, dict):
+        return None
+    bible = data.get("bible") if isinstance(data.get("bible"), dict) else {}
+    chars = [{"id": _s(c.get("id")), "look": _s(c.get("look"))} for c in bible.get("characters") or []
+             if isinstance(c, dict) and _s(c.get("id")) and _s(c.get("look"))]
+    places = [{"id": _s(c.get("id")), "look": _s(c.get("look"))} for c in bible.get("places") or []
+              if isinstance(c, dict) and _s(c.get("id")) and _s(c.get("look"))]
+    if not places:
+        return None
+    char_ids, place_ids = {c["id"] for c in chars}, {c["id"] for c in places}
+    scenes, prev = [], None
+    for sc in data.get("scenes") or []:
+        if not isinstance(sc, dict):
+            continue
+        sec = _sec(sc.get("seconds")) or 10
+        item = {"seconds": max(STORY_SCENE_MIN, min(STORY_SCENE_MAX, sec)),
+                "place": _s(sc.get("place")) if _s(sc.get("place")) in place_ids else places[0]["id"],
+                "characters": [_s(c) for c in sc.get("characters") or [] if _s(c) in char_ids],
+                "continues": False, "shot": _s(sc.get("shot")), "action": _s(sc.get("action")),
+                "sound": _s(sc.get("sound")), "ko": _s(sc.get("ko"))}
+        if not (item["shot"] and item["action"] and item["ko"]) or HANGUL_RE.search(item["shot"] + item["action"] + item["sound"]):
+            return None
+        item["continues"] = bool(sc.get("continues") is True and prev is not None and prev["place"] == item["place"])
+        scenes.append(item)
+        prev = item
+    if len(scenes) < 2:
+        return None
+    _fit_seconds(scenes, seconds)
+    music = data.get("music") if isinstance(data.get("music"), dict) else {}
+    key = _s(music.get("key"))
+    bpm = _sec(music.get("bpm"))
+    story = {"title_ko": _s(data.get("title_ko"))[:60], "logline_ko": _s(data.get("logline_ko"))[:300],
+             "bible": {"characters": chars, "places": places, "time": _s(bible.get("time")), "light": _s(bible.get("light"))},
+             "music": {"tags": _s(music.get("tags"))[:400] or "calm cinematic instrumental, soft piano, warm strings",
+                       "bpm": bpm if bpm and 50 <= bpm <= 180 else 90, "key": key if key in MUSIC_KEYS else "C major",
+                       "ko": _s(music.get("ko"))[:200]},
+             "scenes": scenes}
+    story["seconds"] = sum(s["seconds"] for s in scenes)
+    _mark_chains(scenes)
+    return story
+
+
+def _fit_seconds(scenes: list[dict], seconds: float):
+    """장면 길이 합을 목표에 맞춘다: 차이를 장면마다 1초씩 나눠 더하거나 뺀다 (5~20초 안에서)"""
+    target = int(round(float(seconds)))
+    for _ in range(400):
+        diff = target - sum(s["seconds"] for s in scenes)
+        if diff == 0:
+            return
+        step = 1 if diff > 0 else -1
+        moved = False
+        for s in sorted(scenes, key=lambda x: x["seconds"], reverse=step < 0):
+            if STORY_SCENE_MIN <= s["seconds"] + step <= STORY_SCENE_MAX:
+                s["seconds"] += step
+                moved = True
+                break
+        if not moved:
+            return
+
+
+def _mark_chains(scenes: list[dict]):
+    """이어 쓰기가 CHAIN_MAX 번 연속되면 다음 장면은 새 장면 이미지로 시작한다"""
+    run = 0
+    for s in scenes:
+        if s["continues"]:
+            run += 1
+            if run > CHAIN_MAX:
+                s["continues"] = False
+                run = 0
+        else:
+            run = 0
+
+
+def scene_notes(story: dict, i: int) -> str:
+    """장면 하나의 '지킬 것' (영어): 설정집 + 이 장면의 카메라·동작·소리. 영상 렌더러·연출 계획표에 넘긴다.
+    앞뒤 장면은 넣지 않는다: 이 글은 '반드시 지킬 말' 검사(checked_demands)에도 쓰여, 실내 고정 장면에 앞 장면의 비·다음 장면의
+    빠른 줌을 요구하게 된다 (11-17 검토)"""
+    sc = story["scenes"][i]
+    n = len(story["scenes"])
+    b = story["bible"]
+    looks = {c["id"]: c["look"] for c in b["characters"]}
+    place = next((p["look"] for p in b["places"] if p["id"] == sc["place"]), "")
+    lines = [f"This shot is scene {i + 1} of {n} in one film of about {story['seconds']} seconds, joined to the others with hard cuts. "
+             "Keep these fixed looks exactly:"]
+    for cid in sc["characters"]:
+        if cid in looks:
+            lines.append(f"- {cid}: {looks[cid]}")
+    lines.append(f"- Place: {place}")
+    lines.append(f"- Time: {b['time']} Light: {b['light']}")
+    lines.append(f"This shot: {sc['shot']}. Action: {sc['action']}")
+    if sc.get("sound"):
+        lines.append(f"Sound: {sc['sound']}")
+    return "\n".join(lines)[:1990]
+
+
+def scene_image_text(story: dict, i: int, plan: dict | None = None, limit: int = 1750) -> str:
+    """장면 이미지(첫 화면)용 글: 장면 한 줄 + 설정집 + 카메라·동작의 첫 순간 + 연출 계획표의 장소·빛.
+    이미지 확장 입력은 2000자까지라, 감독이 뒤에 붙이는 장면 힌트(약 200자) 자리를 남겨 limit 안으로 줄인다"""
+    sc = story["scenes"][i]
+    b = story["bible"]
+    looks = {c["id"]: c["look"] for c in b["characters"]}
+    place = next((p["look"] for p in b["places"] if p["id"] == sc["place"]), "")
+    who = " ".join(f"{looks[c]}." for c in sc["characters"] if c in looks)
+    base = (f"{sc['ko']}\nThe first instant of this shot as one still photograph: {sc['shot']}. {sc['action']} "
+            f"{who} Place: {place} Time: {b['time']} Light: {b['light']}")
+    extra = (" " + plan_scene_text(plan)) if plan else ""
+    text = base + extra
+    return text if len(text) <= limit else base[:limit]
+
+
+async def write_story(call, text: str, notes: str, seconds: float, rounds: int = 3) -> tuple[dict | None, list[str], int]:
+    """구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). 위반이 남아도 다듬어 쓸 수 있으면 돌려준다"""
+    count, n_min, n_max = story_counts(seconds)
+    system = STORY_SYSTEM.format(seconds=int(seconds), keys=", ".join(MUSIC_KEYS), count=count, n_min=n_min, n_max=n_max,
+                                 tolerance=story_tolerance(seconds))
+    user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "")
+    person_ok = bool(PERSON_REQ_RE.search(text or "")) or bool(PERSON_REQ_RE.search(notes or ""))
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    best, problems, rnd = None, ["no answer"], 0
+    for rnd in range(1, rounds + 1):
+        reply = await call({"messages": messages, "format": STORY_SCHEMA, "think": False, "options": {"temperature": 0.7}})
+        content = (reply.get("message") or {}).get("content", "")
+        try:
+            data = parse_json_reply(content)
+        except PromptxError as e:
+            data, problems = None, [str(e)]
+        else:
+            problems = story_problems(data, seconds, person_ok)
+        story = clean_story(data, seconds) if data is not None else None
+        if story is not None and (best is None or len(problems) < len(best[1])):
+            best = (story, problems)
+        if not problems:
+            break
+        messages = messages + [{"role": "assistant", "content": content or "{}"}, repair_message(problems)]
+    if best is None:
+        return None, problems, rnd
+    return best[0], best[1], rnd
+
+
+async def storyboard(user, ip: str, username: str, slug: str, text: str, notes: str = "", seconds=None) -> dict:
+    """긴 영상 구성안 (감독이 계획 카드 전에 한 번). 못 쓰면 PromptxError"""
+    from . import llm
+
+    text = clean_input(text)
+    notes = str(notes or "").strip()[:2000]
+    sec = max(STORY_MIN_SECONDS, min(STORY_MAX_SECONDS, float(seconds or 60)))
+    try:
+        async with llm.llm_turn(user, ip, settings.expand_model, "video_story") as call:
+            story, left, rounds = await write_story(call, text, notes, sec)
+    except llm.HelperBusy as e:
+        raise PromptxError(str(e), 503) from None
+    except RuntimeError as e:
+        raise PromptxError(str(e), 502) from None
+    if story is None:
+        raise PromptxError("구성안을 만들지 못했습니다: " + "; ".join(left[:3]), 502)
+    return {"story": story, "violations": left, "rounds": rounds, "model": settings.expand_model}
 
 
 def pov_line() -> str:
@@ -1759,10 +2089,12 @@ async def draft(call, text: str, notes: str, profile: dict, seconds: float, fram
 async def render(user, ip: str, username: str, slug: str, text: str, notes: str = "", style: str = "",
                  profile_id: str | None = None, seconds=None, image: dict | None = None, image_prompt: str = "",
                  crew=None, read_frame_on: bool = True, rng=None, auto_length: bool = False,
-                 frame: dict | None = None, staging: str | None = None, plan: dict | None = None) -> dict:
+                 frame: dict | None = None, staging: str | None = None, plan: dict | None = None,
+                 music: bool | None = None) -> dict:
     """요청 → (첫 화면 읽기) → (T2V 장면) → 움직임 초안 → 최종 영상 프롬프트와 설정 제안.
 
     frame 은 이미 읽은 첫 화면 결과다. 주면 첫 화면을 다시 읽지 않는다(채팅의 영상 고치기). 패널은 넘기지 않는다.
+    music=False 면 소리 단락에 음악을 쓰지 않는다 (긴 영상의 장면: 배경음악은 합칠 때 한 곡으로 깐다).
 
     auto_length 이면 장문 프로필을 받아도 요청에 맞춰 장문·보통 중 하나로 정한다(decide_length). 사용자가 고르지 않는다."""
     from . import llm   # llm → scheduler 를 불러오므로 순환을 피해 여기서
@@ -1838,7 +2170,8 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
                                                  style=style, staging=staging, plan=plan)
                 rounds += more
             if profile.get("sound") and str(result.get("prompt") or "").strip():
-                sound_info = await write_sound(call, text, notes, str(result["prompt"]), suggested["seconds"], profile)
+                sound_info = await write_sound(call, text, notes, str(result["prompt"]), suggested["seconds"], profile,
+                                               music=music)
     except llm.HelperBusy as e:
         raise PromptxError(str(e), 503) from None
     except RuntimeError as e:

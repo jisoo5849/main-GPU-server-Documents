@@ -9,10 +9,16 @@ import re
 DEFAULT_I2V_TEXT = "이 사진 속 장면이 부드럽게 움직이는 짧은 영상"
 MAX_TEXT = 2000
 MAX_SECONDS = 5.0              # 소리 없는 영상(Wan)
-MAX_SECONDS_SOUND = 20.0       # 소리 포함 영상(LTX-2.5)
+MAX_SECONDS_SOUND = 20.0       # 소리 포함 영상(LTX-2.5) 한 장면
+MAX_SECONDS_LONG = 180.0       # 긴 영상(여러 장면을 이어 붙임, docs/long-video-design.md 7절). 첫 목표 3분 (11-17 사용자 결정)
 MIN_SECONDS = 0.5
 
 SECONDS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*초")
+# "3분", "1분 30초", "1분 반", "2분짜리". '부분'·'충분' 같은 말에 걸리지 않게 숫자 바로 뒤의 '분'만 본다.
+# 길이가 아닌 '분'은 뺀다 (11-17 검토): "10분 전·후·뒤", "5분 거리", "3분의 1", "4분할", "1분기", "5분마다", "30분 만에", "1분 간격"
+_NOT_LENGTH = r"(?!\s*(?:의|전|후|뒤|거리|기|할|간격|마다|만에|째))"
+MINUTES_RE = re.compile(r"(\d+(?:\.\d+)?)\s*분" + _NOT_LENGTH + r"(?:\s*(?:(\d+(?:\.\d+)?)\s*초|(반)))?")
+CLOCK_BEFORE_RE = re.compile(r"\d\s*시\s*$")      # "3시 15분" 은 시각이다
 ASPECT_RES = (
     ("portrait", re.compile(r"세로|9\s*:\s*16", re.I)),
     ("landscape", re.compile(r"가로|16\s*:\s*9", re.I)),
@@ -51,15 +57,15 @@ def resolve_text(text, n_attachments: int) -> tuple[str, bool]:
 
 def extract_spec(text: str, max_seconds: float = MAX_SECONDS) -> dict:
     """{seconds: float|None, aspect: str|None, sound: bool(소리 말이 있는가), notes: [한국어 안내]}.
-    max_seconds 를 넘는 길이는 그 길이로 맞추고 안내를 남긴다(소리 없는 영상 5초, 소리 포함 20초). 안내는 결과 뒤에 한 줄로 보인다."""
+    max_seconds 를 넘는 길이는 그 길이로 맞추고 안내를 남긴다(소리 없는 영상 5초, 소리 포함 20초, 긴 영상 3분). 안내는 결과 뒤에 한 줄로 보인다."""
     notes = []
     seconds = None
-    m = SECONDS_RE.search(text or "")
-    if m:
-        v = float(m.group(1))
+    v = asked_seconds(text)
+    if v is not None:
         if v > max_seconds:
             seconds = max_seconds
-            notes.append(f"한 번에 {int(max_seconds)}초까지라 {int(max_seconds)}초로 만들었습니다")
+            lab = long_label(max_seconds)
+            notes.append(f"한 번에 {lab}까지라 {lab}{_ro(lab)} 만들었습니다")
         elif v >= MIN_SECONDS:
             seconds = v
     aspect = next((name for name, rx in ASPECT_RES if rx.search(text or "")), None)
@@ -67,7 +73,52 @@ def extract_spec(text: str, max_seconds: float = MAX_SECONDS) -> dict:
     return {"seconds": seconds, "aspect": aspect, "sound": sound, "notes": notes}
 
 
-SECONDS_CHOICES = (2.0, 3.0, 4.0, 5.0, 8.0, 10.0, 12.0, 15.0, 20.0)     # 5초 넘는 길이는 소리 포함 영상만
+def asked_seconds(text: str) -> float | None:
+    """글에 쓴 길이(초). '3분'·'1분 30초'·'1분 반'·'90초'. 없으면 None.
+    길이로 읽을 '분'이 있으면 그것을 쓴다 ('처음 10초는 천천히, 전체 3분 영상' 은 3분). 길이가 아닌 '분'(MINUTES_RE 의 제외 말,
+    시각)만 있으면 초를 본다 ('10초짜리 영상, 5분 거리 공원' 은 10초)"""
+    text = text or ""
+    for m in MINUTES_RE.finditer(text):
+        if CLOCK_BEFORE_RE.search(text[:m.start()]):
+            continue
+        v = float(m.group(1)) * 60
+        if m.group(2):
+            v += float(m.group(2))
+        elif m.group(3):
+            v += 30
+        return v
+    m = SECONDS_RE.search(text)
+    return float(m.group(1)) if m else None
+
+
+def is_long(seconds) -> bool:
+    """한 장면(20초)보다 길어 여러 장면을 이어 붙이는 긴 영상인가"""
+    try:
+        return float(seconds or 0) > MAX_SECONDS_SOUND
+    except (TypeError, ValueError):
+        return False
+
+
+def long_label(seconds) -> str:
+    """180 → '3분', 90 → '1분 30초', 45 → '45초'"""
+    s = int(round(float(seconds or 0)))
+    m, r = divmod(s, 60)
+    if not m:
+        return f"{r}초"
+    return f"{m}분" + (f" {r}초" if r else "")
+
+
+def _ro(word: str) -> str:
+    """조사 '로/으로': 받침이 있으면(ㄹ 받침 빼고) '으로' ('3분으로', '20초로')"""
+    ch = (word or " ")[-1]
+    code = ord(ch) - 0xAC00
+    if 0 <= code < 11172 and code % 28 not in (0, 8):
+        return "으로"
+    return "로"
+
+
+# 5초 넘는 길이는 소리 포함 영상만. 20초 넘는 길이(30초~3분)는 긴 영상(여러 장면)이다
+SECONDS_CHOICES = (2.0, 3.0, 4.0, 5.0, 8.0, 10.0, 12.0, 15.0, 20.0, 30.0, 60.0, 90.0, 120.0, 180.0)
 ASPECT_CHOICES = ("portrait", "landscape", "square")
 
 
@@ -86,7 +137,7 @@ def clean_options(options) -> dict:
         except (TypeError, ValueError, OverflowError):
             raise InputError("bad_request", "요청 형식이 올바르지 않습니다.") from None
         if isinstance(sec, bool) or v not in SECONDS_CHOICES:
-            raise InputError("bad_request", "길이는 2~20초 중에서 고를 수 있습니다.")
+            raise InputError("bad_request", "길이는 2초~3분 중에서 고를 수 있습니다.")
         out["seconds"] = v
     asp = options.get("aspect")
     if asp not in (None, "", "auto"):
@@ -111,7 +162,7 @@ def apply_options(spec: dict, options: dict) -> dict:
     s = dict(spec or {})
     if "seconds" in options:
         s["seconds"] = options["seconds"]
-        s["notes"] = [n for n in s.get("notes") or [] if "초까지" not in n]
+        s["notes"] = [n for n in s.get("notes") or [] if "까지라" not in n]
     if "aspect" in options:
         s["aspect"] = options["aspect"]
     if options.get("quality") == "high":
