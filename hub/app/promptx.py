@@ -26,13 +26,13 @@ REQUIRED_CATEGORIES = ("lighting", "camera", "environment", "texture")
 META_RULES = """You rewrite a short image request into one detailed prompt for an image generation model.
 Follow every rule:
 1. Subject lock, the user's words come first: keep every subject, object, action, count, color and name the user gave, and every genre, style, era, mood, weather, season and place the user named. These words decide the look; never replace, drop or soften them for your own default taste, and do not add main characters or story events the user did not ask for.
-2. Visual details: always describe the lighting, the camera (shot size, angle, lens or framing), the environment (place and background) and the textures (materials and surfaces). Add composition when it helps.
+2. Visual details: always describe the lighting, the camera (shot size, angle, lens or framing), the environment (place and background) and the textures (materials and surfaces). Name the main light source with its direction and, when the scene has several sources, one warm or colored accent light (a lit window, a lamp, a screen glow) that separates the subject from the background. Add composition when it helps; a subject that moves is placed slightly off-center with open space ahead of the direction it moves.
 3. Positive phrasing only: describe what should be seen. Never write negations such as "no", "not", "without", "avoid", "never" or "-free". Instead of "no text", write "a clean plain background".
 4. Clear bodies: state how many people or animals are in the picture. For each one, describe the pose and what the arms, hands and legs are doing so the body reads clearly. If there are two or more, place each one (left, right, foreground, background) and give each a clearly different hair color, clothing color or size so they do not merge into one figure.
 5. Style lock: if a style is given, it will be appended after your prompt by the system. Do not repeat it and do not add any other style or quality words such as photorealistic, 8K, Unreal Engine, octane render or 3D render. If no style is given, choose one style that fits the request and state it once.
 6. Words image models misread: write "figure" or "outline" instead of "silhouette" and "bending down" instead of "ducking". Do not name existing films, franchises, artists, studios, characters, creatures, brands or real people: when the request names one, describe what it looks like in plain visible terms (body shape, number and form of limbs, surface material, colours, scale, texture, setting), as if briefing an artist who has never seen it; for a real person write a generic figure with only the requested clothing, pose and setting, never a likeness.
 7. Write in English, 60 to 160 words, as one paragraph of comma-separated phrases.
-8. Hidden hands: if the request or the must-keep details say the hands stay hidden in the sleeves, image models draw hands whenever the text mentions them. Then never write the words hand, hands, finger, fingers, fingertips, palm, fist, holding, hold, grip, gripping, grasp or clutching anywhere, including the "keep" list (keep "long sleeves" instead). Describe the sleeves as "oversized sleeves hanging well past the wrists, the cuffs closed and drooping". Make every carried object rest on the body or the sleeve: "the umbrella handle tucked inside the drooping sleeve cuff and propped against the shoulder", "the book hugged against the chest by both sleeves".
+8. Hands: draw hands naturally as the request needs them (a person who carries something holds it in a visible hand, one hand on the handle). When the user asks for hidden hands, a HIDDEN HANDS block in the user message replaces this rule.
 9. Actions done for someone: if the action is done for or to another person (Korean "~해 주는", "~에게", "~와 함께", "둘이"; English "for her friend", "shares with", "gives to"), that person must appear too. Count them in "people", give them their own position (left, right, foreground, background) and a clearly different hair color and clothing color, and describe how the action connects the two, for example "the girl on the left raises the umbrella over the taller boy on the right".
 10. Variety: choose the lighting, camera, palette and setting that best express the user's words. Do not fall back to the same safe look (a dark studio, luxury gold) unless the request asks for it; optional ideas may be offered, use them only when they fit the user's words.
 Return only JSON in this shape:
@@ -107,11 +107,16 @@ def build_expand_messages(text: str, style: str = "", notes: str = "", ideas: bo
         parts.append("USER WORDS (top priority, they decide the look):\n" + "\n".join(dl))
     if notes:
         parts.append(f"Must-keep details (treat them like the request itself): {notes}")
+    if hides_hands(said):      # 11-17: 규칙에 든 소매 예시가 손 숨김과 무관한 요청(우산 든 남자)의 프롬프트에 새어 나왔다
+        parts.append(HIDDEN_HANDS_BLOCK.rstrip())
     if ideas:
         il = idea_lines(said, rng)
         if il:
             parts.append("Optional ideas from our library (use a few only if they fit the user's words):\n" + "\n".join(il))
     return [{"role": "system", "content": META_RULES}, {"role": "user", "content": "\n".join(parts)}]
+
+
+HIDDEN_HANDS_BLOCK = "HIDDEN HANDS (the user asked for hidden hands; this replaces rule 8): " + 'if the request or the must-keep details say the hands stay hidden in the sleeves, image models draw hands whenever the text mentions them. Then never write the words hand, hands, finger, fingers, fingertips, palm, fist, holding, hold, grip, gripping, grasp or clutching anywhere, including the "keep" list (keep "long sleeves" instead). Describe the sleeves as "oversized sleeves hanging well past the wrists, the cuffs closed and drooping". Make every carried object rest on the body or the sleeve: "the umbrella handle tucked inside the drooping sleeve cuff and propped against the shoulder", "the book hugged against the chest by both sleeves".'
 
 
 # 사용자가 직접 원하면 그림체 충돌 말도 허용한다 (사용자 의도 최우선)

@@ -1321,6 +1321,10 @@ def test_proper_names_are_described_not_named():
     assert "creatures, brands or real people" in promptx.META_RULES and "never a likeness" in promptx.META_RULES
 
 
+# LTX 프로필(시간 구간을 쓴다)용: 5초 영상이면 action 이 0-2, 2-4, 4-5초 세 구간으로 열려야 한다
+LTX_LONG = dict(LONG_I2V, action="From 0 to 2 seconds, " + LONG_I2V["action"]
+                + " From 2 to 4 seconds, the same motion carries on at the same steady pace. From 4 to 5 seconds, it keeps that pace as the clip ends.")
+
 SOUND_OK = {"sound": ("Audio: A soft, steady room tone fills the quiet space, with a gentle breath of air moving past the glass. "
                       "The slow push-in carries a faint, smooth whisper from the camera mount, and a light touch on the marble "
                       "sounds once, clearly. A calm instrumental score of warm piano and a low synthesizer pad rises slowly, "
@@ -1348,11 +1352,11 @@ def is_long_profile(p):
 
 
 def test_sound_paragraph_is_written_after_the_video_text_and_kept_separate():
-    result, calls, _ = run_render([LONG_I2V, SOUND_OK], username="alice", slug="alice-main", text="향수 광고 영상",
+    result, calls, _ = run_render([LTX_LONG, SOUND_OK], username="alice", slug="alice-main", text="향수 광고 영상",
                                   image_prompt=SCENE, profile_id="ltx25_i2v_long", crew=False)
     assert result["profile"] == "ltx25_i2v_long" and result["long"] and len(calls) == 2
     assert result["sound"] == SOUND_OK["sound"] and result["sound_left"] == []
-    assert result["prompt"] == video.assemble(LONG_I2V) + chr(10) * 2 + SOUND_OK["sound"]       # 영상 글 뒤에 소리 단락
+    assert result["prompt"] == video.assemble(LTX_LONG) + chr(10) * 2 + SOUND_OK["sound"]       # 영상 글 뒤에 소리 단락
     assert result["ko"]["sound"] == SOUND_OK["ko"] and set(result["ko"]) == {"camera", "motion", "timing", "sound"}
     sysmsg, usermsg = calls[1]["messages"][0]["content"], calls[1]["messages"][1]["content"]
     assert "sound designer" in sysmsg and "quiet instrumental score" in sysmsg and "no spoken words" in sysmsg
@@ -1369,20 +1373,20 @@ def test_sound_follows_speech_and_music_requests_and_repairs_bad_answers():
     speech = {"sound": ('Audio: A calm room tone with a faint clock tick. The young woman at the desk says "안녕하세요, 반가워요" '
                         'in a warm, low voice, and her soft breath follows each phrase. The room settles quietly with the final frame.'),
               "ko": "차분한 방 소리와 여자의 한국어 대사가 들립니다."}
-    result, calls, _ = run_render([LONG_I2V, speech], username="alice", slug="alice-main", text=said, image_prompt=SCENE,
+    result, calls, _ = run_render([LTX_LONG, speech], username="alice", slug="alice-main", text=said, image_prompt=SCENE,
                                   profile_id="ltx25_i2v_long", crew=False)
     sysmsg = calls[1]["messages"][0]["content"]
     assert video.MUSIC_OFF in sysmsg and '"안녕하세요, 반가워요"' in sysmsg and "word for word" in sysmsg
     assert result["sound"] == speech["sound"] and result["sound_left"] == []            # 따옴표 안의 한국어 대사는 그대로 둔다
     # 나쁜 답(없는 대사를 따옴표로, 부정어, 한글)은 한 번 고쳐 쓴다
     bad = {"sound": 'Audio: Someone says "hello there" and there is no music at all, 조용합니다.', "ko": "소리"}
-    result, calls, _ = run_render([LONG_I2V, bad, SOUND_OK], username="alice", slug="alice-main", text="향수 광고 영상",
+    result, calls, _ = run_render([LTX_LONG, bad, SOUND_OK], username="alice", slug="alice-main", text="향수 광고 영상",
                                   image_prompt=SCENE, profile_id="ltx25_i2v_long", crew=False)
     assert len(calls) == 3 and calls[2]["messages"][-1]["content"].startswith("Your JSON broke these rules")
     assert result["sound"] == SOUND_OK["sound"] and result["sound_left"] == []
     # 끝내 못 고치면 가장 나은 답을 'Audio:' 로 시작하게 하고 남은 문제를 알린다
     weak = {"sound": "A short hum", "ko": "소리가 납니다."}
-    result, calls, _ = run_render([LONG_I2V, weak, weak], username="alice", slug="alice-main", text="향수 광고 영상",
+    result, calls, _ = run_render([LTX_LONG, weak, weak], username="alice", slug="alice-main", text="향수 광고 영상",
                                   image_prompt=SCENE, profile_id="ltx25_i2v_long", crew=False)
     assert result["sound"] == "Audio: A short hum" and result["sound_left"] and len(calls) == 3
 
@@ -1406,6 +1410,109 @@ def test_sound_problem_checks_and_spoken_lines():
     for t in ("음악 없이 만들어줘", "배경음악은 빼고", "무음악", "no music please"):
         assert video.NO_MUSIC_RE.search(t), t
     assert not video.NO_MUSIC_RE.search("잔잔한 음악이 흐르는 영상")
+
+
+RAINY_CAM = ("The camera is locked off at eye level, keeping the man’s upper body centered. The distance remains constant, so his "
+             "size in the frame stays unchanged. The man walks slowly forward with a heavy, slumped posture, a black umbrella over him.")
+
+
+def test_moving_subjects_get_a_direction_and_a_locked_camera_does_not_claim_a_constant_size():
+    """11-17 러다이트 비교: 이동 방향이 없고, 고정 카메라인데 '크기가 그대로'라고 썼다"""
+    assert video.direction_problems("A man walks slowly forward on a rainy street.", "비 오는 거리의 남자")
+    for ok in ("A man walks from right to left along a rainy street.", "A man walks toward the camera down the street.",
+               "A woman strides away from the camera into the distance.", "A man walks across the frame past parked cars.",
+               "The still lake holds a perfect reflection."):
+        assert not video.direction_problems(ok, "x"), ok
+    assert not video.direction_problems("A man walks slowly forward.", "1인칭 시점으로 걸어가는 영상")        # 1인칭은 보지 않는다
+    probs = video.still_size_problems(RAINY_CAM)
+    assert probs and "grows larger" in probs[0] and "stays unchanged" in probs[0]
+    assert not video.still_size_problems(RAINY_CAM.replace("The distance remains constant, so his size in the frame stays unchanged.",
+                                                             "He grows larger in the frame as he walks toward the lens."))
+    assert not video.still_size_problems(RAINY_CAM.replace("walks slowly forward", "walks slowly from left to right"))   # 옆으로 가로지르면 거리가 같다
+    assert not video.still_size_problems(RAINY_CAM.replace("locked off", "tracking alongside him"))            # 고정 카메라가 아니면 보지 않는다
+    assert not video.still_size_problems("The camera is locked off. The vase keeps the same size and shape throughout.")   # 안정성 문장은 괜찮다
+
+
+def test_a_walker_who_carries_something_needs_a_hand_and_a_mood_needs_the_body():
+    base = ("The man walks, each foot landing and taking his weight as the other leg swings forward, his arms swinging and torso "
+            "rising and falling. He carries a black umbrella over his head.")
+    assert any("which hand holds" in p for p in video.gait_problems(base, "우산을 쓴 남자"))
+    assert not video.gait_problems(base + " One hand keeps a relaxed grip on the umbrella handle.", "우산을 쓴 남자")
+    assert not video.gait_problems(base, "손은 소매 속에 숨기고 우산을 쓴 남자")                               # 손 숨김 요청은 손 말을 쓰지 않는다
+    sad = "The scene settles into a calm, quiet sadness, with the man’s figure staying centered."
+    probs = video.emotion_body_problems(sad)
+    assert probs and "mood word alone" in probs[0]
+    assert not video.emotion_body_problems("The man walks with his head bowed in dejection and his shoulders rounded.")
+    assert not video.emotion_body_problems("A serene sadness hangs over the empty plaza and the quiet fountain.")        # 사람이 없으면 보지 않는다
+
+
+def test_the_sound_paragraph_names_only_heard_things():
+    ltx = video.profile_of("ltx25_i2v_long")[1]
+    bad = dict(SOUND_OK, sound=SOUND_OK["sound"].replace("then fades with the final frame.",
+                                                         "fading gently into the background bokeh lights."))
+    probs = video.sound_problems(bad, "", ltx)
+    assert any("only seen" in p and "bokeh" in p for p in probs)
+    assert not any("only seen" in p for p in video.sound_problems(SOUND_OK, "", ltx))
+
+
+def test_timeline_beats_scale_with_the_clip_and_only_the_ltx_profile_asks_for_them():
+    """러다이트의 0-3, 3-7, 7-10 구간 방식 (11-17 사용자 선택)"""
+    assert video.timeline_ranges(10) == [(0, 3, 1), (3, 7, 2), (7, 10, 3)]
+    assert video.timeline_ranges(20) == [(0, 6, 1), (6, 14, 2), (14, 20, 3)]
+    assert video.timeline_ranges(5) == [(0, 2, 1), (2, 4, 2), (4, 5, 3)] and video.timeline_ranges(3) is None
+    assert video.timeline_ranges(None) is None and video.timeline_ranges("abc") is None
+    ltx, wan = video.profile_of("ltx25_i2v_long")[1], video.profile_of("wan22_i2v_long")[1]
+    msgs = video.build_messages("비 오는 거리의 남자", "", ltx, 10.0, FRAME, SCENE)
+    user = msgs[1]["content"]
+    assert "TIMELINE" in user and '"From 3 to 7 seconds, ..."' in user and "unless a TIMELINE line" in msgs[0]["content"]
+    assert "TIMELINE" not in video.build_messages("비 오는 거리의 남자", "", wan, 5.0, FRAME, SCENE)[1]["content"]       # Wan 은 구간을 쓰지 않는다
+    assert "TIMELINE" not in video.build_messages("비 오는 거리의 남자", "", ltx, 3.0, FRAME, SCENE)[1]["content"]       # 5초 미만도 나누지 않는다
+    res = {"action": "The man walks. From 0 to 3 seconds, he steps. From 3 to 7 seconds, he keeps walking. From 7 to 10 seconds, he walks on."}
+    assert video.timeline_problems(res, 10, ltx) == []
+    assert video.timeline_problems({"action": "He walks steadily."}, 10, ltx)
+    assert video.timeline_problems({"action": "From 0 to 3 seconds, a. From 3 to 8 seconds, b. From 8 to 10 seconds, c."}, 10, ltx)
+    assert video.timeline_problems({"action": "He walks."}, 10, wan) == [] and video.timeline_problems({"action": "x"}, 3, ltx) == []
+    # 규칙 문장이 지식 파일에 들어 있다
+    rules = " ".join(video.long_spec()["rules"])
+    for key in ("Direction on screen", "locked-off camera", "mood with the body", "carries or holds something", "Light separates the subject"):
+        assert key in rules, key
+
+
+def test_image_rules_keep_the_hidden_hands_example_for_hidden_hands_requests_only():
+    from app import promptx
+    sys_text = promptx.META_RULES
+    assert "cuffs closed and drooping" not in sys_text and "accent light" in sys_text and "open space ahead" in sys_text
+    plain = promptx.build_expand_messages("비오는 저녁 우산을 쓰고 풀이 죽은 채 걸어가는 남성", ideas=False)
+    assert "HIDDEN HANDS" not in plain[1]["content"] and "cuffs closed and drooping" not in plain[0]["content"] + plain[1]["content"]
+    hid = promptx.build_expand_messages("손은 소매 속에 숨기고 우산을 든 소녀", ideas=False)
+    assert "HIDDEN HANDS" in hid[1]["content"] and "cuffs closed and drooping" in hid[1]["content"]
+
+
+def test_review_fixes_for_direction_size_mood_and_sound_checks():
+    """독립 검토에서 나온 오탐·미탐을 고정"""
+    # 조명 방향('from the left')·오른손은 이동 방향이 아니다
+    assert video.direction_problems("A man walks slowly. Warm light spills from the left across the wet road.", "x")
+    assert not video.direction_problems("A man walks closer to the camera along the road.", "x")
+    assert not video.direction_problems("A man walks toward the right edge of the frame.", "x")
+    assert not video.still_size_problems("The camera is locked off. The man walks with his right hand on the umbrella; "
+                                         "the bottle on the table keeps the same size throughout.")
+    # 가만히 선 병의 크기 문장은 괜찮고, 걷는 사람의 크기가 그대로라는 문장만 걸린다
+    assert not video.still_size_problems("The camera is locked off. A man walks forward. The bottle keeps the same size in the frame.")
+    # 감정: 장소·빛을 꾸미는 말과 1인칭은 괜찮다
+    assert not video.emotion_body_problems("He walks with slow steps along the lonely street.")
+    assert not video.emotion_body_problems("He sits in a melancholy room lit by a single lamp.", "")
+    assert not video.emotion_body_problems("The man feels sad.", "1인칭 시점으로 걷는 영상")
+    # 소리: 음악 형용사는 괜찮다
+    ltx = video.profile_of("ltx25_i2v_long")[1]
+    glow = dict(SOUND_OK, sound=SOUND_OK["sound"].replace("a low synthesizer pad", "a glowing synth pad"))
+    assert not any("only seen" in p for p in video.sound_problems(glow, "", ltx))
+
+
+def test_ltx_draft_repairs_a_missing_timeline_and_passes_the_clip_length():
+    ltx = video.profile_of("ltx25_i2v_long")[1]
+    n = len(video.check_video(LTX_LONG, ltx, "x", FRAME, SCENE, seconds=5.0))
+    assert not any("timed beats" in p for p in video.check_video(LTX_LONG, ltx, "x", FRAME, SCENE, seconds=5.0)), n
+    assert any("timed beats" in p for p in video.check_video(LONG_I2V, ltx, "x", FRAME, SCENE, seconds=5.0))
 
 
 if __name__ == "__main__":

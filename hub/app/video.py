@@ -136,6 +136,7 @@ Rules:
 - Sound only what the picture shows or implies, and never add a sound source that is not in the video text. When a thing makes no sound (space, a still lake), let a quiet bed and the music carry it instead of inventing noise.
 - Music: {music_rule}
 - Speech: {speech_rule}
+- Describe only what is heard; never mention light, colour, bokeh, reflections or anything that is only seen.
 - Positive phrasing only: describe what is heard; never write what is absent (no "no", "not", "without").
 - Never name songs, bands, artists, brands or real people, and never write lyrics."""
 MUSIC_ON = ("add a quiet instrumental score under the sounds: name its mood, its tempo (slow, steady or driving) and two or three "
@@ -151,6 +152,8 @@ QUOTE_RE = re.compile(r'["“”「」『』]\s*([^"“”「」『』]{2,200}?)
 SPEECH_CUE_RE = re.compile(r"말(?:한|해|하|을|이)|라고\s*(?:말|외|속삭|인사|노래|한다|해)|대사|외치|속삭|인사|\bsays?\b|\bsaid\b|speak|whisper|shout|talk", re.I)
 QUOTED_OUT_RE = re.compile(r'["“”][^"“”]*["“”]')
 SOUND_NEGATION_RE = re.compile(r"\b(?:no|not|without)\b", re.I)
+# 소리 단락은 들리는 것만: 11-17 '...fading gently into the background bokeh lights' (소리가 보케 불빛으로 사라진다)
+SOUND_SEEN_RE = re.compile(r"\b(?:bokeh|reflections?|reflective|shadows?|silhouettes?|haze|hazy|blurry|blurred)\b", re.I)
 
 
 def spoken_lines(said: str) -> list[str]:
@@ -181,6 +184,10 @@ def sound_problems(data, said: str, profile: dict) -> list[str]:
             problems.append(f'Say the user\'s spoken line word for word in double quotes: "{line}".')
     if SOUND_NEGATION_RE.search(QUOTED_OUT_RE.sub("", snd)):
         problems.append('Use positive phrasing only: describe what is heard, never write "no", "not" or "without".')
+    seen = SOUND_SEEN_RE.search(QUOTED_OUT_RE.sub("", snd))
+    if seen:
+        problems.append(f'The sound paragraph must describe only what is heard, but it mentions something only seen ("{seen.group(0)}"): '
+                        "name the sound it makes or drop it.")
     return problems
 
 
@@ -592,6 +599,30 @@ async def read_frame(call, b64: str) -> dict:
 
 # ── 지시문·스키마·검사 ────────────────────────────────────────
 
+def timeline_ranges(seconds) -> list[tuple[int, int, int]] | None:
+    """영상 길이를 세 구간(약 30%·40%·30%)으로: 10초면 (0,3)(3,7)(7,10). 5초 미만은 나누지 않는다 (러다이트의 구간 방식)."""
+    try:
+        n = int(float(seconds) + 0.5)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if n < 5:
+        return None
+    a, b = int(n * 0.3 + 0.5), int(n * 0.7 + 0.5)
+    return [(0, a, 1), (a, b, 2), (b, n, 3)]
+
+
+TIMELINE_LINE = ('TIMELINE (write the "action" paragraph as three timed beats, one sentence group each, opening each with these exact '
+                 'ranges): {ranges}. Beat 1 is the opening moment, beat 2 is the one main action unfolding, beat 3 is how it ends '
+                 "(the subject keeps its pace if it travels). Keep every beat about the same one action; add no new events.")
+
+
+def timeline_text(seconds) -> str | None:
+    r = timeline_ranges(seconds)
+    if not r:
+        return None
+    return TIMELINE_LINE.format(ranges="; ".join(f'"From {a} to {b} seconds, ..."' for a, b, _ in r))
+
+
 def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: dict | None = None, scene: str = "",
                    cat: str | None = None, menus: dict | None = None, rng=None, style: str = "") -> list[dict]:
     kn = load_knowledge()
@@ -673,6 +704,9 @@ def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: 
         parts.append("No person appears in the request, the scene or the first frame; keep every human out of the clip.")
     if hides_hands(said):
         parts.append("The hands stay hidden: never write hand, finger, palm, fist, holding, grip, grasp or clutching.")
+    tl = timeline_text(seconds) if profile.get("timeline") and long else None
+    if tl:
+        parts.append(tl)
     return [{"role": "system", "content": system}, {"role": "user", "content": "\n".join(parts)}]
 
 
@@ -981,16 +1015,139 @@ _GAIT_BUCKETS = (re.compile(r"\b(?:foot|feet|shoes?|heels?|toes?|boots?|soles?)\
                  re.compile(r"\b(?:arms?|torso|shoulders?|hips?|knees?|legs?)\b", re.I))
 
 
+CARRIED_RE = re.compile(r"\b(?:umbrella|parasol|handbag|bag|briefcase|suitcase|backpack|basket|bouquet|cane|walking stick|box|cup|mug"
+                        r"|book|phone|lantern|balloons?|flag|leash|bucket|tray)\b", re.I)
+HAND_GRIP_RE = re.compile(r"\b(?:hands?|fingers?|grips?|gripping|grasp\w*|handle|strap|fist|palm|wrist)\b", re.I)
+
+
 def gait_problems(prompt: str, said: str = "") -> list[str]:
-    """걷는·달리는 사람이 나오면 발·체중·착지와 전진·팔과 몸통 중 세 가지 이상의 물리 묘사가 있어야 한다. 1인칭 걷기는 보지 않는다."""
+    """걷는·달리는 사람이 나오면 발·체중·착지와 전진·팔과 몸통 중 세 가지 이상의 물리 묘사가 있어야 한다. 1인칭 걷기는 보지 않는다.
+    우산·가방처럼 들고 걷는 것이 있으면 어느 손이 어떻게 쥐는지도 써야 한다 (손 숨김 요청은 손 말을 쓰지 않으니 보지 않는다)."""
     if pov_wanted(said) or not WALKER_RE.search(prompt or ""):
         return []
+    out = []
     have = sum(bool(rx.search(prompt)) for rx in _GAIT_BUCKETS)
-    if have >= 3:
+    if have < 3:
+        out.append('Describe the walk physically in "action" instead of just saying the person walks: the foot landing and taking '
+                   "the weight, the other leg swinging forward so the next foot advances, the arms counter-swinging and the torso "
+                   "rising and falling slightly, with the clothing following.")
+    held = CARRIED_RE.search(prompt)
+    if held and not hides_hands(said) and not HAND_GRIP_RE.search(prompt):
+        item = held.group(0).lower()
+        out.append(f'The person carries {"an" if item[0] in "aeiou" else "a"} {item}: say which hand holds it and how (for example one hand keeps a '
+                   "relaxed, steady grip on the handle) and what the other arm does while walking.")
+    return out
+
+
+# ── 11-17 러다이트와 비교(비 오는 저녁 우산 쓴 남자)에서 나온 검사: 이동 방향, 고정 카메라의 크기, 감정을 몸으로 ──
+DIRECTION_RE = re.compile(
+    r"\b(?:left[- ]to[- ]right|right[- ]to[- ]left|(?:from|toward|towards|to|off|into) the (?:left|right)(?: edge| side)?"
+    r"|(?:head(?:s|ing)?|walk(?:s|ing)?|mov(?:es|ing)|travel(?:s|ing)?|go(?:es|ing)?|run(?:s|ning)?|jog(?:s|ging)?|drive(?:s|ing)?) (?:to the )?(?:left|right)\b"
+    r"|(?:toward|towards|at|approach(?:es|ing)?|coming to|up to|closer to|nearer to) (?:the )?(?:camera|lens|viewer|us)\b"
+    r"|away from (?:the )?(?:camera|lens|viewer|us)\b|(?:into|toward|towards) the (?:distance|horizon|background)\b"
+    r"|(?:walk|strid|stroll|jog|run|ran|march|trudg|wander|drive|ride|cycl|skat|sprint|glid|fly|swim)\w* (?:\w+ ){0,2}?away\b"
+    r"|across (?:the )?(?:frame|shot|screen|street|road)\b|from the (?:distance|background|horizon|foreground|side)\b"
+    r"|into (?:the )?(?:frame|shot|camera view)\b|(?:off|out of) (?:the )?(?:frame|screen|shot)\b)", re.I)
+# 옆으로 가로지르는 이동. 'right hand'·'light from the left' 의 left·right 는 이동 방향이 아니다
+LATERAL_RE = re.compile(
+    r"\b(?:left[- ]to[- ]right|right[- ]to[- ]left|(?:from|toward|towards|to|off|into) the (?:left|right) (?:edge|side)\b"
+    r"|across (?:the )?(?:frame|shot|screen)\b|sideways|laterally|(?:walk|strid|stroll|jog|run|march|drive|ride|glid)\w* (?:to the )?(?:left|right)\b)", re.I)
+
+
+def _travels(text: str) -> bool:
+    return bool(WALKER_RE.search(text) or ANIMAL_MOVER_RE.search(text) or VEHICLE_MOVER_RE.search(text))
+
+
+def _sentences(text: str) -> list[str]:
+    return re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", text or ""))
+
+
+def direction_problems(prompt: str, said: str = "") -> list[str]:
+    """걷는·달리는 사람·동물이나 달리는 탈것이 나오면 화면에서 어느 쪽으로 가는지 써야 한다 (러다이트: 오른쪽에서 왼쪽, 앞쪽 여백).
+    이동하는 대상이 나온 문장에 방향이 있어야 한다 (조명의 'from the left' 는 방향이 아니다). 1인칭 요청은 보지 않는다."""
+    if pov_wanted(said):
         return []
-    return ['Describe the walk physically in "action" instead of just saying the person walks: the foot landing and taking the '
-            "weight, the other leg swinging forward so the next foot advances, the arms counter-swinging and the torso rising "
-            "and falling slightly, with the clothing following."]
+    moving = [sent for sent in _sentences(prompt) if _travels(sent)]
+    if not moving or any(DIRECTION_RE.search(sent) for sent in moving):
+        return []
+    return ['Name which way the moving subject travels relative to the frame (left to right, right to left, toward the camera or '
+            'away from the camera) in the sentence where it moves; a subject that travels sideways sits slightly off-center '
+            "with open space ahead of it."]
+
+
+STILL_SIZE_CLAIM_RE = re.compile(
+    r"\b(?:size|scale)\b(?:\s+[\w'’-]+){0,4}?\s+in (?:the )?(?:frame|shot|picture|view)\b[^.;]{0,40}\b(?:stays?|remains?|is|kept|held|holds?)\b"
+    r"[^.;]{0,16}\b(?:same|constant|unchanged|fixed|steady|unchanging)\b"
+    r"|\b(?:same|constant|unchanged|fixed|steady|unchanging) (?:apparent |on-screen )?(?:size|scale) in (?:the )?(?:frame|shot|picture|view)\b"
+    r"|\bunchanged in (?:size|scale)\b", re.I)
+
+
+TIME_RANGE_RE = re.compile(r"\b(?:from )?(\d+)(?::\d\d)?\s*(?:to|[-–—])\s*(\d+)(?::\d\d)?\s*(?:s\b|secs?\b|seconds?\b)", re.I)
+
+
+def timeline_problems(result: dict, seconds, profile: dict) -> list[str]:
+    """시간 구간을 쓰는 프로필(LTX)은 action 단락에 정해 준 세 구간('From 0 to 3 seconds')이 모두 있어야 한다."""
+    r = timeline_ranges(seconds) if profile.get("timeline") else None
+    if not r:
+        return []
+    action = str((result or {}).get("action") or "")
+    found = {(int(a), int(b)) for a, b in TIME_RANGE_RE.findall(action)}
+    miss = [(a, b) for a, b, _ in r if (a, b) not in found]
+    if not miss:
+        return []
+    want = ", ".join(f'"From {a} to {b} seconds, ..."' for a, b, _ in r)
+    return [f'Write the "action" paragraph as three timed beats that open with exactly these ranges: {want}.']
+
+
+TRAVELER_REF_RE = re.compile(r"\b(?:his|her|their|its|he|she|they|the (?:subject|figure|man|woman|walker|runner|rider|driver|dog|horse|car|vehicle))\b", re.I)
+
+
+def still_size_problems(prompt: str) -> list[str]:
+    """고정 카메라(locked off)에서 다가오거나 멀어지는 대상은 화면에서 커지거나 작아진다. 크기·거리가 그대로라고 쓰면 위반이다.
+    옆으로 가로지르는 이동(left·right·across)이면 거리가 같으니 보지 않는다."""
+    text = re.sub(r"\s+", " ", prompt or "")
+    if not CAMERA_STILL_RE.search(text) or not _travels(text) or LATERAL_RE.search(text):
+        return []
+    m = None
+    for sent in _sentences(text):
+        found = STILL_SIZE_CLAIM_RE.search(sent)
+        if found and TRAVELER_REF_RE.search(sent):      # 가만히 선 물체(병·탑)의 크기가 그대로인 것은 맞는 말이다
+            m = found
+            break
+    if not m:
+        return []
+    return [f'With a locked-off camera, a subject that walks toward or away from it changes size in the frame, yet the text says '
+            f'"{m.group(0)}". Write that the figure grows larger (or smaller) as it moves instead; keep "same distance" or '
+            "\"same size\" only for sideways travel across the frame."]
+
+
+EMOTION_RE = re.compile(
+    r"\b(?:dejected|dejection|despondent|sad(?:ness)?|sorrow\w*|melanchol\w+|lonely|loneliness|despair\w*|depress\w+|joy(?:ful|ous)?"
+    r"|happ(?:y|iness)|angry|anger|anxious|anxiety|nervous\w*|excite(?:d|ment)|weary|exhausted|defeated|hopeless\w*)\b", re.I)
+BODY_SHOWN_RE = re.compile(
+    r"\b(?:head|shoulders?|chest|spine|posture|steps?|stride|gait|gaze|eyes?|brows?|face|jaw|lips?|mouth|hands?|arms?|fingers?"
+    r"|knees?|slump\w*|hunch\w*|bowed|droop\w*|sag\w*|lowered|lifted|tilts?|trembl\w*|breath\w*|sigh\w*|express\w*|smil\w*|frown\w*|tears?)\b", re.I)
+PERSON_RE = re.compile(r"\b(?:man|woman|person|figure|girl|boy|child|adult|walker|runner|he|she|his|her|him)\b", re.I)
+
+
+EMOTION_PLACE_RE = re.compile(
+    EMOTION_RE.pattern + r"(?:\s+[\w'’-]+){0,2}?\s+(?:street|road|plaza|square|room|house|hall|city|town|village|beach|shore|sky|"
+    r"lights?|glow|atmosphere|evening|night|morning|afternoon|day|scene|space|corridor|alley|garden|field|forest|lake|sea|ocean|air)\b",
+    re.I)
+
+
+def emotion_body_problems(prompt: str, said: str = "") -> list[str]:
+    """사람이 나오는 글에서 감정 낱말(dejected, sad …)이 몸·시선 말 없이 혼자 쓰인 문장은 위반이다. 몸으로 보여 줘야 한다.
+    장소·빛을 꾸미는 말('lonely street')과 따옴표 안의 말은 보지 않는다. 1인칭 요청도 보지 않는다."""
+    text = re.sub(r"\s+", " ", prompt or "")
+    if pov_wanted(said) or not PERSON_RE.search(text):
+        return []
+    for sent in re.split(r"(?<=[.!?])\s+", QUOTED_OUT_RE.sub("", text)):
+        sent_mood = EMOTION_RE.sub(lambda m: m.group(0) if not EMOTION_PLACE_RE.match(sent, m.start()) else "", sent)
+        if EMOTION_RE.search(sent_mood) and PERSON_RE.search(sent) and not BODY_SHOWN_RE.search(sent):   # 사람 이야기인 문장만 (gloomy atmosphere 같은 빛 묘사는 아니다)
+            return ['Show the mood through the body and what the camera sees (head, shoulders, steps, gaze, hands), not with a '
+                    f'mood word alone: "{sent[:140]}"']
+    return []
 
 
 # 사람이 아닌 대상도 같다: 동물은 발·날개와 체중, 몸의 따름을, 탈것은 바퀴·선체와 차체의 반응, 뒤에 남는 물보라·먼지를 쓴다.
@@ -1106,7 +1263,7 @@ def part_consistency_problems(result: dict) -> list[str]:
 
 
 def check_video(result, profile: dict, said: str, frame: dict | None = None, scene: str = "",
-                cat: str | None = None, menus: dict | None = None) -> list[str]:
+                cat: str | None = None, menus: dict | None = None, seconds=None) -> list[str]:
     """움직임 초안 검사. 어긋난 점을 영문 문장 목록으로 돌려준다 (그대로 고쳐 쓰기 지시에 넣는다)."""
     long = is_long(profile)
     if not isinstance(result, dict):
@@ -1205,6 +1362,10 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
             problems += camera_sheet_problems(result)
             problems += weather_depth_problems(prompt)
             problems += gait_problems(prompt, said)
+            problems += timeline_problems(result, seconds, profile)
+            problems += direction_problems(prompt, said)
+            problems += still_size_problems(prompt)
+            problems += emotion_body_problems(prompt, said)
             problems += mover_problems(prompt, said)
             problems += ambient_link_problems(prompt)
         if operating_pov(said) and not (HAND_WORDS_RE.search(prompt) and re.search(r"\b(?:hands?|forearms?|gloves?)\b", prompt, re.I)):
@@ -1344,7 +1505,7 @@ async def draft(call, text: str, notes: str, profile: dict, seconds: float, fram
         else:
             if long and isinstance(result, dict):
                 result["prompt"] = assemble(result)   # 네 단락을 이어 아래(검사·가장 나은 답 고르기·결과)에서 한 글로 쓴다
-            problems = check_video(result, profile, said, frame, scene, cat, menus)
+            problems = check_video(result, profile, said, frame, scene, cat, menus, seconds)
         if not problems:
             return result, rnd, []
         if result.get("prompt") and (best is None or len(problems) < len(best[1])):
@@ -1488,7 +1649,7 @@ async def fix(user, ip: str, username: str, slug: str, text: str, notes: str = "
     else:
         result["prompt"] = str(cur.get("motion") or "")[:4000]
     frame = parse_frame(frame) if isinstance(frame, dict) else None
-    before = check_video(result, profile, said, frame, scene)
+    before = check_video(result, profile, said, frame, scene, seconds=suggest_settings(profile, seconds)["seconds"])
     after, rounds, left = result, 0, []
     if before:
         model = settings.expand_model

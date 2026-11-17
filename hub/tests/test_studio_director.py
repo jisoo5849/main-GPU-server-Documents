@@ -1201,6 +1201,10 @@ async def t_ltx_sound_video_runs_both_stages_with_seconds_and_the_audio_paragrap
     assert d2.recipe_for("i2v")["id"] == REC["id"] and d2.engine_of_turn({"recipe_id": REC["id"]}) == "wan"
 
 
+async def t_scene_hint_asks_for_a_moving_subject_to_be_off_center_with_room_ahead():
+    assert "still photograph" in D.Director.SCENE_HINT and "open space ahead" in D.Director.SCENE_HINT
+
+
 async def no_queue():
     return []
 
