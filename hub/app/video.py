@@ -469,6 +469,145 @@ def staging_line(sid) -> str:
             "and never change the direction or the camera relationship): " + st["video"])
 
 
+# ── 연출 계획표 (11-17): 러다이트처럼 장소·기분·빛·비 를 하나하나 짚는 연출을 모든 요청에서 ──
+# 프롬프트를 쓰기 전에 감독이 계획표를 먼저 짠다. 장소·빛은 장면 이미지에 그려지고(첫 화면), 구간별 연기·공기·디테일은 영상 글에 들어간다.
+# 규칙 문장만으로는 27B 가 일부만 지켰다(11-17 메인: 따뜻한 포인트 조명·기분·장소 사물이 빠짐). 그래서 계획표를 만들고 빠진 항목을 검사한다.
+PLAN_SYSTEM = """You are the director of a small film crew. Before anything is shot you write the production plan for one short video clip of about {seconds} seconds, one continuous shot.
+Return JSON only:
+- "place": 3 or 4 short phrases, each a concrete, visible thing that tells where the shot is (for a street: the sidewalk, the curb, the building fronts, a side street; for a room: the furniture and surfaces; for a landscape: the ground cover, the horizon line, the nearest rock or tree).
+- "light": one sentence: where the main light comes from, how it separates the subject from the background (an edge of light, a lit face, a lit outline), and ONE small accent light in the far background (a lit window, a lamp, a glow on water) whose colour differs from the main light.
+- "air": one sentence on weather, mist, dust, steam or any particles and how they cross the light and touch surfaces (rain crossing pools of light and dripping from an edge; dust turning in a beam). Write an empty string when the scene has none.
+- "details": 2 or 3 short phrases for small signature details of the subject or its material that the camera can see (a glistening wet sleeve, a chipped glaze, a scuffed boot).
+- "acting": exactly 3 phrases, one per third of the clip: the opening moment, the one main action unfolding (with ONE small living detail that does not change the action, such as a lifted glance, a gust, a ripple), and how the same action carries on at the end. For a person show the mood through the body (head, shoulders, steps, hands), never a mood word alone; for an animal the paws, wings or body; for an object or vehicle how its material, wheels or surfaces respond; for a landscape or weather how its own elements move.
+Rules:
+- Honour every word of the request first; it is the top priority. Invent only what fits the place and the request, and nothing that contradicts it.
+- Write short English phrases, each at most 20 words. Name no brands, songs, artists or real people, and write no text, signs or logos.
+- Positive phrasing only: never write what is absent (no "no", "not", "without").
+- A person must not be added when the request has none."""
+PLAN_KEYS = ("place", "light", "air", "details", "acting")
+
+
+def _clean_items(v, lo: int, hi: int) -> list[str] | None:
+    if not isinstance(v, list):
+        return None
+    out = [re.sub(r"\s+", " ", str(x or "")).strip(" .;") for x in v]
+    out = [x for x in out if x]
+    return out[:hi] if len(out) >= lo else None
+
+
+def clean_plan(data) -> dict | None:
+    """모델이 돌려준 계획표를 다듬는다. 모양이 틀리면 None (계획표 없이 기존 방식으로 간다)."""
+    if not isinstance(data, dict):
+        return None
+    place = _clean_items(data.get("place"), 3, 4)
+    acting = _clean_items(data.get("acting"), 3, 3)
+    details = _clean_items(data.get("details"), 1, 3)
+    light = re.sub(r"\s+", " ", str(data.get("light") or "")).strip()
+    air = re.sub(r"\s+", " ", str(data.get("air") or "")).strip()
+    if not (place and acting and details and light):
+        return None
+    plan = {"place": place, "light": light, "air": air, "details": details, "acting": acting}
+    flat = " ".join(place + acting + details + [light, air])
+    if HANGUL_RE.search(flat) or SOUND_NEGATION_RE.search(flat):
+        return None
+    return plan
+
+
+async def write_plan(call, text: str, notes: str, profile: dict, seconds: float, frame: dict | None = None,
+                     scene: str = "", staging: str | None = None) -> dict | None:
+    """연출 계획표 하나를 같은 LLM 차례 안에서 쓴다. 실패하면 None (영상은 계획표 없이도 만들어진다)."""
+    if not is_long(profile):
+        return None
+    system = PLAN_SYSTEM.format(seconds=int(float(seconds) + 0.5) if seconds else 5)
+    user = f"Request (Korean): {text}\n"
+    if notes:
+        user += f"Must-keep details from the user: {notes}\n"
+    st = staging_of(staging)
+    if st:
+        user += f"Direction already decided (keep it; the acting beats must agree with it): {st['video']}\n"
+    if frame and frame_known(frame):
+        user += ("FIRST FRAME already exists (read by a vision model). Name only place items, lights and details that this frame "
+                 "shows; the acting beats are what happens next:\n" + frame_text(frame) + "\n")
+    elif scene:
+        user += f"Look reference (an image prompt for this shot; stay consistent with it): {scene[:1500]}\n"
+    schema = {"type": "object", "required": list(PLAN_KEYS), "properties": {
+        "place": {"type": "array", "items": {"type": "string"}}, "light": {"type": "string"}, "air": {"type": "string"},
+        "details": {"type": "array", "items": {"type": "string"}}, "acting": {"type": "array", "items": {"type": "string"}}}}
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    for _ in range(2):
+        reply = await call({"messages": messages, "format": schema, "think": False, "options": {"temperature": 0.7}})
+        content = (reply.get("message") or {}).get("content", "")
+        try:
+            plan = clean_plan(json.loads(content))
+        except (ValueError, TypeError):
+            plan = None
+        if plan:
+            return plan
+        messages = messages + [{"role": "assistant", "content": content or "{}"},
+                               {"role": "user", "content": "Rewrite the plan: place 3-4 phrases, one light sentence, the air sentence "
+                                "(empty if none), 1-3 details, exactly 3 acting phrases; English only, positive phrasing only."}]
+    return None
+
+
+def plan_scene_text(plan: dict | None) -> str:
+    """장면 이미지(영상의 첫 화면)에 그려 둘 것: 장소 사물, 빛, 공기, 디테일. 연기 박자는 영상 글의 몫이다."""
+    if not plan:
+        return ""
+    air = f" Air: {plan['air']}." if plan.get("air") else ""
+    return ("Director's plan for this picture (show all of it, in your own words): the place has " + "; ".join(plan["place"])
+            + f". Light: {plan['light']}.{air} Small details: " + "; ".join(plan["details"]) + ".")
+
+
+def plan_block(plan: dict | None, timeline: bool) -> str:
+    if not plan:
+        return ""
+    beats = " ".join(f"({i}) {b}." for i, b in enumerate(plan["acting"], 1))
+    how = ("the three timed beats of the \"action\" paragraph, one per beat" if timeline
+           else "three successive stages of the \"action\" paragraph")
+    air = f"\n- Air (put it in \"camera_light\" or \"action\"): {plan['air']}" if plan.get("air") else ""
+    return ("DIRECTOR'S PLAN (decided for this clip before shooting; the first frame was made from the place, light and details; "
+            "use EVERY item below in your own words, keeping its key nouns, and add nothing that contradicts it):\n"
+            f"- Place (name these in \"shot\"): {'; '.join(plan['place'])}\n"
+            f"- Light (write it in \"camera_light\"): {plan['light']}{air}\n"
+            f"- Details (show them in \"shot\" or \"action\"): {'; '.join(plan['details'])}\n"
+            f"- Acting, as {how}: {beats}")
+
+
+_PLAN_STOP = frozenset("the and with from into onto over under across near far its his her their this that while small slight "
+                       "slightly soft gentle gently each than then them they have been being very more some same also "
+                       "light lights lighting left right behind".split())
+
+
+def _plan_tokens(text: str) -> set[str]:
+    return {w[:5] for w in re.findall(r"[a-z]{4,}", (text or "").lower()) if w not in _PLAN_STOP}
+
+
+def plan_problems(result, plan: dict | None) -> list[str]:
+    """계획표 항목이 프롬프트에 들어갔는지 낱말 겹침으로 본다 (표현은 바꿔도 되고 핵심 명사가 남아야 한다)."""
+    if not plan or not isinstance(result, dict):
+        return []
+    whole = _plan_tokens(" ".join(str(result.get(k) or "") for k in ("shot", "camera_light", "action", "ending")))
+    action = _plan_tokens(str(result.get("action") or ""))
+    miss: list[str] = []
+    place_missing = [p for p in plan["place"] if not (_plan_tokens(p) & whole)]
+    if len(place_missing) > 1:      # 장소 사물은 하나까지 빠져도 된다
+        miss += [f'place "{p}"' for p in place_missing]
+    if not (_plan_tokens(plan["light"]) & whole):
+        miss.append(f'light "{plan["light"]}"')
+    if plan.get("air") and not (_plan_tokens(plan["air"]) & whole):
+        miss.append(f'air "{plan["air"]}"')
+    det_missing = [d for d in plan["details"] if not (_plan_tokens(d) & whole)]
+    if len(det_missing) == len(plan["details"]):
+        miss += [f'detail "{d}"' for d in det_missing]
+    for i, b in enumerate(plan["acting"], 1):
+        if not (_plan_tokens(b) & action):
+            miss.append(f'acting beat {i} "{b}"')
+    if not miss:
+        return []
+    return ["The director's plan items missing from the prompt: " + "; ".join(miss[:5])
+            + ". Work each into the paragraph named in the plan, in your own words, keeping the plan's key nouns."]
+
+
 def pov_line() -> str:
     return ("The user asked for a first-person view: the camera is the viewer's eyes and the viewer never appears as a "
             "figure. Open \"shot\" with \"First-person POV from\" and the position, show only what lies ahead, and show the "
@@ -693,7 +832,7 @@ def timeline_text(seconds) -> str | None:
 
 def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: dict | None = None, scene: str = "",
                    cat: str | None = None, menus: dict | None = None, rng=None, style: str = "",
-                   staging: str | None = None) -> list[dict]:
+                   staging: str | None = None, plan: dict | None = None) -> list[dict]:
     kn = load_knowledge()
     said = f"{text} {notes}".strip()
     if cat and menus:
@@ -776,6 +915,9 @@ def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: 
     sl = staging_line(staging) if long else ""
     if sl:
         parts.append(sl)
+    pb = plan_block(plan, bool(profile.get("timeline"))) if long else ""
+    if pb:
+        parts.append(pb)
     tl = timeline_text(seconds) if profile.get("timeline") and long else None
     if tl:
         parts.append(tl)
@@ -1356,7 +1498,7 @@ def part_consistency_problems(result: dict) -> list[str]:
 
 
 def check_video(result, profile: dict, said: str, frame: dict | None = None, scene: str = "",
-                cat: str | None = None, menus: dict | None = None, seconds=None) -> list[str]:
+                cat: str | None = None, menus: dict | None = None, seconds=None, plan: dict | None = None) -> list[str]:
     """움직임 초안 검사. 어긋난 점을 영문 문장 목록으로 돌려준다 (그대로 고쳐 쓰기 지시에 넣는다)."""
     long = is_long(profile)
     if not isinstance(result, dict):
@@ -1457,6 +1599,7 @@ def check_video(result, profile: dict, said: str, frame: dict | None = None, sce
             problems += weather_depth_problems(prompt)
             problems += gait_problems(prompt, said)
             problems += timeline_problems(result, seconds, profile)
+            problems += plan_problems(result, plan)
             problems += direction_problems(prompt, said)
             problems += still_size_problems(prompt)
             problems += emotion_body_problems(prompt, said)
@@ -1575,7 +1718,8 @@ def compose(mode: str, scene: str, motion: str, style: str = "", long: bool = Fa
 
 async def draft(call, text: str, notes: str, profile: dict, seconds: float, frame: dict | None = None,
                 scene: str = "", cat: str | None = None, menus: dict | None = None, repair_rounds: int | None = None,
-                rng=None, style: str = "", start: tuple[str, list[str]] | None = None, staging: str | None = None):
+                rng=None, style: str = "", start: tuple[str, list[str]] | None = None, staging: str | None = None,
+                plan: dict | None = None):
     """한 GPU 차례(llm_turn) 안에서 움직임 초안을 받는다. (결과, 회차, 남은 위반) 을 돌려준다.
 
     start=(앞서 쓴 답의 JSON 글, 그 위반 목록) 이면 처음 쓰기 없이 그 답을 고쳐 쓰는 것부터 시작한다(자동 수정)."""
@@ -1583,7 +1727,7 @@ async def draft(call, text: str, notes: str, profile: dict, seconds: float, fram
     said = f"{text} {notes}".strip()
     long = is_long(profile)
     messages = await asyncio.to_thread(build_messages, text, notes, profile, seconds, frame, scene, cat, menus, rng,
-                                       style, staging)
+                                       style, staging, plan)
     schema = build_schema(cat, menus, long=long)
     if start:
         messages = messages + [{"role": "assistant", "content": start[0]}, repair_message(start[1])]
@@ -1599,7 +1743,7 @@ async def draft(call, text: str, notes: str, profile: dict, seconds: float, fram
         else:
             if long and isinstance(result, dict):
                 result["prompt"] = assemble(result)   # 네 단락을 이어 아래(검사·가장 나은 답 고르기·결과)에서 한 글로 쓴다
-            problems = check_video(result, profile, said, frame, scene, cat, menus, seconds)
+            problems = check_video(result, profile, said, frame, scene, cat, menus, seconds, plan)
         if not problems:
             return result, rnd, []
         if result.get("prompt") and (best is None or len(problems) < len(best[1])):
@@ -1615,7 +1759,7 @@ async def draft(call, text: str, notes: str, profile: dict, seconds: float, fram
 async def render(user, ip: str, username: str, slug: str, text: str, notes: str = "", style: str = "",
                  profile_id: str | None = None, seconds=None, image: dict | None = None, image_prompt: str = "",
                  crew=None, read_frame_on: bool = True, rng=None, auto_length: bool = False,
-                 frame: dict | None = None, staging: str | None = None) -> dict:
+                 frame: dict | None = None, staging: str | None = None, plan: dict | None = None) -> dict:
     """요청 → (첫 화면 읽기) → (T2V 장면) → 움직임 초안 → 최종 영상 프롬프트와 설정 제안.
 
     frame 은 이미 읽은 첫 화면 결과다. 주면 첫 화면을 다시 읽지 않는다(채팅의 영상 고치기). 패널은 넘기지 않는다.
@@ -1676,10 +1820,13 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
                 scene_info = await promptx.expand_in_turn(call, text, style, notes, crew)
                 scene = scene_info["body"]
                 advice += [a for a in scene_info.get("advice") or [] if a not in advice]
+            if plan is None and is_long(profile):
+                # 감독이 미리 짠 계획표가 없으면(패널·사진으로 만드는 영상) 같은 차례 안에서 지금 짠다. 실패하면 계획표 없이 쓴다
+                plan = await write_plan(call, text, notes, profile, suggested["seconds"], frame, scene, staging)
             if cat:
                 menus = await asyncio.to_thread(build_menus, said, cat, rng)
                 result, rounds, left = await draft(call, text, notes, profile, suggested["seconds"], frame, scene,
-                                                   cat, menus, rng=rng, style=style, staging=staging)
+                                                   cat, menus, rng=rng, style=style, staging=staging, plan=plan)
                 crew_info = {"category": cat, "title": load_knowledge()["categories"][cat]["title"], "rounds": rounds,
                              "used": not left, "violations": left}
                 if left:
@@ -1688,7 +1835,7 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
                     crew_info.update(describe(result, cat))
             if not cat or left:
                 result, more, left = await draft(call, text, notes, profile, suggested["seconds"], frame, scene, rng=rng,
-                                                 style=style, staging=staging)
+                                                 style=style, staging=staging, plan=plan)
                 rounds += more
             if profile.get("sound") and str(result.get("prompt") or "").strip():
                 sound_info = await write_sound(call, text, notes, str(result["prompt"]), suggested["seconds"], profile)
@@ -1712,12 +1859,31 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
             "crew": crew_info, "scene_crew": (scene_info or {}).get("crew"),
             "scene_violations": (scene_info or {}).get("violations") or [],
             "length_choice": length, "violations": left, "violations_ko": explain_ko(left), "rounds": rounds, "model": model,
+            "plan": plan,
             "frame_model": frame_model if frame else None, "advice": advice}
+
+
+async def plan(user, ip: str, username: str, slug: str, text: str, notes: str = "", profile_id: str | None = None,
+               seconds=None, staging: str | None = None) -> dict | None:
+    """연출 계획표 (감독이 장면 이미지를 그리기 전에 한 번). 실패해도 예외 없이 None."""
+    from . import llm
+
+    text = clean_input(text)
+    notes = str(notes or "").strip()[:2000]
+    pid, profile = profile_of(profile_id)
+    suggested = suggest_settings(profile, seconds)
+    try:
+        async with llm.llm_turn(user, ip, settings.expand_model, "video_plan") as call:
+            return await write_plan(call, text, notes, profile, suggested["seconds"], None, "", staging)
+    except llm.HelperBusy as e:
+        raise PromptxError(str(e), 503) from None
+    except RuntimeError as e:
+        raise PromptxError(str(e), 502) from None
 
 
 async def fix(user, ip: str, username: str, slug: str, text: str, notes: str = "", style: str = "",
               profile_id: str | None = None, seconds=None, current=None, frame=None, scene: str = "",
-              staging: str | None = None) -> dict:
+              staging: str | None = None, plan: dict | None = None) -> dict:
     """패널에 떠 있는 영상 프롬프트의 규칙 위반을 한 GPU 차례 안에서 자동으로 고쳐 쓴다.
 
     새로 쓰지 않고 현재 글과 위반 목록을 모델에 주고 고쳐 받는다(요청의 뜻과 잘 쓴 부분을 지키려고).
@@ -1744,7 +1910,7 @@ async def fix(user, ip: str, username: str, slug: str, text: str, notes: str = "
     else:
         result["prompt"] = str(cur.get("motion") or "")[:4000]
     frame = parse_frame(frame) if isinstance(frame, dict) else None
-    before = check_video(result, profile, said, frame, scene, seconds=suggest_settings(profile, seconds)["seconds"])
+    before = check_video(result, profile, said, frame, scene, seconds=suggest_settings(profile, seconds)["seconds"], plan=plan)
     after, rounds, left = result, 0, []
     if before:
         model = settings.expand_model
@@ -1752,7 +1918,7 @@ async def fix(user, ip: str, username: str, slug: str, text: str, notes: str = "
         try:
             async with llm.llm_turn(user, ip, model, "video_fix") as call:
                 after, rounds, left = await draft(call, text, notes, profile, suggested["seconds"], frame, scene,
-                                                  repair_rounds=2, style=style, start=start, staging=staging)
+                                                  repair_rounds=2, style=style, start=start, staging=staging, plan=plan)
         except llm.HelperBusy as e:
             raise PromptxError(str(e), 503) from None
         except RuntimeError as e:

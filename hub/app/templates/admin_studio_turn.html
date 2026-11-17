@@ -26,6 +26,9 @@
 {% if d.systems %}<h2>시스템 프롬프트 <span class="muted small">(LLM 에게 실제로 보낸 규칙 글, 사용자 글 제외)</span></h2>
 <div class="card small">{% for s in d.systems %}{% for t in s.texts %}<details><summary>{{ s.purpose }} · {{ s.model }}</summary><pre style="white-space:pre-wrap;">{{ t }}</pre></details>{% endfor %}{% endfor %}</div>{% endif %}
 
+{% if d.plan %}<h2>연출 계획표 <span class="muted small">(프롬프트를 쓰기 전에 감독이 짠 장소·빛·공기·디테일·구간별 연기. 장소·빛·디테일은 장면 이미지에, 연기는 영상 글에 들어간다)</span></h2>
+<div class="card small"><pre style="white-space:pre-wrap;">{{ pretty(d.plan) }}</pre></div>{% endif %}
+
 {% if d.scene %}<h2>장면 이미지 프롬프트 <span class="muted small">(글→영상의 첫 단계, 이미지 모델에 들어간 글)</span></h2>
 <div class="card small">
   <div class="muted">크기 {{ d.scene.size }}</div>

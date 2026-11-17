@@ -167,6 +167,19 @@ class FakeDeps:
         return {"prompt": "Replace the background with a warm sunset sky and keep the person unchanged", "violations": [],
                 "rounds": 1}
 
+    PLAN = {"place": ["wet sidewalk", "low curb", "building fronts", "a side street"],
+            "light": "Soft light from the left edges his shoulder; a warm lit window glows far behind.",
+            "air": "Rain crosses the pools of lamp light.", "details": ["a glistening wet sleeve"],
+            "acting": ["head bowed, shoulders rounded", "he lifts his head to check the path", "he walks on at the same pace"]}
+    plan_fail = False
+
+    async def plan(self, user, ip, env, **kw):
+        self.calls.append(("plan", kw))
+        await asyncio.sleep(0.01)
+        if self.plan_fail:
+            raise RuntimeError("plan down")
+        return dict(self.PLAN)
+
     async def expand_image(self, user, ip, text, crew=None):
         self.calls.append(("expand_image", text))
         await asyncio.sleep(0.02)
@@ -1092,6 +1105,40 @@ async def t_walking_request_gets_one_random_staging_for_scene_and_video():
     await d2.pump(); await settle(d2)
     assert t2["state"] == "done" and not t2["work"].get("staging")
     assert [c[1] for c in deps2.calls if c[0] == "render"][0]["staging"] is None
+
+
+async def t_director_plan_feeds_scene_and_video_and_a_failed_plan_does_not_stop_the_request():
+    """11-17: 연출 계획표를 먼저 짜서 장면 이미지 힌트(장소·빛)와 영상 프롬프트(연기·공기)에 같이 준다"""
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    d = via_director(deps)
+    t = new_via(fs, "비 오는 저녁 우산을 쓴 남자가 걸어가는 영상")
+    await d.pump(); await settle(d)
+    assert t["state"] == "done", (t["state"], t.get("error"))
+    order = [c[0] for c in deps.calls if c[0] in ("plan", "expand_image", "render")]
+    assert order == ["plan", "expand_image", "render"], order
+    hint = [c[1] for c in deps.calls if c[0] == "expand_image"][0]
+    assert "wet sidewalk" in hint and "lit window" in hint and "glistening wet sleeve" in hint
+    assert "lifts his head" not in hint                      # 연기 박자는 영상 글의 몫이다
+    rk = [c[1] for c in deps.calls if c[0] == "render"][0]
+    assert rk["plan"]["acting"][1].startswith("he lifts his head") and t["work"]["plan"] == rk["plan"]
+    assert any(k == "plan" for k, _d in fs.events)
+    # 계획표를 못 짜도 요청은 계속된다
+    fs2 = FakeStore(); fs2.patch()
+    deps2 = FakeDeps(fs2); deps2.plan_fail = True
+    d2 = via_director(deps2)
+    t2 = new_via(fs2, "비 오는 저녁 우산을 쓴 남자가 걸어가는 영상")
+    await d2.pump(); await settle(d2)
+    assert t2["state"] == "done" and not t2["work"].get("plan")
+    assert [c[1] for c in deps2.calls if c[0] == "render"][0]["plan"] is None
+    assert any(k == "plan_failed" for k, _d in fs2.events)
+    # 1인칭 요청은 계획표를 짜지 않는다
+    fs3 = FakeStore(); fs3.patch()
+    deps3 = FakeDeps(fs3)
+    d3 = via_director(deps3)
+    t3 = new_via(fs3)
+    await d3.pump(); await settle(d3)
+    assert t3["state"] == "done" and not [c for c in deps3.calls if c[0] == "plan"]
 
 
 async def t_via_image_pipeline_is_one_task_with_only_the_video():
