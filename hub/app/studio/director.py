@@ -327,9 +327,11 @@ class Director:
 
     # ── 레시피 ──
     def recipe_for(self, action: str, quality: str = "fast", sound: bool = False) -> dict | None:
-        """sound=True 면 소리 포함 영상(LTX-2.5, 이미지→영상만, 화질 높음 없음). 아니면 소리 없는 레시피(Wan 등)"""
+        """sound=True 면 소리 포함 영상(LTX, 이미지→영상만): 높음은 증류 없는 LTX-2.3 dev, 없으면(꺼졌으면) 빠른 LTX-2.5 로 내려간다.
+        아니면 소리 없는 레시피(Wan 등)"""
         if sound:
-            return recipes.pick(self.recipe_map, self.disabled, action, "fast", "ltx")
+            r = recipes.pick(self.recipe_map, self.disabled, action, quality, "ltx") if quality == "high" else None
+            return r or recipes.pick(self.recipe_map, self.disabled, action, "fast", "ltx")
         return recipes.pick(self.recipe_map, self.disabled, action, quality)
 
     def engine_of_turn(self, turn: dict | None) -> str:
@@ -790,6 +792,11 @@ class Director:
             if not await store.replan_turn(turn["id"], first_stage(turn.get("action")), recipe["id"], recipe["version"]):
                 return "conflict"
             await self._plan_status(turn, "replanned")
+            if recipes.quality_of(recipe) != self.quality_of_turn(turn):      # 계획한 높음 레시피가 꺼져 낮은 화질로 잇는다: 말없이 바꾸지 않는다
+                try:
+                    await self.message(turn, "assistant", "notice", "높음 레시피를 지금 쓸 수 없어 기본 화질로 만듭니다.", {"level": "warn"})
+                except Exception:  # noqa: BLE001
+                    log.exception("화질 변경 안내 실패")
             asyncio.ensure_future(self.pump())
             return "replan"
         if not await store.approve_turn(turn["id"], "queue"):

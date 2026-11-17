@@ -179,7 +179,19 @@ for bad_v in ({"seconds": 1}, {"seconds": 21}, {"width": 1000}):
 # 엔진을 말하지 않으면 늘 소리 없는 Wan, 소리를 고르면 LTX
 _all = R.load_all()
 assert R.pick(_all, set(), "i2v")["id"] == "wan22_i2v_14b_fast" and R.pick(_all, set(), "i2v", "fast", "ltx")["id"] == "ltx25_i2v_sound"
-assert R.pick(_all, set(), "i2v", "high")["id"] == "wan22_i2v_14b_fast_quality" and R.pick(_all, set(), "i2v", "high", "ltx") is None
+assert R.pick(_all, set(), "i2v", "high")["id"] == "wan22_i2v_14b_fast_quality"
+# 소리 포함 높음: 증류 없는 LTX-2.3 dev (1단계 30스텝·CFG 3.5, 2단계 보정은 증류 LoRA 3스텝)
+assert R.pick(_all, set(), "i2v", "high", "ltx")["id"] == "ltx23_dev_i2v_sound_quality"
+assert R.pick(_all, {"ltx23_dev_i2v_sound_quality"}, "i2v", "high", "ltx") is None       # 꺼지면 높음 없음 (빠른 레시피로 내려가는 건 감독이 한다)
+ltxh = _all["ltx23_dev_i2v_sound_quality"]
+assert R.engine_of(ltxh) == "ltx" and R.quality_of(ltxh) == "high" and ltxh["sound"] is True and ltxh["quality_label"] == "높음"
+assert R.recipe_ok(R.check_recipe(ltxh, {"ltx25_i2v_long"})) and R.quality_variant(ltxh) is None
+assert ltxh["prompt"]["320:S1G"]["inputs"]["cfg"] == 3.5 and ltxh["prompt"]["320:SCH"]["inputs"]["steps"] == 30     # 1단계는 증류 없이
+assert ltxh["prompt"]["320:283"]["inputs"]["guider"] == ["320:S1G", 0] and ltxh["prompt"]["320:282"]["inputs"]["cfg"] == 1
+assert ltxh["prompt"]["320:313"]["inputs"]["text"] and "cartoon" not in ltxh["prompt"]["320:313"]["inputs"]["text"]    # 만화풍 요청을 막지 않는다
+lv = R.build(ltxh, dict(R.sample_values(ltxh), seconds=10, width=1280, height=704))
+assert lv["320:301"]["inputs"]["value"] == 10 and lv["320:312"]["inputs"]["value"] == 1280 and lv["320:299"]["inputs"]["value"] == 704
+assert ltxh["estimate"]["gpu_seconds"] > ltx["estimate"]["gpu_seconds"] and R.default_size(ltxh) == (1280, 704)
 assert R.pick(_all, {"ltx25_i2v_sound"}, "i2v", "fast", "ltx") is None and R.pick(_all, set(), "t2v", "fast", "ltx") is None
 assert R.pick(_all, set(), "image")["id"] == "zimage_turbo_t2i"
 

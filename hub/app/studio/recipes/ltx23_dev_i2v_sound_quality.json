@@ -1,0 +1,793 @@
+{
+ "schema": "studio-recipe-1",
+ "id": "ltx23_dev_i2v_sound_quality",
+ "version": 1,
+ "title": "LTX-2.3 dev 이미지→영상 · 소리 포함 · 높음(증류 없이 30스텝·CFG)",
+ "quality": "high",
+ "quality_label": "높음",
+ "action": "i2v",
+ "engine": "ltx",
+ "sound": true,
+ "video_profile": "ltx25_i2v_long",
+ "negative_source": "node",
+ "source": {
+  "template": "video_ltx2_3_i2v",
+  "exported": "메인(스튜디오 작업공간 ComfyUI, 2026-11-17) 공식 템플릿을 app.graphToPrompt() 로 API 형식으로 바꾼 것. 바꾼 것: 1단계 샘플러를 증류 LoRA 없는 dev 모델로(CFGGuider cfg 3.5 + LTXVScheduler 30스텝), 2단계 보정(증류 LoRA 0.5, 3스텝)은 그대로, 프롬프트 확장기(325·324·326·327·328)를 빼고 프롬프트 글을 인코더에 바로 연결, 너비·높이·길이(초)·시드·프롬프트·첫 화면은 자리 표시, 부정 프롬프트는 '만화·게임' 을 막는 템플릿 문구 대신 중립 문구, 900·901(검사 프레임) 추가",
+  "templates_json_version": "TBD (메인에서 확인)",
+  "frontend_version": "TBD (메인에서 확인)",
+  "removed_nodes": [
+   "320:325",
+   "320:324",
+   "320:326",
+   "320:327",
+   "320:328",
+   "320:314",
+   "320:306"
+  ]
+ },
+ "prompt": {
+  "75": {
+   "inputs": {
+    "filename_prefix": "video/LTX-2.3_dev_i2v",
+    "format": "auto",
+    "format.codec": "auto",
+    "codec": "auto",
+    "video": [
+     "320:310",
+     0
+    ]
+   },
+   "class_type": "SaveVideo"
+  },
+  "269": {
+   "inputs": {
+    "image": "studio/_check/sample.png"
+   },
+   "class_type": "LoadImage"
+  },
+  "900": {
+   "class_type": "ImageFromBatch",
+   "inputs": {
+    "image": [
+     "320:315",
+     0
+    ],
+    "batch_index": 60,
+    "length": 1
+   }
+  },
+  "901": {
+   "class_type": "SaveImage",
+   "inputs": {
+    "filename_prefix": "check_frame",
+    "images": [
+     "900",
+     0
+    ]
+   }
+  },
+  "320:276": {
+   "inputs": {
+    "noise_seed": 42
+   },
+   "class_type": "RandomNoise"
+  },
+  "320:277": {
+   "inputs": {
+    "noise_seed": 875362541677469
+   },
+   "class_type": "RandomNoise"
+  },
+  "320:278": {
+   "inputs": {
+    "video_latent": [
+     "320:288",
+     0
+    ],
+    "audio_latent": [
+     "320:307",
+     1
+    ]
+   },
+   "class_type": "LTXVConcatAVLatent"
+  },
+  "320:279": {
+   "inputs": {
+    "ckpt_name": "ltx-2.3-22b-dev-fp8.safetensors"
+   },
+   "class_type": "LTXVAudioVAELoader"
+  },
+  "320:280": {
+   "inputs": {
+    "sampler_name": "euler"
+   },
+   "class_type": "KSamplerSelect"
+  },
+  "320:281": {
+   "inputs": {
+    "sigmas": "0.85, 0.7250, 0.4219, 0.0"
+   },
+   "class_type": "ManualSigmas"
+  },
+  "320:282": {
+   "inputs": {
+    "cfg": 1,
+    "model": [
+     "320:285",
+     0
+    ],
+    "positive": [
+     "320:284",
+     0
+    ],
+    "negative": [
+     "320:284",
+     1
+    ]
+   },
+   "class_type": "CFGGuider"
+  },
+  "320:283": {
+   "inputs": {
+    "noise": [
+     "320:277",
+     0
+    ],
+    "guider": [
+     "320:S1G",
+     0
+    ],
+    "sampler": [
+     "320:291",
+     0
+    ],
+    "sigmas": [
+     "320:SCH",
+     0
+    ],
+    "latent_image": [
+     "320:318",
+     0
+    ]
+   },
+   "class_type": "SamplerCustomAdvanced"
+  },
+  "320:284": {
+   "inputs": {
+    "positive": [
+     "320:304",
+     0
+    ],
+    "negative": [
+     "320:304",
+     1
+    ],
+    "latent": [
+     "320:307",
+     0
+    ]
+   },
+   "class_type": "LTXVCropGuides"
+  },
+  "320:285": {
+   "inputs": {
+    "lora_name": "ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors",
+    "strength_model": 0.5,
+    "model": [
+     "320:316",
+     0
+    ]
+   },
+   "class_type": "LoraLoaderModelOnly"
+  },
+  "320:287": {
+   "inputs": {
+    "samples": [
+     "320:307",
+     0
+    ],
+    "upscale_model": [
+     "320:311",
+     0
+    ],
+    "vae": [
+     "320:316",
+     2
+    ]
+   },
+   "class_type": "LTXVLatentUpsampler"
+  },
+  "320:288": {
+   "inputs": {
+    "strength": 1,
+    "bypass": [
+     "320:302",
+     0
+    ],
+    "vae": [
+     "320:316",
+     2
+    ],
+    "image": [
+     "320:289",
+     0
+    ],
+    "latent": [
+     "320:287",
+     0
+    ]
+   },
+   "class_type": "LTXVImgToVideoInplace"
+  },
+  "320:289": {
+   "inputs": {
+    "img_compression": 18,
+    "image": [
+     "320:330",
+     0
+    ]
+   },
+   "class_type": "LTXVPreprocess"
+  },
+  "320:290": {
+   "inputs": {
+    "resize_type": "scale dimensions",
+    "resize_type.width": [
+     "320:312",
+     0
+    ],
+    "resize_type.height": [
+     "320:299",
+     0
+    ],
+    "resize_type.crop": "center",
+    "scale_method": "lanczos",
+    "input": [
+     "269",
+     0
+    ]
+   },
+   "class_type": "ResizeImageMaskNode"
+  },
+  "320:291": {
+   "inputs": {
+    "sampler_name": "euler"
+   },
+   "class_type": "KSamplerSelect"
+  },
+  "320:292": {
+   "inputs": {
+    "expression": "a/2",
+    "values.a": [
+     "320:312",
+     0
+    ]
+   },
+   "class_type": "ComfyMathExpression"
+  },
+  "320:294": {
+   "inputs": {
+    "expression": "a/2",
+    "values.a": [
+     "320:299",
+     0
+    ]
+   },
+   "class_type": "ComfyMathExpression"
+  },
+  "320:295": {
+   "inputs": {
+    "width": [
+     "320:292",
+     1
+    ],
+    "height": [
+     "320:294",
+     1
+    ],
+    "length": [
+     "320:323",
+     1
+    ],
+    "batch_size": 1
+   },
+   "class_type": "EmptyLTXVLatentVideo"
+  },
+  "320:296": {
+   "inputs": {
+    "strength": 0.7,
+    "bypass": [
+     "320:302",
+     0
+    ],
+    "vae": [
+     "320:316",
+     2
+    ],
+    "image": [
+     "320:289",
+     0
+    ],
+    "latent": [
+     "320:295",
+     0
+    ]
+   },
+   "class_type": "LTXVImgToVideoInplace"
+  },
+  "320:297": {
+   "inputs": {
+    "samples": [
+     "320:309",
+     1
+    ],
+    "audio_vae": [
+     "320:279",
+     0
+    ]
+   },
+   "class_type": "LTXVAudioVAEDecode"
+  },
+  "320:298": {
+   "inputs": {
+    "expression": "a",
+    "values.a": [
+     "320:300",
+     0
+    ]
+   },
+   "class_type": "ComfyMathExpression"
+  },
+  "320:299": {
+   "inputs": {
+    "value": 704
+   },
+   "class_type": "PrimitiveInt"
+  },
+  "320:300": {
+   "inputs": {
+    "value": 24
+   },
+   "class_type": "PrimitiveInt"
+  },
+  "320:301": {
+   "inputs": {
+    "value": 5
+   },
+   "class_type": "PrimitiveInt"
+  },
+  "320:302": {
+   "inputs": {
+    "value": false
+   },
+   "class_type": "PrimitiveBoolean"
+  },
+  "320:303": {
+   "inputs": {
+    "text": [
+     "320:319",
+     0
+    ],
+    "clip": [
+     "320:317",
+     0
+    ]
+   },
+   "class_type": "CLIPTextEncode"
+  },
+  "320:304": {
+   "inputs": {
+    "frame_rate": [
+     "320:298",
+     0
+    ],
+    "positive": [
+     "320:303",
+     0
+    ],
+    "negative": [
+     "320:313",
+     0
+    ]
+   },
+   "class_type": "LTXVConditioning"
+  },
+  "320:305": {
+   "inputs": {
+    "frames_number": [
+     "320:323",
+     1
+    ],
+    "frame_rate": [
+     "320:298",
+     1
+    ],
+    "batch_size": 1,
+    "audio_vae": [
+     "320:279",
+     0
+    ]
+   },
+   "class_type": "LTXVEmptyLatentAudio"
+  },
+  "320:307": {
+   "inputs": {
+    "av_latent": [
+     "320:283",
+     0
+    ]
+   },
+   "class_type": "LTXVSeparateAVLatent"
+  },
+  "320:308": {
+   "inputs": {
+    "noise": [
+     "320:276",
+     0
+    ],
+    "guider": [
+     "320:282",
+     0
+    ],
+    "sampler": [
+     "320:280",
+     0
+    ],
+    "sigmas": [
+     "320:281",
+     0
+    ],
+    "latent_image": [
+     "320:278",
+     0
+    ]
+   },
+   "class_type": "SamplerCustomAdvanced"
+  },
+  "320:309": {
+   "inputs": {
+    "av_latent": [
+     "320:308",
+     0
+    ]
+   },
+   "class_type": "LTXVSeparateAVLatent"
+  },
+  "320:310": {
+   "inputs": {
+    "fps": [
+     "320:298",
+     0
+    ],
+    "bit_depth": 8,
+    "color_space": "sRGB",
+    "codec": "none",
+    "images": [
+     "320:315",
+     0
+    ],
+    "audio": [
+     "320:297",
+     0
+    ]
+   },
+   "class_type": "CreateVideo"
+  },
+  "320:311": {
+   "inputs": {
+    "model_name": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+   },
+   "class_type": "LatentUpscaleModelLoader"
+  },
+  "320:312": {
+   "inputs": {
+    "value": 1280
+   },
+   "class_type": "PrimitiveInt"
+  },
+  "320:313": {
+   "inputs": {
+    "text": "worst quality, blurry, low resolution, jittery or inconsistent motion, distorted anatomy, extra limbs, watermark, text",
+    "clip": [
+     "320:317",
+     0
+    ]
+   },
+   "class_type": "CLIPTextEncode"
+  },
+  "320:315": {
+   "inputs": {
+    "tile_size": 768,
+    "overlap": 64,
+    "temporal_size": 4096,
+    "temporal_overlap": 4,
+    "samples": [
+     "320:309",
+     0
+    ],
+    "vae": [
+     "320:316",
+     2
+    ]
+   },
+   "class_type": "VAEDecodeTiled"
+  },
+  "320:316": {
+   "inputs": {
+    "ckpt_name": "ltx-2.3-22b-dev-fp8.safetensors"
+   },
+   "class_type": "CheckpointLoaderSimple"
+  },
+  "320:317": {
+   "inputs": {
+    "text_encoder": "gemma_3_12B_it_fp4_mixed.safetensors",
+    "ckpt_name": "ltx-2.3-22b-dev-fp8.safetensors",
+    "device": "default"
+   },
+   "class_type": "LTXAVTextEncoderLoader"
+  },
+  "320:318": {
+   "inputs": {
+    "video_latent": [
+     "320:296",
+     0
+    ],
+    "audio_latent": [
+     "320:305",
+     0
+    ]
+   },
+   "class_type": "LTXVConcatAVLatent"
+  },
+  "320:319": {
+   "inputs": {
+    "value": "a calm test scene"
+   },
+   "class_type": "PrimitiveStringMultiline"
+  },
+  "320:323": {
+   "inputs": {
+    "expression": "a * b + 1",
+    "values.a": [
+     "320:301",
+     0
+    ],
+    "values.b": [
+     "320:300",
+     0
+    ]
+   },
+   "class_type": "ComfyMathExpression"
+  },
+  "320:330": {
+   "inputs": {
+    "resize_type": "scale longer dimension",
+    "resize_type.longer_size": 1536,
+    "scale_method": "area",
+    "input": [
+     "320:290",
+     0
+    ]
+   },
+   "class_type": "ResizeImageMaskNode"
+  },
+  "320:S1G": {
+   "class_type": "CFGGuider",
+   "inputs": {
+    "cfg": 3.5,
+    "model": [
+     "320:316",
+     0
+    ],
+    "positive": [
+     "320:304",
+     0
+    ],
+    "negative": [
+     "320:304",
+     1
+    ]
+   }
+  },
+  "320:SCH": {
+   "class_type": "LTXVScheduler",
+   "inputs": {
+    "steps": 30,
+    "max_shift": 2.05,
+    "base_shift": 0.95,
+    "stretch": true,
+    "terminal": 0.1,
+    "latent": [
+     "320:318",
+     0
+    ]
+   }
+  }
+ },
+ "inject": {
+  "prompt": {
+   "node": "320:319",
+   "input": "value",
+   "type": "string",
+   "role": "positive",
+   "max_len": 8000
+  },
+  "first_frame": {
+   "node": "269",
+   "input": "image",
+   "type": "input_image"
+  },
+  "seed": {
+   "node": "320:277",
+   "input": "noise_seed",
+   "type": "int",
+   "min": 0,
+   "max": 281474976710655
+  },
+  "seconds": {
+   "node": "320:301",
+   "input": "value",
+   "type": "int",
+   "min": 2,
+   "max": 20
+  },
+  "width": {
+   "node": "320:312",
+   "input": "value",
+   "type": "int",
+   "min": 256,
+   "max": 1536,
+   "step": 64
+  },
+  "height": {
+   "node": "320:299",
+   "input": "value",
+   "type": "int",
+   "min": 256,
+   "max": 1536,
+   "step": 64
+  },
+  "check_index": {
+   "node": "900",
+   "input": "batch_index",
+   "type": "int",
+   "min": 0,
+   "max": 480
+  },
+  "save_prefix": [
+   {
+    "node": "75",
+    "input": "filename_prefix",
+    "type": "prefix",
+    "suffix": "video"
+   },
+   {
+    "node": "901",
+    "input": "filename_prefix",
+    "type": "prefix",
+    "suffix": "check_frame"
+   }
+  ]
+ },
+ "fixed": {
+  "negative": {
+   "node": "320:313",
+   "input": "text",
+   "type": "string",
+   "role": "negative"
+  }
+ },
+ "outputs": {
+  "main": {
+   "node": "75",
+   "kind": "video",
+   "ext": [
+    ".mp4",
+    ".webm"
+   ]
+  },
+  "check": {
+   "node": "901",
+   "kind": "image",
+   "ext": [
+    ".png"
+   ]
+  }
+ },
+ "defaults": {
+  "width": 1280,
+  "height": 704,
+  "fps": 24,
+  "frames": 121,
+  "size_rule": "keep_aspect_area",
+  "size_step": 64,
+  "max_side": 1280
+ },
+ "progress": {
+  "bands": [
+   {
+    "key": "load",
+    "label": "준비",
+    "weight": 10,
+    "nodes": [
+     "269",
+     "320:290",
+     "320:330",
+     "320:289",
+     "320:316",
+     "320:317",
+     "320:279",
+     "320:311",
+     "320:285",
+     "320:303",
+     "320:313",
+     "320:304",
+     "320:295",
+     "320:296",
+     "320:305",
+     "320:318",
+     "320:S1G",
+     "320:SCH"
+    ]
+   },
+   {
+    "key": "first",
+    "label": "생성 1/2",
+    "weight": 55,
+    "nodes": [
+     "320:283"
+    ],
+    "sampler": true
+   },
+   {
+    "key": "up",
+    "label": "해상도 올리기",
+    "weight": 5,
+    "nodes": [
+     "320:307",
+     "320:287",
+     "320:288",
+     "320:278",
+     "320:284",
+     "320:282"
+    ]
+   },
+   {
+    "key": "second",
+    "label": "생성 2/2",
+    "weight": 10,
+    "nodes": [
+     "320:308"
+    ],
+    "sampler": true
+   },
+   {
+    "key": "finish",
+    "label": "영상 만들기",
+    "weight": 20,
+    "nodes": [
+     "320:309",
+     "320:315",
+     "320:297",
+     "320:310",
+     "75",
+     "900",
+     "901"
+    ]
+   }
+  ]
+ },
+ "inspect": {
+  "output": "check",
+  "when": "after_delivery"
+ },
+ "estimate": {
+  "gpu_seconds": 74,
+  "ref_frames": 121,
+  "exponent": 0.73,
+  "basis": "2026-11-17 메인 실측: 10초 영상 실행 122.5초(1280×704, 24fps, 1단계 30스텝 CFG 3.5)에서 [추정]으로 5초 74초를 역산 (길이 지수는 LTX-2.5 실측 0.73 을 빌림). 같은 요청의 LTX-2.5 distilled 는 83초"
+ },
+ "limits": {
+  "max_run_seconds": 1800
+ }
+}
