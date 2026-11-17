@@ -248,6 +248,11 @@ class RealDeps:
         from .. import video
         return await video.fix(user, ip, env["username"], env["slug"], kw.pop("text"), **kw)
 
+    async def plan(self, user, ip, env, **kw):
+        """연출 계획표 (장면 이미지를 그리기 전에): 장소·빛·공기·디테일·구간별 연기"""
+        from .. import video
+        return await video.plan(user, ip, env["username"], env["slug"], kw.pop("text"), **kw)
+
     async def inspect(self, user, ip, username, filename, subfolder, expect):
         from .. import promptx
         return await promptx.inspect(user, ip, username, filename, subfolder, expect)
@@ -304,6 +309,11 @@ def video_pick_staging(text: str) -> str | None:
 def video_staging(sid) -> dict | None:
     from .. import video
     return video.staging_of(sid)
+
+
+def video_plan_scene_text(plan) -> str:
+    from .. import video
+    return video.plan_scene_text(plan)
 
 
 def needs_fix(violations: list[str]) -> bool:
@@ -614,8 +624,28 @@ class Director:
                     await self.emit(ctx, True)
                     staging = work.get("staging") or video_pick_staging(ctx.req_text)
                     st = video_staging(staging)
+                    plan = work.get("plan")
+                    if plan is None and not ctx.first_person:
+                        # 연출 계획표: 장소·빛은 장면 이미지에 그리고, 연기·공기·디테일은 영상 글에 쓴다. 못 짜도 요청은 계속한다
+                        try:
+                            plan = await self._guard_llm(ctx, self.deps.plan(
+                                ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text,
+                                profile_id=ctx.recipe["video_profile"], seconds=(ctx.spec or {}).get("seconds"),
+                                staging=staging))
+                        except StepError as e:
+                            if e.code == "queue_wait":
+                                raise
+                            await store.event(turn["id"], "plan_failed", {"code": e.code, "detail": e.detail})
+                            plan = None
+                        for e in bag:
+                            await store.event(turn["id"], "llm_job", {k: e.get(k) for k in LLM_JOB_KEYS})
+                        bag.clear()
+                        await store.event(turn["id"], "plan", {"plan": plan})
                     hint = (self.SCENE_HINT + (self.SCENE_HINT_POV if ctx.first_person else "")
-                            + (" " + st["scene"] if st else ""))
+                            + (" " + st["scene"] if st else "")
+                            + (" " + video_plan_scene_text(plan) if plan else ""))
+                    if len(ctx.req_text) + len(hint) > 1900:     # 이미지 확장 입력은 2000자까지: 긴 요청이면 계획표 문장은 덜어 낸다
+                        hint = self.SCENE_HINT + (self.SCENE_HINT_POV if ctx.first_person else "") + (" " + st["scene"] if st else "")
                     r = await self._guard_llm(ctx, self.deps.expand_image(
                         ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.req_text + "\n" + hint))
                     for e in bag:
@@ -626,9 +656,9 @@ class Director:
                 if not (r.get("prompt") or "").strip():
                     raise StepError("llm_error", "장면 프롬프트를 만들지 못했습니다")
                 work = {**work, "scene_prompt": r["prompt"], "crew": (r.get("crew") or {}).get("category"),
-                        "staging": staging if st else None}
+                        "staging": staging if st else None, "plan": plan}
                 await store.merge_work(turn["id"], {"scene_prompt": r["prompt"], "crew": work.get("crew"),
-                                                    "staging": work["staging"]})
+                                                    "staging": work["staging"], "plan": plan})
         # 장면 이미지 크기: 영상이 같은 비율이 되도록 영상 크기의 비율로, 이미지 레시피의 면적으로
         vsz = recipes.default_size(ctx.recipe, aspect=(ctx.spec or {}).get("aspect"))
         ssz = list(recipes.default_size(img_recipe, photo=(vsz[0], vsz[1])))
@@ -684,10 +714,10 @@ class Director:
                 return None
             if sw.get("prompt"):
                 work = {k: sw[k] for k in ("prompt", "parts", "ko", "profile", "length_choice", "settings", "size",
-                                           "frame_known", "crew", "scene_prompt", "staging") if k in sw}
+                                           "frame_known", "crew", "scene_prompt", "staging", "plan") if k in sw}
                 if ctx.via:
                     # 장면 이미지는 새로 만드니, 영상 프롬프트도 그 이미지를 보고 새로 쓴다 (옛 이미지의 세부가 남지 않게)
-                    work = {k: v for k, v in work.items() if k in ("scene_prompt", "crew", "staging")}
+                    work = {k: v for k, v in work.items() if k in ("scene_prompt", "crew", "staging", "plan")}
                 new_aspect = (req.get("spec") or {}).get("aspect")
                 if new_aspect and new_aspect != ((src.get("request") or {}).get("spec") or {}).get("aspect"):
                     work.pop("size", None)      # 다른 비율을 말했으면 크기를 새로 정한다
@@ -910,7 +940,7 @@ class Director:
                 r = await self._guard_llm(ctx, self.deps.render(
                     ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text, notes="",
                     style="", profile_id=recipe["video_profile"], seconds=seconds, image=image,
-                    image_prompt=work.get("scene_prompt") or "", staging=work.get("staging"),
+                    image_prompt=work.get("scene_prompt") or "", staging=work.get("staging"), plan=work.get("plan"),
                     crew=False if used_default else None, read_frame_on=True, auto_length=True,
                     frame=reuse_frame if attempt == 1 else (reuse_frame or r.get("frame"))))
                 f = None
@@ -922,7 +952,8 @@ class Director:
                         ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text,
                         notes="", style="", profile_id=r["profile"], seconds=r["settings"]["seconds"],
                         current={"ko": r["ko"], "parts": r["parts"], "motion": r["motion"]}, frame=r["frame"],
-                        scene=r.get("scene") or "", staging=work.get("staging")))
+                        scene=r.get("scene") or "", staging=work.get("staging"),
+                        plan=r.get("plan") or work.get("plan")))
                 left = (f if f is not None else r).get("violations") or []
                 blocking = [v for v in left if BLOCKING_RE.search(v)]
                 if not blocking:
@@ -950,7 +981,7 @@ class Director:
                                                                         "words_after", "rounds", "changed", "fixed")})
         work = {"prompt": final, "parts": (f or r).get("parts"), "ko": {**(r.get("ko") or {}), **((f or {}).get("ko") or {})}, "profile": r.get("profile"),
                 "length_choice": r.get("length_choice"), "settings": r.get("settings"), "frame_known": frame_ok,
-                "frame": r.get("frame")}
+                "frame": r.get("frame"), "plan": r.get("plan") or work.get("plan")}
         await store.merge_work(turn["id"], work)
         return work
 

@@ -290,8 +290,14 @@ def test_draft_repairs_once_then_gives_up():
     assert left and rounds == 2
 
 
-def run_render(replies, frame_model=None, **kw):
+PLAN_PREFIX = "You are the director of a small film crew. Before anything is shot"
+
+
+def run_render(replies, frame_model=None, plan_reply=None, **kw):
+    """plan_reply 가 없으면 연출 계획표 호출은 빈 답({})을 받아 계획표 없이 간다 (기존 시험의 답 순서를 지킨다).
+    계획표 호출은 calls 에 넣지 않고 run_render.plan_calls 에 둔다"""
     calls, turns = [], []
+    run_render.plan_calls = plan_calls = []
     fake = types.ModuleType("app.llm")
 
     class HelperBusy(Exception):
@@ -302,6 +308,9 @@ def run_render(replies, frame_model=None, **kw):
         turns.append((model, purpose))
 
         async def call(payload):
+            if str(payload["messages"][0]["content"]).startswith(PLAN_PREFIX):
+                plan_calls.append(payload)
+                return {"message": {"content": json.dumps(plan_reply or {})}}
             calls.append(payload)
             return {"message": {"content": json.dumps(fit(replies.pop(0), payload))}}
         yield call
@@ -1536,6 +1545,79 @@ def test_walking_staging_is_random_uniform_and_skipped_when_the_user_decides():
         assert not video.direction_problems(st["video"], "x"), sid
         assert not video.lateral_camera_problems(st["video"], "x"), sid
         assert not video.blocking_problems(st["video"]), sid
+
+
+RAIN_PLAN = {"place": ["wet sidewalk", "low curb", "building fronts", "a side street"],
+             "light": "Soft light from the left outlines his shoulder; a warm lit window glows far behind.",
+             "air": "Rain crosses the pools of lamp light and drips from the umbrella edge.",
+             "details": ["a glistening wet sleeve", "scuffed boots"],
+             "acting": ["head bowed with rounded shoulders", "he lifts his head to check the path", "he walks on at the same pace"]}
+
+
+def test_director_plan_is_cleaned_asked_for_and_fed_into_the_prompt():
+    """11-17: 프롬프트 전에 연출 계획표(장소·빛·공기·디테일·구간별 연기)를 짜고 프롬프트에 모두 쓰게 한다"""
+    assert video.clean_plan(dict(RAIN_PLAN)) == RAIN_PLAN
+    assert video.clean_plan({**RAIN_PLAN, "place": ["one", "two"]}) is None                     # 장소는 3~4개
+    assert video.clean_plan({**RAIN_PLAN, "acting": ["a", "b"]}) is None                         # 연기는 정확히 3개
+    assert video.clean_plan({**RAIN_PLAN, "light": "빛이 비춘다"}) is None                        # 영어만
+    assert video.clean_plan({**RAIN_PLAN, "details": ["a sleeve without a tear"]}) is None       # 긍정 표현만
+    assert video.clean_plan("x") is None and video.clean_plan({}) is None
+    ltx = video.profile_of("ltx25_i2v_long")[1]
+    wan = video.profile_of("wan22_i2v_mid")[1]
+    call = Call([RAIN_PLAN])
+    plan = asyncio.run(video.write_plan(call, "비 오는 저녁 걷는 남자", "", ltx, 10.0, FRAME, SCENE, "side_lr"))
+    assert plan == RAIN_PLAN
+    sent = call.calls[0]["messages"]
+    assert sent[0]["content"].startswith("You are the director of a small film crew. Before anything is shot")
+    assert "left to right" in sent[1]["content"] and "FIRST FRAME" in sent[1]["content"]
+    # 두 번 틀리면 None (계획표 없이 간다)
+    assert asyncio.run(video.write_plan(Call([{}, {}]), "x", "", ltx, 5.0)) is None
+    # 영상 프롬프트 요청에 계획표가 들어간다. 시간 구간 프로필은 '세 구간', 아니면 '세 단계'
+    user = video.build_messages("남자가 걷는 영상", "", ltx, 10.0, FRAME, SCENE, plan=RAIN_PLAN)[1]["content"]
+    assert "DIRECTOR'S PLAN" in user and "wet sidewalk" in user and "three timed beats" in user and "lit window" in user
+    user = video.build_messages("남자가 걷는 영상", "", wan, 5.0, FRAME, SCENE, plan=RAIN_PLAN)[1]["content"]
+    assert "three successive stages" in user
+    assert "DIRECTOR'S PLAN" not in video.build_messages("남자가 걷는 영상", "", ltx, 10.0, FRAME, SCENE)[1]["content"]
+    assert video.plan_scene_text(RAIN_PLAN).startswith("Director's plan for this picture") and "lifts his head" not in video.plan_scene_text(RAIN_PLAN)
+    assert video.plan_scene_text(None) == ""
+
+
+def test_plan_items_must_show_in_the_prompt():
+    full = {"shot": "A man stands on a wet sidewalk beside a low curb, building fronts behind, a side street opening to one side, a glistening wet sleeve and scuffed boots.",
+            "camera_light": "Soft light from the left outlines his shoulder; a warm lit window glows far behind while rain crosses the pools of lamp light.",
+            "action": "From 0 to 3 seconds, his head bowed with rounded shoulders. From 3 to 7 seconds, he lifts his head to check the path. "
+                      "From 7 to 10 seconds, he walks on at the same pace.", "ending": "He keeps walking."}
+    assert video.plan_problems(full, RAIN_PLAN) == []
+    assert video.plan_problems(full, None) == []
+    miss = dict(full, camera_light="A cool grey light falls evenly.")
+    p = video.plan_problems(miss, RAIN_PLAN)
+    assert p and "light" in p[0] and "air" in p[0]
+    nobeat = dict(full, action="From 0 to 3 seconds, he walks. From 3 to 7 seconds, he walks. From 7 to 10 seconds, he walks.")
+    p = video.plan_problems(nobeat, RAIN_PLAN)
+    assert p and "acting beat 2" in p[0]
+    one_place = dict(full, shot=full["shot"].replace("a low curb, ", ""))
+    assert video.plan_problems(one_place, RAIN_PLAN) == []               # 장소 사물은 하나까지 빠져도 된다
+    two_places = dict(full, shot="A man stands in a quiet scene with a glistening wet sleeve.")
+    assert any("place" in x for x in video.plan_problems(two_places, RAIN_PLAN))
+
+
+def test_render_writes_the_plan_in_the_same_turn_when_none_was_given_and_checks_it():
+    ltx_long = LTX_LONG
+    replies = [ltx_long] * 3 + [SOUND_OK]                                    # 계획표 항목이 빠져 고쳐 쓰기를 두 번 하고, 소리 단락을 쓴다
+    result, calls, turns = run_render(replies, username="alice", slug="alice-main", text="비 오는 저녁 걷는 남자", seconds=5,
+                                      profile_id="ltx25_i2v_long", image_prompt=SCENE, crew=False, plan_reply=RAIN_PLAN)
+    assert result["plan"] == RAIN_PLAN and len(run_render.plan_calls) == 1
+    assert turns == [(settings.expand_model, "video_expand")]                  # 계획표도 같은 LLM 차례 안
+    assert "DIRECTOR'S PLAN" in calls[0]["messages"][1]["content"]
+    assert any("director's plan items missing" in v for v in result["violations"])   # 이 글에는 계획표 항목이 없다
+    given, calls, _ = run_render([ltx_long] * 3 + [SOUND_OK], username="alice", slug="alice-main", text="x", seconds=5,
+                                 profile_id="ltx25_i2v_long", image_prompt=SCENE, crew=False, plan=RAIN_PLAN)
+    assert given["plan"] == RAIN_PLAN and run_render.plan_calls == []          # 감독이 준 계획표는 다시 짜지 않는다
+
+
+def test_ltx_profile_allows_the_longer_detailed_prompt():
+    ltx = video.profile_of("ltx25_i2v_long")[1]
+    assert ltx["words"] == [260, 450] and video.aim_words(ltx) == 360 and video.part_min(ltx) == 45
 
 
 def test_locked_camera_size_claim_without_the_word_frame_is_caught():

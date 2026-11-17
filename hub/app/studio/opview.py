@@ -90,7 +90,8 @@ def repro_prompt(turn: dict, events: list[dict], atts: dict[str, dict]) -> dict 
 
 
 PURPOSE_KO = {"prompt_expand": "이미지 프롬프트 확장", "video_frame": "첫 화면 읽기", "video_expand": "영상 프롬프트 작성",
-              "video_fix": "영상 프롬프트 고치기", "edit_prompt": "편집 지시문", "image_inspect": "결과 검사"}
+              "video_fix": "영상 프롬프트 고치기", "edit_prompt": "편집 지시문", "image_inspect": "결과 검사",
+              "video_plan": "연출 계획표"}
 
 
 def system_prompts(llm_jobs: list) -> list[dict]:
@@ -143,6 +144,7 @@ def build_detail(turn: dict, events: list[dict], jobs: list[dict], llm_calls: li
                    "events": [e.get("detail") for e in events if e.get("kind") in ("scene_start", "scene_done", "scene_resumed", "scene_node_timing")],
                    "expand": [d for d in by_kind.get("expand", []) if d and d.get("scene")]}
                   if work.get("scene_prompt") else None),
+        "plan": work.get("plan"),
         "prompt": {"text": work.get("prompt"), "parts": work.get("parts"), "ko": work.get("ko"), "profile": work.get("profile")},
         "length": {"tier": lc.get("tier"), "reason": lc.get("reason"), "by": LENGTH_BY_KO.get(lc.get("by"), lc.get("by"))},
         "crew": {"work": work.get("crew"), "events": [d.get("crew") for d in by_kind.get("render", []) + by_kind.get("expand", [])

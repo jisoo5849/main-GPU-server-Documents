@@ -7,10 +7,10 @@
 
 # purpose(llm_turn) → 감독 단계 (8.4)
 PURPOSE_STAGE = {"video_frame": "frame", "video_expand": "prompt", "video_fix": "fix", "image_inspect": "inspect",
-                 "prompt_expand": "prompt", "edit_prompt": "prompt"}
+                 "prompt_expand": "prompt", "edit_prompt": "prompt", "video_plan": "prompt"}
 # 글→영상을 장면 이미지 → 영상 두 단계로 만들 때의 단계 이름. 사용자에게는 이미지라는 말을 쓰지 않는다
 PIPELINE_PURPOSE_STAGE = {"prompt_expand": "prompt", "video_frame": "motion", "video_expand": "motion", "video_fix": "motion",
-                          "image_inspect": "inspect"}
+                          "image_inspect": "inspect", "video_plan": "prompt"}
 
 STAGE_TEXT = {
     ("frame", "queued"): "첫 화면 읽기 차례를 기다리는 중",
