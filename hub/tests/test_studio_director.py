@@ -33,6 +33,7 @@ settings.studio_inspect = "idle"
 
 REC = recipes.load_all()["wan22_i2v_14b_fast"]
 LTX = recipes.load_all()["ltx25_i2v_sound"]
+LTXH = recipes.load_all()["ltx23_dev_i2v_sound_quality"]
 SOUND_TEXT = "Audio: A soft room tone and a calm instrumental score of warm piano that fades with the final frame."
 IMG = recipes.load_all()["zimage_turbo_t2i"]
 # P3 레시피는 메인에서 내보낸 파일이 오기 전이라 기존 레시피를 고쳐 시험용으로 만든다 (감독 코드만 본다)
@@ -1235,6 +1236,102 @@ async def t_ltx_plan_card_estimates_by_length_and_fix_keeps_the_audio_paragraph(
         assert 40 <= plan_msgs(fs2)[0]["data"]["plan"]["estimate_s"] <= 70
     finally:
         settings.studio_ask_long_seconds = old
+
+
+async def t_ltx_dev_high_quality_with_sound_plans_then_runs_the_dev_recipe():
+    fs = FakeStore(); fs.patch()
+    fs.thread_cfg = {}
+    deps = FakeDeps(fs, rec=LTXH)
+    deps.queue = no_queue
+    d = D.Director(deps, {LTX["id"]: LTX, LTXH["id"]: LTXH, IMG["id"]: IMG})
+    t = new_via(fs, rec=LTXH, spec={"seconds": 10.0})
+    await d.pump(); await settle(d)
+    assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))        # 높음은 늘 계획 카드를 거친다
+    plan = plan_msgs(fs)[0]["data"]["plan"]
+    assert plan["quality"] == "높음" and plan["seconds"] == 10.0 and plan["frames"] == 241 and plan["fps"] == 24
+    assert 100 <= plan["estimate_s"] <= 150, plan["estimate_s"]                     # 실측 10초 122초
+    assert [c[1]["extra_data"]["studio"]["recipe"] for c in deps.calls if c[0] == "submit"] == [IMG["id"]]    # 영상은 승인 뒤에
+    assert await d.approve(t) == "ok"
+    await d.pump(); await settle(d)
+    assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+    subs = [c[1] for c in deps.calls if c[0] == "submit"]
+    assert [s["extra_data"]["studio"]["recipe"] for s in subs] == [IMG["id"], LTXH["id"]]
+    body = subs[1]["prompt"]
+    assert body["320:301"]["inputs"]["value"] == 10 and body["320:319"]["inputs"]["value"].endswith(SOUND_TEXT)
+    assert body["320:S1G"]["inputs"]["cfg"] == 3.5 and body["900"]["inputs"]["batch_index"] == 120
+    assert d.quality_of_turn(t) == "high" and d.engine_of_turn(t) == "ltx"
+    # 엔진·화질 고르기: 높음은 dev, 빠름은 2.5 distilled, 높음이 꺼지면 빠른 LTX 로 내려간다
+    assert d.recipe_for("i2v", "high", True)["id"] == LTXH["id"] and d.recipe_for("i2v", "fast", True)["id"] == LTX["id"]
+    d.disabled.add(LTXH["id"])
+    assert d.recipe_for("i2v", "high", True)["id"] == LTX["id"]
+    # 다시 만들기가 꺼진 dev 레시피를 못 쓰면 같은 엔진의 빠른 레시피로 잇는다 (소리를 잃지 않는다)
+    assert d.recipe_for("i2v", d.quality_of_turn(t), d.engine_of_turn(t) == "ltx")["id"] == LTX["id"]
+
+
+async def t_engine_choice_covers_sound_quality_and_fallbacks():
+    from app.studio import engine
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    full = {REC["id"]: REC, HQ["id"]: HQ, LTX["id"]: LTX, LTXH["id"]: LTXH, IMG["id"]: IMG}
+    d = D.Director(deps, full)
+
+    def pick(dd=d, opts=None, text="비 오는 거리의 남자 영상", action="t2v", carry="new", last=None, high=False, sd=True):
+        return engine.choose(dd, opts or {}, text, action, carry, last, high, high and action in ("i2v", "t2v"), sd)
+
+    # 기본: 소리 포함 (빠름)
+    c = pick()
+    assert c["use_sound"] and not c["notes"] and d.recipe_for("i2v", "fast", True)["id"] == LTX["id"]
+    # 높음을 골라도 소리 포함이 기본: 증류 없는 dev
+    c = pick(high=True)
+    assert c["use_sound"] and c["high_ok"] and not c["notes"] and d.recipe_for("i2v", "high", True)["id"] == LTXH["id"]
+    # 소리 칸 없음 → 소리 없는 Wan (높음이면 Wan 높음), 글의 '소리 없이' 도 같다
+    c = pick(opts={"sound": "off"}, high=True)
+    assert not c["use_sound"] and c["high_ok"] and not c["notes"]
+    assert not pick(text="소리 없이 비 오는 거리 영상")["use_sound"] and not pick(text="무음 영상으로", high=True)["use_sound"]
+    # 칸이 글보다 우선, 칸 포함 + 높음 = dev
+    assert pick(opts={"sound": "on"}, text="소리 없이 만들어줘", high=True)["use_sound"]
+    # 설정 기본이 꺼지면 소리 없음, 칸이 켜면 소리 포함
+    assert not pick(sd=False)["use_sound"] and pick(opts={"sound": "on"}, sd=False)["use_sound"]
+    # 이어 말하기는 앞 요청의 엔진을 잇는다. 앞이 소리 없는 영상이면 이유를 알린다
+    c = pick(carry="revise", last={"recipe_id": REC["id"]})
+    assert not c["use_sound"] and any("앞 영상이 소리 없는" in n for n in c["notes"])
+    assert pick(carry="revise", last={"recipe_id": LTXH["id"]}, high=True)["use_sound"]
+    assert pick(carry="revise", last={"recipe_id": LTX["id"]})["use_sound"]
+    # dev 레시피가 꺼지면(없으면) 높음을 고른 요청은 화질을 지켜 소리 없는 Wan 높음으로 + 안내.
+    # 소리를 칸에서 직접 포함으로 고르면 빠른 LTX 로 내려가고 화질이 낮아졌음을 안내한다
+    d2 = D.Director(deps, full); d2.disabled.add(LTXH["id"])
+    c = pick(dd=d2, high=True)
+    assert not c["use_sound"] and c["high_ok"] and any("소리가 없는 영상" in n for n in c["notes"])
+    c = pick(dd=d2, opts={"sound": "on"}, high=True)
+    assert c["use_sound"] and not c["high_ok"] and any("기본 화질" in n for n in c["notes"])
+    assert d2.recipe_for("i2v", "fast", True)["id"] == LTX["id"]
+    # 소리 포함 높음 레시피가 처음부터 없으면 높음은 소리 없는 Wan 높음 + 안내
+    d3 = D.Director(deps, {REC["id"]: REC, HQ["id"]: HQ, LTX["id"]: LTX, IMG["id"]: IMG})
+    c = pick(dd=d3, high=True)
+    assert not c["use_sound"] and c["high_ok"] and any("소리가 없는 영상" in n for n in c["notes"])
+    # 빠른 LTX 만 꺼지고 dev 는 살아 있으면 빠름 요청은 소리 없는 Wan, 높음은 dev
+    d4 = D.Director(deps, full); d4.disabled.add(LTX["id"])
+    assert not pick(dd=d4)["use_sound"] and pick(dd=d4, high=True)["use_sound"]
+    # LTX 가 모두 꺼지면 소리 없이 + 안내, 이미지 레시피가 없으면 글→영상만 소리 없이 (사진→영상은 소리 포함)
+    d5 = D.Director(deps, {REC["id"]: REC, HQ["id"]: HQ, IMG["id"]: IMG})
+    c = pick(dd=d5)
+    assert not c["use_sound"] and any("준비 중" in n for n in c["notes"])
+    d6 = D.Director(deps, {REC["id"]: REC, HQ["id"]: HQ, LTX["id"]: LTX, LTXH["id"]: LTXH})
+    assert not pick(dd=d6, action="t2v")["use_sound"] and pick(dd=d6, action="i2v")["use_sound"]
+    # 영상이 아니거나 감독이 없으면 건드리지 않는다
+    assert pick(action="image") == {"use_sound": False, "high_ok": False, "notes": []}
+    assert engine.choose(None, {}, "x", "t2v", "new", None, True, True, True) == {"use_sound": False, "high_ok": True, "notes": []}
+    # 승인 대기 중 dev 가 꺼지면 같은 소리 포함 빠른 레시피로 잇고 알린다 (소리·계획 카드 없이 높음이 사라지는 것을 말없이 두지 않는다)
+    fs = FakeStore(); fs.patch(); fs.thread_cfg = {}
+    deps5 = FakeDeps(fs, rec=LTXH); deps5.queue = no_queue
+    d7 = via_director(deps5, LTXH)
+    d7.recipe_map[LTX["id"]] = LTX
+    t = new_via(fs, rec=LTXH, spec={"seconds": 10.0})
+    await d7.pump(); await settle(d7)
+    assert t["state"] == "awaiting_approval"
+    d7.disabled.add(LTXH["id"])
+    assert await d7.approve(t) == "replan"
+    assert any(m["kind"] == "notice" and "기본 화질" in m["body"] for m in fs.messages)
 
 
 async def t_resume_after_prompt_done_skips_llm():

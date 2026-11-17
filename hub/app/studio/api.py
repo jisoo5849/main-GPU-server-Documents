@@ -21,7 +21,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from .. import security
 from ..config import settings
-from . import files, intent, store
+from . import engine, files, intent, store
 from .ws import hub
 
 log = logging.getLogger("mgs.studio.api")
@@ -308,29 +308,13 @@ async def _post_message(request: Request, user: dict, thread: dict):
     want_high = options.get("quality") == "high" or (dec["carry"] == "revise" and last and d
                                                      and d.quality_of_turn(last["turn"]) == "high")
     high_ok = want_high and dec["action"] in ("i2v", "t2v", "edit")
-    # 소리: 칸 > 글('소리 없이') > 화질 높음(소리 없는 Wan) > 이어 말하기가 잇는 앞 요청 > 설정 기본. 소리 포함은 LTX-2.5 (화질 높음 없음)
-    use_sound, sound_notes = False, []
-    if d and dec["action"] in ("i2v", "t2v"):
-        opt = options.get("sound")
-        if opt is not None:
-            use_sound = opt == "on"
-        elif intent.MUTE_RE.search(text):
-            use_sound = False
-        elif want_high:
-            sound_notes.append("화질 높음은 소리가 없는 영상으로 만들었습니다. 소리를 넣으려면 소리 칸을 '포함'으로 바꿔 주세요")
-        elif dec["carry"] == "revise" and last:
-            use_sound = d.engine_of_turn(last["turn"]) == "ltx"
-        else:
-            use_sound = bool(settings.studio_sound_default)
-        if use_sound and (d.recipe_for("i2v", sound=True) is None
-                          or (dec["action"] == "t2v" and d.recipe_for("image") is None)):
-            sound_notes.append("소리 포함 영상은 지금 준비 중이라 소리 없이 만들었습니다")
-            use_sound = False
-        if use_sound and want_high:
-            sound_notes.append("소리 포함 영상은 화질 높음이 없어 기본 화질로 만들었습니다")
-            high_ok = False
+    # 소리·엔진 고르기 (engine.py): 칸 > 글('소리 없이') > 이어 말하기가 잇는 앞 요청의 엔진 > 설정 기본(포함).
+    # 소리 포함은 LTX (높음은 증류 없는 LTX-2.3 dev, 빠름은 LTX-2.5 distilled)
+    ch = engine.choose(d, options, text, dec["action"], dec["carry"], last["turn"] if last else None, want_high, high_ok,
+                       bool(settings.studio_sound_default))
+    use_sound, sound_notes, high_ok = ch["use_sound"], ch["notes"], ch["high_ok"]
     if use_sound:
-        recipe = d.recipe_for("i2v", "fast", True)
+        recipe = d.recipe_for("i2v", "high" if high_ok else "fast", True)
     else:
         recipe = d.recipe_for(dec["action"], "high" if high_ok else "fast") if d and dec["action"] != "answer" else None
     if dec["action"] == "answer" or recipe is None:
