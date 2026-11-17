@@ -654,6 +654,7 @@ Rules:
 - Honour every word of the request first; it is the top priority. Build a clear arc: an opening that sets the place, a development, and a closing image.
 - The scene seconds add up to {seconds} (within {tolerance}).
 - Vary the shot sizes (wide, medium, close) and keep the screen direction of a moving subject the same from scene to scene.
+- A shot that the next scene continues must end with the main subject still fully in frame, because the next scene starts from its last frame: never let the subject walk out of frame, cross to the edge or disappear in such a shot; keep a moving subject in frame with a tracking camera, or let it walk toward or away from the camera.
 - Every scene can be shot from one still frame: one place, one main action, no cut inside it, no flashback, and no text, signs or logos.
 - Name no brands, songs, artists or real people. English everywhere except "title_ko", "logline_ko" and "ko".
 - A person must not be added when the request has none."""
@@ -675,6 +676,17 @@ STORY_SCHEMA = {"type": "object", "required": ["title_ko", "logline_ko", "bible"
                                                          "action": {"type": "string"}, "sound": {"type": "string"},
                                                          "ko": {"type": "string"}}}}}}
 CHAIN_MAX = 3     # 마지막 프레임으로 이어 쓰기는 연속 세 번까지 (색·선명도 변화가 쌓이는 것을 막는 [추정] 값)
+# 요청에 사람이 있는지 (구성안 검사용). crew.PERSON_WORDS 에 없는 '남성'·'여성' 등을 더한다: 11-17 메인 첫 긴 영상에서
+# "…걸어가는 남성을 30초 영상으로" 가 '사람 없는 요청'으로 읽혀 구성안을 세 번 고쳐 쓰고도 거짓 위반이 남았다.
+# (crew 쪽 목록은 '남성 향수' 같은 제품 요청 때문에 그대로 둔다)
+STORY_PERSON_KO_RE = re.compile(r"남성|여성|남자|여자|사람|인물|소년|소녀|어린이|아기|노인|할머니|할아버지|엄마|아빠|어머니|아버지"
+                                r"|학생|커플|연인|부부|가족|친구|청년|주인공|군인|경찰|의사|선수|댄서|가수|배우|요리사|직원|손님|그녀")
+
+
+# 대상이 화면 밖으로 나가는 말. 다음 장면이 이 장면의 마지막 프레임에서 시작하면 빈 화면에서 시작하게 된다
+# (11-17 메인 첫 긴 영상: "static wide shot, walks left to right across the frame" → 마지막 프레임이 빈 거리 → 다음 장면이 사람 없이 시작)
+EXIT_RE = re.compile(r"\b(?:exits?|exiting|leaves? (?:the )?(?:frame|shot|screen)|out of (?:the )?(?:frame|shot|view)|off[- ]?(?:screen|frame)"
+                     r"|disappears?|vanish(?:es)?|across the (?:whole )?frame|to the (?:right|left|far) edge|reach(?:es)? the (?:right|left) edge)\b", re.I)
 
 
 def story_counts(seconds: float) -> tuple[int, int, int]:
@@ -754,6 +766,11 @@ def story_problems(data, seconds: float, person_ok: bool = True) -> list[str]:
                 p.append(f'Scene {i}: character "{_s(c)}" is not in bible.characters.')
         if sc.get("continues") is True and (i == 1 or place != prev_place):
             p.append(f"Scene {i} cannot continue: " + ("it is the first scene." if i == 1 else "it is in a different place from the previous scene."))
+        nxt = scenes[i] if i < len(scenes) else None          # i 는 1부터라 scenes[i] 가 다음 장면이다
+        if isinstance(nxt, dict) and nxt.get("continues") is True and EXIT_RE.search(_s(sc.get("action")) + " " + _s(sc.get("shot"))):
+            p.append(f"Scene {i + 1} continues scene {i}, so scene {i} must end with the subject still in frame, but its action "
+                     f'or shot lets it leave ("{EXIT_RE.search(_s(sc.get("action")) + " " + _s(sc.get("shot"))).group(0)}"): '
+                     "keep the subject in frame with a tracking camera or a walk toward or away from the camera.")
         for k in ("shot", "action", "sound"):
             v = _s(sc.get(k))
             if not v:
@@ -802,7 +819,8 @@ def clean_story(data, seconds: float) -> dict | None:
                 "sound": _s(sc.get("sound")), "ko": _s(sc.get("ko"))}
         if not (item["shot"] and item["action"] and item["ko"]) or HANGUL_RE.search(item["shot"] + item["action"] + item["sound"]):
             return None
-        item["continues"] = bool(sc.get("continues") is True and prev is not None and prev["place"] == item["place"])
+        item["continues"] = bool(sc.get("continues") is True and prev is not None and prev["place"] == item["place"]
+                                 and not EXIT_RE.search(prev["action"] + " " + prev["shot"]))    # 앞 장면이 대상을 내보내면 잇지 않는다
         scenes.append(item)
         prev = item
     if len(scenes) < 2:
@@ -872,7 +890,17 @@ def scene_notes(story: dict, i: int) -> str:
     lines.append(f"This shot: {sc['shot']}. Action: {sc['action']}")
     if sc.get("sound"):
         lines.append(f"Sound: {sc['sound']}")
+    if i + 1 < n and story["scenes"][i + 1].get("continues"):
+        # 다음 장면이 이 장면의 마지막 프레임에서 시작한다: 끝에 대상이 화면 안에 있어야 한다 (11-17 메인)
+        lines.append("The next shot begins from this shot's last frame: keep the main subject fully visible in frame until "
+                     "the very last frame, with the camera following it if it moves.")
     return "\n".join(lines)[:1990]
+
+
+def scene_has_person(story: dict, i: int) -> bool:
+    """이 장면에 설정집의 사람(동물이 아닌)이 나오는가. 이어 받은 첫 화면에 사람이 없으면 새 장면 이미지로 바꾸는 데 쓴다"""
+    looks = {c["id"]: c["look"] for c in story["bible"]["characters"]}
+    return any(PERSON_NOTE_RE.search(looks.get(c, "")) for c in story["scenes"][i].get("characters") or [])
 
 
 def scene_image_text(story: dict, i: int, plan: dict | None = None, limit: int = 1750) -> str:
@@ -896,7 +924,8 @@ async def write_story(call, text: str, notes: str, seconds: float, rounds: int =
     system = STORY_SYSTEM.format(seconds=int(seconds), keys=", ".join(MUSIC_KEYS), count=count, n_min=n_min, n_max=n_max,
                                  tolerance=story_tolerance(seconds))
     user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "")
-    person_ok = bool(PERSON_REQ_RE.search(text or "")) or bool(PERSON_REQ_RE.search(notes or ""))
+    said = f"{text or ''} {notes or ''}"
+    person_ok = bool(PERSON_REQ_RE.search(said)) or bool(STORY_PERSON_KO_RE.search(said))
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     best, problems, rnd = None, ["no answer"], 0
     for rnd in range(1, rounds + 1):

@@ -72,7 +72,7 @@ LONG_SCENE_OVERHEAD = 135      # 장면마다 GPU 실행 말고 더 걸리는 �
 LONG_TAIL = 70                 # 음악 약 40 + 합치기 약 30 [추정]
 LONG_RESUME_MAX = 5            # 허브가 다시 시작될 때 긴 영상을 자동으로 이어 가는 횟수 (재시작이 되풀이될 때 끝없이 돌지 않게)
 LONG_SCENE_KEYS = ("plan", "scene_prompt", "image_rel", "first_from", "prompt", "ko", "profile", "settings", "frame_known",
-                   "clip_rel", "clip_sha", "last_rel", "check_rel", "seed", "seconds", "violations")
+                   "frame_people", "no_chain", "clip_rel", "clip_sha", "last_rel", "check_rel", "seed", "seconds", "violations")
 # 고쳐 쓴 뒤에도 남으면 그 프롬프트로 영상을 만들지 않는 위반: 요청과 다른 장면(예시 베끼기)이다 (11-16 파일럿 요청)
 BLOCKING_RE = re.compile(r"copies the EXAMPLE|describes a different scene")
 PLAN_ACTIONS = [{"id": "approve", "label": "승인"}, {"id": "cancel", "label": "취소"}]
@@ -355,6 +355,11 @@ def video_scene_image_text(story: dict, i: int, plan) -> str:
     return video.scene_image_text(story, i, plan)
 
 
+def video_scene_has_person(story: dict, i: int) -> bool:
+    from .. import video
+    return video.scene_has_person(story, i)
+
+
 def needs_fix(violations: list[str]) -> bool:
     """낱말 수 위반만 남았으면 고치지 않는다 (5.12). 모델은 낱말 수를 잘 줄이지 못하고 해롭지 않다"""
     return any(not WORDS_ONLY_RE.match(v) for v in violations or [])
@@ -452,7 +457,9 @@ class Director:
         if pct is not None:
             pct = max(pct, int(L.get("pct") or 0))     # 줄지 않게
             L["pct"] = pct
-        return {"title": progress.CARD["long"][0], "stage": phase, "text": text, "pct": pct, "band": None,
+        # 채팅 화면은 % 가 있으면 '띠 · %' 만 보인다: 띠 자리에 '장면 1/3 · 생성' 을 넣는다 (지금 단계의 % 는 빼고 전체 % 만, 11-17 메인)
+        band = re.sub(r"\s*\d+%$", "", text).strip() if pct is not None else None
+        return {"title": progress.CARD["long"][0], "stage": phase, "text": text, "pct": pct, "band": band or None,
                 "chips": progress.chips("long", False, phase)}
 
     def schedule_emit(self, ctx: Ctx):
@@ -999,7 +1006,7 @@ class Director:
         ctx.motion, ctx.has_fix = False, False
         notes = video_scene_notes(story, i)
         prev = scenes[i - 1] if i > 0 else {}
-        chain = prev.get("last_rel") if sc.get("continues") and prev.get("last_rel") else None
+        chain = prev.get("last_rel") if sc.get("continues") and prev.get("last_rel") and not st.get("no_chain") else None
         if chain and not files.result_path(chain):
             chain = None                      # 앞 장면의 마지막 프레임이 없어졌다: 새 장면 이미지로 시작한다
         await store.event(turn["id"], "long_scene_start", {"index": i, "seconds": sc["seconds"], "chain": bool(chain)})
@@ -1045,6 +1052,13 @@ class Director:
         # 3) 영상 글 (첫 화면 읽기 → 계획표·설정집을 지킨 네 단락 + 음악 없는 소리 단락)
         if not st.get("prompt"):
             st.update(await self._long_prompt(ctx, work, i, st, notes))
+            if st.get("first_from") == "last" and st.get("frame_people") == 0 and video_scene_has_person(story, i):
+                # 앞 장면이 사람이 화면 밖으로 나간 채 끝나 이어 받은 첫 화면이 비었다 (11-17 메인 첫 긴 영상). 빈 화면에서 영상 모델이
+                # 사람을 새로 지어내게 두지 않고, 계획표만 남겨 새 장면 이미지로 다시 시작한다
+                await store.event(turn["id"], "long_chain_empty", {"index": i})
+                st = {**({"plan": st["plan"]} if st.get("plan") else {}), "no_chain": True}
+                await self._save_scene(ctx, work, scenes, i, st)
+                return await self._long_scene(ctx, work, scenes, i)
             await self._save_scene(ctx, work, scenes, i, st)
         # 4) 장면 영상 (실패하면 시드를 바꿔 한 번 더)
         got = await self._long_video(ctx, work, i, st)
@@ -1126,8 +1140,10 @@ class Director:
         await store.event(turn["id"], "render", {"index": i, "profile": r.get("profile"), "violations": r.get("violations"),
                                                  "rounds": r.get("rounds"), "fixed": bool(f), "left": left,
                                                  "frame_read": self.deps.frame_known(r.get("frame"))})
+        people = (r.get("frame") or {}).get("people") if isinstance(r.get("frame"), dict) else None
         return {"prompt": final, "ko": {**(r.get("ko") or {}), **((f or {}).get("ko") or {})}, "profile": r.get("profile"),
-                "settings": r.get("settings"), "frame_known": self.deps.frame_known(r.get("frame")), "violations": left}
+                "settings": r.get("settings"), "frame_known": self.deps.frame_known(r.get("frame")), "violations": left,
+                "frame_people": people if isinstance(people, int) and not isinstance(people, bool) else None}
 
     async def _long_video(self, ctx: Ctx, work: dict, i: int, st: dict) -> dict | None:
         recipe = ctx.recipe

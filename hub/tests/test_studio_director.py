@@ -1820,6 +1820,56 @@ async def t_long_video_remakes_a_changed_clip_and_the_scene_chained_to_it():
             settings.results_dir = old
 
 
+async def t_long_progress_shows_scene_and_step_next_to_the_percent():
+    """11-17 메인: 채팅 진행 카드는 % 가 있으면 '띠 · %' 만 보여 '장면 1/3' 이 안 보였다. 띠 자리에 장면·단계를 넣는다"""
+    fs = FakeStore(); fs.patch()
+    t = long_turn(fs)
+    ctx = D.Ctx(t, USER, ENV, LTX)
+    ctx.long = {"phase": "scenes", "i": 0, "n": 3, "done": 1, "pct": 0}
+    ctx.sub, ctx.stage, ctx.text = True, "generate", "생성 45%"
+    ctx.tracker.pct = 45
+    p = D.Director._long_progress(ctx)
+    assert p["band"] == "장면 1/3 · 생성" and p["pct"] == int(100 * 1.45 / 4) and p["text"] == "장면 1/3 · 생성 45%"
+    ctx.long.update(phase="music")
+    ctx.sub, ctx.text = False, "배경음악 만드는 중"
+    p = D.Director._long_progress(ctx)
+    assert p["band"] == "배경음악 만드는 중" and p["pct"] >= 36                      # 줄지 않는다
+    ctx.long.update(phase="story")
+    ctx.text = "구성안 쓰는 중"
+    p = D.Director._long_progress(ctx)
+    assert p["pct"] is None and p["band"] is None and p["text"] == "구성안 쓰는 중"     # % 없는 단계는 글만
+
+
+async def t_long_video_empty_chained_frame_falls_back_to_a_scene_image():
+    """11-17 메인: 앞 장면이 사람이 나간 채 끝나 이어 받은 첫 화면에 사람이 없으면, 그 장면은 새 장면 이미지로 다시 시작한다"""
+    old = settings.results_dir
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            base_render = deps.render
+
+            async def render(user, ip, env, **kw):
+                r = await base_render(user, ip, env, **kw)
+                r["frame"] = {"subject": "an empty wet street", "people": 0 if not kw.get("image_prompt") else 1}
+                return r
+            deps.render = render
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+            await d.pump(); await settle(d, 15)
+            assert t["state"] == "done", (t["state"], t.get("error"))
+            assert ("long_chain_empty", {"index": 1}) in fs.events
+            subs = [recipe_of(c) for c in deps.calls if c[0] == "submit"]
+            assert subs == [IMG["id"], LTX["id"], IMG["id"], LTX["id"], IMG["id"], LTX["id"], MUS["id"]]
+            s1 = t["work"]["scenes"][1]
+            assert s1["first_from"] == "image" and s1["no_chain"] and s1["frame_people"] == 1
+            assert len([c for c in deps.calls if c[0] == "plan"]) == 3                # 계획표는 다시 쓰지 않는다
+        finally:
+            settings.results_dir = old
+
+
 async def _first_submit(deps, n=1, timeout=3.0):
     for _ in range(int(timeout / 0.01)):
         if len([c for c in deps.calls if c[0] == "submit"]) >= n:
