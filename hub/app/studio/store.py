@@ -343,11 +343,13 @@ async def approve_turn(turn_id, stage: str = "queue") -> bool:
     return r == 1
 
 
-async def replan_turn(turn_id, stage: str, recipe_id: str, version: int) -> bool:
-    """레시피 판이 바뀐 뒤의 승인: 새 판으로 처음부터 다시 계획한다 (work 와 plan 을 비운다)"""
+async def replan_turn(turn_id, stage: str, recipe_id: str, version: int, keep: dict | None = None) -> bool:
+    """레시피 판이 바뀐 뒤의 승인: 새 판으로 처음부터 다시 계획한다 (work 와 plan 을 비운다).
+    keep 은 비운 work 에 남길 값이다 (긴 영상의 구성안은 레시피와 상관없어 그대로 두고 계획 카드만 다시 보인다)"""
     r = await db.fetchval(
-        "UPDATE chat_turns SET state='pending', stage=$2, work='{}'::jsonb, plan=NULL, recipe_id=$3, recipe_version=$4, "
-        "updated_at=now() WHERE id=$1 AND state='awaiting_approval' RETURNING 1", turn_id, stage, recipe_id, version)
+        "UPDATE chat_turns SET state='pending', stage=$2, work=COALESCE($5::jsonb, '{}'::jsonb), plan=NULL, recipe_id=$3, "
+        "recipe_version=$4, updated_at=now() WHERE id=$1 AND state='awaiting_approval' RETURNING 1",
+        turn_id, stage, recipe_id, version, _j(keep) if keep else None)
     return r == 1
 
 
