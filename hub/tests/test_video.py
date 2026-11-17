@@ -1736,6 +1736,25 @@ def test_clean_story_fits_total_and_breaks_long_chains():
     assert video.clean_story(_story(music={"tags": "", "bpm": 999, "key": "Q"}), 30)["music"]["key"] == "C major"
 
 
+def test_a_shot_that_the_next_scene_continues_keeps_the_subject_in_frame():
+    """11-17 메인 첫 긴 영상: 1장면이 'static wide shot, walks left to right across the frame' 이라 사람이 화면 밖으로 나간 채 끝났고,
+    그 마지막 프레임에서 시작한 2장면은 빈 거리에서 시작했다"""
+    s = _story()
+    s["scenes"][0]["action"] = "The man walks from left to right across the frame under his umbrella."
+    probs = video.story_problems(s, 30)
+    assert any("must end with the subject still in frame" in p and "across the frame" in p for p in probs), probs
+    st = video.clean_story(s, 30)
+    assert [x["continues"] for x in st["scenes"]] == [False, False, False]        # 고치지 못하면 잇지 않고 새 장면 이미지로
+    assert not any("still in frame" in p for p in video.story_problems(STORY_OK, 30))
+    st = video.clean_story(STORY_OK, 30)
+    assert "The next shot begins from this shot's last frame" in video.scene_notes(st, 0)      # 2장면이 1장면을 잇는다
+    assert "last frame" not in video.scene_notes(st, 1) and "last frame" not in video.scene_notes(st, 2)
+    assert "end with the main subject still fully in frame" in video.STORY_SYSTEM
+    assert video.scene_has_person(st, 0)
+    cat = _story(bible=dict(STORY_OK["bible"], characters=[{"id": "A", "look": "a small orange tabby cat with white paws"}]))
+    assert not video.scene_has_person(video.clean_story(cat, 30), 0)               # 동물은 사람 검사에서 뺀다
+
+
 def test_scene_notes_and_image_text_carry_the_bible():
     st = video.clean_story(STORY_OK, 30)
     notes = video.scene_notes(st, 1)
@@ -1765,6 +1784,12 @@ def test_write_story_repairs_then_accepts():
     # 쓸 수 없는 모양이면 None
     story, left, _ = asyncio.run(video.write_story(Call(["x", "x", "x"]), "남자 영상", "", 30))
     assert story is None and left
+    # '남성'·'여성' 도 사람이 있는 요청이다 (11-17 메인: '남성' 요청이 사람 없는 요청으로 읽혀 세 번 고쳐 쓰고도 거짓 위반이 남았다)
+    for req in ("비 오는 저녁 우산을 쓴 남성이 걷는 30초 영상", "여성이 카페에서 책을 읽는 30초 영상"):
+        story, left, rounds = asyncio.run(video.write_story(Call([STORY_OK]), req, "", 30))
+        assert left == [] and rounds == 1, (req, left)
+    story, left, rounds = asyncio.run(video.write_story(Call([STORY_OK, STORY_OK, STORY_OK]), "비 오는 골목 풍경 30초 영상", "", 30))
+    assert any("adds a person" in p for p in left)                  # 사람이 없는 요청은 그대로 검사한다
 
 
 def test_storyboard_runs_in_one_llm_turn_and_clamps_length():
