@@ -1069,6 +1069,31 @@ def via_director(deps, rec=None):
     return D.Director(deps, {rec["id"]: rec, IMG["id"]: IMG})
 
 
+async def t_walking_request_gets_one_random_staging_for_scene_and_video():
+    """11-17: 방향을 안 정한 보행 요청은 연출 하나를 골라 장면 이미지 힌트와 영상 프롬프트에 똑같이 준다"""
+    fs = FakeStore(); fs.patch()
+    deps = FakeDeps(fs)
+    d = via_director(deps)
+    t = new_via(fs, "비오는 저녁 우산을 쓰고 걸어가는 남성을 영상으로 만들어줘")
+    await d.pump(); await settle(d)
+    assert t["state"] == "done", (t["state"], t.get("error"))
+    sid = t["work"].get("staging")
+    assert sid in ("side_lr", "side_rl", "away", "toward"), sid
+    hint = [c[1] for c in deps.calls if c[0] == "expand_image"][0]
+    from app import video
+    assert video.STAGINGS[sid]["scene"] in hint
+    rk = [c[1] for c in deps.calls if c[0] == "render"][0]
+    assert rk["staging"] == sid
+    # 방향을 말했거나 1인칭이면 연출을 고르지 않는다
+    fs2 = FakeStore(); fs2.patch()
+    deps2 = FakeDeps(fs2)
+    d2 = via_director(deps2)
+    t2 = new_via(fs2, "왼쪽에서 오른쪽으로 걸어가는 남성을 영상으로 만들어줘")
+    await d2.pump(); await settle(d2)
+    assert t2["state"] == "done" and not t2["work"].get("staging")
+    assert [c[1] for c in deps2.calls if c[0] == "render"][0]["staging"] is None
+
+
 async def t_via_image_pipeline_is_one_task_with_only_the_video():
     fs = FakeStore(); fs.patch()
     deps = FakeDeps(fs)

@@ -1515,6 +1515,29 @@ def test_ltx_draft_repairs_a_missing_timeline_and_passes_the_clip_length():
     assert any("timed beats" in p for p in video.check_video(LONG_I2V, ltx, "x", FRAME, SCENE, seconds=5.0))
 
 
+def test_walking_staging_is_random_uniform_and_skipped_when_the_user_decides():
+    import collections
+    import random
+    r = random.Random(7)
+    c = collections.Counter(video.pick_staging("비오는 저녁 우산을 쓰고 풀이 죽은 채 걸어가는 남성", r) for _ in range(3000))
+    assert set(c) == {"side_lr", "side_rl", "away", "toward"}
+    assert abs(c["away"] - 1000) < 120 and abs(c["toward"] - 1000) < 120 and abs(c["side_lr"] + c["side_rl"] - 1000) < 120
+    assert abs(c["side_lr"] - c["side_rl"]) < 120
+    for said in ("왼쪽에서 오른쪽으로 걸어가는 남성", "1인칭 시점으로 걷는 영상", "카메라가 따라가며 걷는 여자", "앞으로 걸어가는 남자",
+                 "거대로봇이 걸어다니는 영상", "고양이가 걷는 영상", "비 오는 거리 영상"):
+        assert video.pick_staging(said, r) is None, said
+    ltx = video.profile_of("ltx25_i2v_long")[1]
+    wan = video.profile_of("wan22_i2v_long")[1]
+    user = video.build_messages("남성이 걸어가는 영상", "", ltx, 10.0, FRAME, SCENE, staging="side_rl")[1]["content"]
+    assert "STAGING" in user and "from right to left" in user and "tracks alongside" in user
+    assert "STAGING" not in video.build_messages("남성이 걸어가는 영상", "", ltx, 10.0, FRAME, SCENE)[1]["content"]
+    # 고른 연출의 영상 글은 방향·카메라 검사를 통과하는 쌍이다
+    for sid, st in video.STAGINGS.items():
+        assert not video.direction_problems(st["video"], "x"), sid
+        assert not video.lateral_camera_problems(st["video"], "x"), sid
+        assert not video.blocking_problems(st["video"]), sid
+
+
 def test_locked_camera_size_claim_without_the_word_frame_is_caught():
     """11-17 두 번째 메인 실측: 'keeping the subject's size and position constant' + 'moving closer to the camera'"""
     t = ("The camera is locked off at a low angle, keeping the subject's size and position constant. The man walks forward at a "
