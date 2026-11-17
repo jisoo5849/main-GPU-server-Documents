@@ -222,6 +222,9 @@
             "library_office_props",
             "studio_props",
             "korean_traditional",
+            "korean_everyday",
+            "kitchen_props",
+            "bathroom_props",
             "seed_props"
           ]
         },
@@ -302,6 +305,8 @@
             "cave",
             "ruins",
             "underwater",
+            "grassland",
+            "polar",
             "otherworld_",
             "seed_landscape"
           ]

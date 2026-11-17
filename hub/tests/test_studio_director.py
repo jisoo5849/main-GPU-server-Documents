@@ -1200,6 +1200,10 @@ async def t_ltx_sound_video_runs_both_stages_with_seconds_and_the_audio_paragrap
     assert d2.recipe_for("i2v")["id"] == REC["id"] and d2.engine_of_turn({"recipe_id": REC["id"]}) == "wan"
 
 
+async def no_queue():
+    return []
+
+
 async def t_ltx_plan_card_estimates_by_length_and_fix_keeps_the_audio_paragraph():
     fs = FakeStore(); fs.patch()
     fs.thread_cfg = {"ask": "ask_long"}
@@ -1207,6 +1211,7 @@ async def t_ltx_plan_card_estimates_by_length_and_fix_keeps_the_audio_paragraph(
     settings.studio_ask_long_seconds = 0
     try:
         deps = FakeDeps(fs, rec=LTX)
+        deps.queue = no_queue                                   # 장면 이미지 작업이 정리 중인 대기열 행이 예상 시간에 끼지 않게 (시간 맞춤 시험)
         deps.violation_seq = [["Travel keeps one steady pace for the whole clip."]]      # 영상 글을 고치게 한다
         d = via_director(deps, LTX)
         t = new_via(fs, rec=LTX, spec={"seconds": 20.0})
@@ -1223,6 +1228,7 @@ async def t_ltx_plan_card_estimates_by_length_and_fix_keeps_the_audio_paragraph(
         # 5초 요청은 더 짧게 잡는다
         fs2 = FakeStore(); fs2.patch(); fs2.thread_cfg = {"ask": "ask_long"}
         deps2 = FakeDeps(fs2, rec=LTX)
+        deps2.queue = no_queue
         d2 = via_director(deps2, LTX)
         t2 = new_via(fs2, rec=LTX, spec={"seconds": 5.0})
         await d2.pump(); await settle(d2)
