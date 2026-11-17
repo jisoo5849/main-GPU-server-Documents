@@ -1515,6 +1515,15 @@ def test_ltx_draft_repairs_a_missing_timeline_and_passes_the_clip_length():
     assert any("timed beats" in p for p in video.check_video(LONG_I2V, ltx, "x", FRAME, SCENE, seconds=5.0))
 
 
+def test_locked_camera_size_claim_without_the_word_frame_is_caught():
+    """11-17 두 번째 메인 실측: 'keeping the subject's size and position constant' + 'moving closer to the camera'"""
+    t = ("The camera is locked off at a low angle, keeping the subject's size and position constant. The man walks forward at a "
+         "slow pace, then continues walking toward the camera.")
+    assert video.still_size_problems(t)
+    assert not video.still_size_problems("The camera is locked off. The vase keeps the same size. A man walks forward.")
+    assert not video.still_size_problems("The camera is locked off, keeping the subject's size constant. The man walks from left to right.")
+
+
 def test_sideways_travel_does_not_pair_with_a_camera_that_moves_in_depth():
     """11-17 메인 실측: 카메라 후퇴 + 남자 left to right → 영상에서 남자가 카메라 쪽으로 오다 5초에 화면 밖으로"""
     bad = "The camera moves backward ahead of the man at the same pace. From 0 to 3 seconds, the man walks from left to right slowly."

@@ -1098,7 +1098,9 @@ STILL_SIZE_CLAIM_RE = re.compile(
     r"\b(?:size|scale)\b(?:\s+[\w'’-]+){0,4}?\s+in (?:the )?(?:frame|shot|picture|view)\b[^.;]{0,40}\b(?:stays?|remains?|is|kept|held|holds?)\b"
     r"[^.;]{0,16}\b(?:same|constant|unchanged|fixed|steady|unchanging)\b"
     r"|\b(?:same|constant|unchanged|fixed|steady|unchanging) (?:apparent |on-screen )?(?:size|scale) in (?:the )?(?:frame|shot|picture|view)\b"
-    r"|\bunchanged in (?:size|scale)\b", re.I)
+    r"|\bunchanged in (?:size|scale)\b"
+    r"|\b(?:keep(?:s|ing)|hold(?:s|ing)|maintain(?:s|ing)|stays?|remains?)\s+(?:the |his |her |their |its )?(?:[\w'’-]+['’]s )?"
+    r"(?:size|scale|distance)(?:\s+(?:and|or)\s+(?:position|framing|scale|size))?\s+(?:constant|the same|unchanged|steady|fixed)\b", re.I)
 
 
 TIME_RANGE_RE = re.compile(r"\b(?:from )?(\d+)(?::\d\d)?\s*(?:to|[-–—])\s*(\d+)(?::\d\d)?\s*(?:s\b|secs?\b|seconds?\b)", re.I)
