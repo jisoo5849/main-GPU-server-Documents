@@ -295,6 +295,17 @@ class RealDeps:
         await self.hub.send(user_id, event)
 
 
+def video_pick_staging(text: str) -> str | None:
+    """방향을 정하지 않은 보행 요청의 연출(옆 추적 좌·우, 멀어짐, 다가옴)을 무작위로 고른다 (video.pick_staging)"""
+    from .. import video
+    return video.pick_staging(text)
+
+
+def video_staging(sid) -> dict | None:
+    from .. import video
+    return video.staging_of(sid)
+
+
 def needs_fix(violations: list[str]) -> bool:
     """낱말 수 위반만 남았으면 고치지 않는다 (5.12). 모델은 낱말 수를 잘 줄이지 못하고 해롭지 않다"""
     return any(not WORDS_ONLY_RE.match(v) for v in violations or [])
@@ -601,7 +612,10 @@ class Director:
                     ctx.bag = bag
                     ctx.stage = "prompt"
                     await self.emit(ctx, True)
-                    hint = self.SCENE_HINT + (self.SCENE_HINT_POV if ctx.first_person else "")
+                    staging = work.get("staging") or video_pick_staging(ctx.req_text)
+                    st = video_staging(staging)
+                    hint = (self.SCENE_HINT + (self.SCENE_HINT_POV if ctx.first_person else "")
+                            + (" " + st["scene"] if st else ""))
                     r = await self._guard_llm(ctx, self.deps.expand_image(
                         ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.req_text + "\n" + hint))
                     for e in bag:
@@ -611,8 +625,10 @@ class Director:
                                                           "people": r.get("people"), "scene": True})
                 if not (r.get("prompt") or "").strip():
                     raise StepError("llm_error", "장면 프롬프트를 만들지 못했습니다")
-                work = {**work, "scene_prompt": r["prompt"], "crew": (r.get("crew") or {}).get("category")}
-                await store.merge_work(turn["id"], {"scene_prompt": r["prompt"], "crew": work.get("crew")})
+                work = {**work, "scene_prompt": r["prompt"], "crew": (r.get("crew") or {}).get("category"),
+                        "staging": staging if st else None}
+                await store.merge_work(turn["id"], {"scene_prompt": r["prompt"], "crew": work.get("crew"),
+                                                    "staging": work["staging"]})
         # 장면 이미지 크기: 영상이 같은 비율이 되도록 영상 크기의 비율로, 이미지 레시피의 면적으로
         vsz = recipes.default_size(ctx.recipe, aspect=(ctx.spec or {}).get("aspect"))
         ssz = list(recipes.default_size(img_recipe, photo=(vsz[0], vsz[1])))
@@ -668,10 +684,10 @@ class Director:
                 return None
             if sw.get("prompt"):
                 work = {k: sw[k] for k in ("prompt", "parts", "ko", "profile", "length_choice", "settings", "size",
-                                           "frame_known", "crew", "scene_prompt") if k in sw}
+                                           "frame_known", "crew", "scene_prompt", "staging") if k in sw}
                 if ctx.via:
                     # 장면 이미지는 새로 만드니, 영상 프롬프트도 그 이미지를 보고 새로 쓴다 (옛 이미지의 세부가 남지 않게)
-                    work = {k: v for k, v in work.items() if k in ("scene_prompt", "crew")}
+                    work = {k: v for k, v in work.items() if k in ("scene_prompt", "crew", "staging")}
                 new_aspect = (req.get("spec") or {}).get("aspect")
                 if new_aspect and new_aspect != ((src.get("request") or {}).get("spec") or {}).get("aspect"):
                     work.pop("size", None)      # 다른 비율을 말했으면 크기를 새로 정한다
@@ -894,7 +910,7 @@ class Director:
                 r = await self._guard_llm(ctx, self.deps.render(
                     ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text, notes="",
                     style="", profile_id=recipe["video_profile"], seconds=seconds, image=image,
-                    image_prompt=work.get("scene_prompt") or "",
+                    image_prompt=work.get("scene_prompt") or "", staging=work.get("staging"),
                     crew=False if used_default else None, read_frame_on=True, auto_length=True,
                     frame=reuse_frame if attempt == 1 else (reuse_frame or r.get("frame"))))
                 f = None
@@ -906,7 +922,7 @@ class Director:
                         ctx.user, turn.get("client_ip") and str(turn["client_ip"]) or "", ctx.env, text=ctx.req_text,
                         notes="", style="", profile_id=r["profile"], seconds=r["settings"]["seconds"],
                         current={"ko": r["ko"], "parts": r["parts"], "motion": r["motion"]}, frame=r["frame"],
-                        scene=r.get("scene") or ""))
+                        scene=r.get("scene") or "", staging=work.get("staging")))
                 left = (f if f is not None else r).get("violations") or []
                 blocking = [v for v in left if BLOCKING_RE.search(v)]
                 if not blocking:

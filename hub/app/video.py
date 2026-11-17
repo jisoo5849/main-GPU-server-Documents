@@ -401,6 +401,63 @@ def pov_wanted(said: str) -> bool:
     return bool(POV_RE.search(said or "")) or any(POV_TERM in d["terms"] for d in crew_lib.query(said).video_demands)
 
 
+# ── 보행 장면 연출 무작위 (11-17 러다이트 비교): 방향을 안 정한 보행 요청은 옆 추적(좌→우·우→좌)·멀어짐·다가옴을 고르게 섞는다 ──
+# 장면 이미지가 영상의 첫 화면이 되므로 고른 연출을 장면 이미지 힌트와 영상 프롬프트에 똑같이 준다.
+WALK_KO_RE = re.compile(r"걸어|걷[는고다지]|걸으|걸음|산책|거닐|배회|행진")
+WALKER_KO_RE = re.compile(r"남성|여성|남자|여자|사람|소년|소녀|아이|노인|할아버지|할머니|청년|인물|사내|신사|숙녀|아저씨|아주머니")
+DIRECTION_KO_RE = re.compile(r"왼쪽|오른쪽|좌에서|우에서|방향|카메라 ?(?:쪽|를 ?향|앞)|정면|옆모습|옆에서|측면|뒷모습|뒤에서|뒤를|따라|추적|고정|다가|멀어|앞으로|뒤로|클로즈|줌|팬|트래킹|드론|항공|위에서|아래에서|회전|돌아")
+
+STAGINGS = {
+    "side_lr": {
+        "scene": ("Compose it as a side-on view: the walker seen in full-body profile, facing right and walking left to right, "
+                  "placed in the left half of the frame with open space ahead of them on the right."),
+        "video": ("The walker travels from left to right in side profile. The camera tracks alongside at the same pace and the "
+                  "same distance, so the walker keeps the same place in the frame while the background slides past from right to left."),
+    },
+    "side_rl": {
+        "scene": ("Compose it as a side-on view: the walker seen in full-body profile, facing left and walking right to left, "
+                  "placed in the right half of the frame with open space ahead of them on the left."),
+        "video": ("The walker travels from right to left in side profile. The camera tracks alongside at the same pace and the "
+                  "same distance, so the walker keeps the same place in the frame while the background slides past from left to right."),
+    },
+    "away": {
+        "scene": ("Compose it from behind: the walker seen from the back at some distance, walking away from the camera along the "
+                  "street, centered, with the way ahead open in front of them."),
+        "video": ("The walker moves away from the camera, seen from behind. The camera follows behind at the same pace and the "
+                  "same distance, moving forward, so the walker keeps about the same size in the frame while the street opens ahead."),
+    },
+    "toward": {
+        "scene": ("Compose it from the front: the walker seen facing the camera at a medium-wide distance, walking toward it, so "
+                  "there is room for the figure to come closer and still fit the frame."),
+        "video": ("The walker moves toward the camera. The camera is locked off, so the figure grows larger in the frame as they "
+                  "approach; they start at a medium-wide distance and stay fully inside the frame until the end of the clip."),
+    },
+}
+
+
+def pick_staging(said: str, rng=None) -> str | None:
+    """방향·카메라를 정하지 않은 '사람이 걷는' 요청이면 연출 id 를 무작위(세 갈래 균등, 옆 추적은 좌우 반반)로 고른다.
+    1인칭, 사용자가 방향·카메라를 말한 요청, 사람이 아닌 대상은 None."""
+    said = said or ""
+    if pov_wanted(said) or not WALK_KO_RE.search(said) or not WALKER_KO_RE.search(said) or DIRECTION_KO_RE.search(said):
+        return None
+    r = rng or random.SystemRandom()
+    kind = r.choice(["side", "away", "toward"])
+    return r.choice(["side_lr", "side_rl"]) if kind == "side" else kind
+
+
+def staging_of(sid) -> dict | None:
+    return STAGINGS.get(sid) if isinstance(sid, str) else None
+
+
+def staging_line(sid) -> str:
+    st = staging_of(sid)
+    if not st:
+        return ""
+    return ("STAGING (decided for this clip and already used to compose the first frame; keep it exactly, in every paragraph, "
+            "and never change the direction or the camera relationship): " + st["video"])
+
+
 def pov_line() -> str:
     return ("The user asked for a first-person view: the camera is the viewer's eyes and the viewer never appears as a "
             "figure. Open \"shot\" with \"First-person POV from\" and the position, show only what lies ahead, and show the "
@@ -624,7 +681,8 @@ def timeline_text(seconds) -> str | None:
 
 
 def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: dict | None = None, scene: str = "",
-                   cat: str | None = None, menus: dict | None = None, rng=None, style: str = "") -> list[dict]:
+                   cat: str | None = None, menus: dict | None = None, rng=None, style: str = "",
+                   staging: str | None = None) -> list[dict]:
     kn = load_knowledge()
     said = f"{text} {notes}".strip()
     if cat and menus:
@@ -704,6 +762,9 @@ def build_messages(text: str, notes: str, profile: dict, seconds: float, frame: 
         parts.append("No person appears in the request, the scene or the first frame; keep every human out of the clip.")
     if hides_hands(said):
         parts.append("The hands stay hidden: never write hand, finger, palm, fist, holding, grip, grasp or clutching.")
+    sl = staging_line(staging) if long else ""
+    if sl:
+        parts.append(sl)
     tl = timeline_text(seconds) if profile.get("timeline") and long else None
     if tl:
         parts.append(tl)
@@ -1503,7 +1564,7 @@ def compose(mode: str, scene: str, motion: str, style: str = "", long: bool = Fa
 
 async def draft(call, text: str, notes: str, profile: dict, seconds: float, frame: dict | None = None,
                 scene: str = "", cat: str | None = None, menus: dict | None = None, repair_rounds: int | None = None,
-                rng=None, style: str = "", start: tuple[str, list[str]] | None = None):
+                rng=None, style: str = "", start: tuple[str, list[str]] | None = None, staging: str | None = None):
     """한 GPU 차례(llm_turn) 안에서 움직임 초안을 받는다. (결과, 회차, 남은 위반) 을 돌려준다.
 
     start=(앞서 쓴 답의 JSON 글, 그 위반 목록) 이면 처음 쓰기 없이 그 답을 고쳐 쓰는 것부터 시작한다(자동 수정)."""
@@ -1511,7 +1572,7 @@ async def draft(call, text: str, notes: str, profile: dict, seconds: float, fram
     said = f"{text} {notes}".strip()
     long = is_long(profile)
     messages = await asyncio.to_thread(build_messages, text, notes, profile, seconds, frame, scene, cat, menus, rng,
-                                       style)
+                                       style, staging)
     schema = build_schema(cat, menus, long=long)
     if start:
         messages = messages + [{"role": "assistant", "content": start[0]}, repair_message(start[1])]
@@ -1543,7 +1604,7 @@ async def draft(call, text: str, notes: str, profile: dict, seconds: float, fram
 async def render(user, ip: str, username: str, slug: str, text: str, notes: str = "", style: str = "",
                  profile_id: str | None = None, seconds=None, image: dict | None = None, image_prompt: str = "",
                  crew=None, read_frame_on: bool = True, rng=None, auto_length: bool = False,
-                 frame: dict | None = None) -> dict:
+                 frame: dict | None = None, staging: str | None = None) -> dict:
     """요청 → (첫 화면 읽기) → (T2V 장면) → 움직임 초안 → 최종 영상 프롬프트와 설정 제안.
 
     frame 은 이미 읽은 첫 화면 결과다. 주면 첫 화면을 다시 읽지 않는다(채팅의 영상 고치기). 패널은 넘기지 않는다.
@@ -1607,7 +1668,7 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
             if cat:
                 menus = await asyncio.to_thread(build_menus, said, cat, rng)
                 result, rounds, left = await draft(call, text, notes, profile, suggested["seconds"], frame, scene,
-                                                   cat, menus, rng=rng, style=style)
+                                                   cat, menus, rng=rng, style=style, staging=staging)
                 crew_info = {"category": cat, "title": load_knowledge()["categories"][cat]["title"], "rounds": rounds,
                              "used": not left, "violations": left}
                 if left:
@@ -1616,7 +1677,7 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
                     crew_info.update(describe(result, cat))
             if not cat or left:
                 result, more, left = await draft(call, text, notes, profile, suggested["seconds"], frame, scene, rng=rng,
-                                                 style=style)
+                                                 style=style, staging=staging)
                 rounds += more
             if profile.get("sound") and str(result.get("prompt") or "").strip():
                 sound_info = await write_sound(call, text, notes, str(result["prompt"]), suggested["seconds"], profile)
@@ -1644,7 +1705,8 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
 
 
 async def fix(user, ip: str, username: str, slug: str, text: str, notes: str = "", style: str = "",
-              profile_id: str | None = None, seconds=None, current=None, frame=None, scene: str = "") -> dict:
+              profile_id: str | None = None, seconds=None, current=None, frame=None, scene: str = "",
+              staging: str | None = None) -> dict:
     """패널에 떠 있는 영상 프롬프트의 규칙 위반을 한 GPU 차례 안에서 자동으로 고쳐 쓴다.
 
     새로 쓰지 않고 현재 글과 위반 목록을 모델에 주고 고쳐 받는다(요청의 뜻과 잘 쓴 부분을 지키려고).
@@ -1679,7 +1741,7 @@ async def fix(user, ip: str, username: str, slug: str, text: str, notes: str = "
         try:
             async with llm.llm_turn(user, ip, model, "video_fix") as call:
                 after, rounds, left = await draft(call, text, notes, profile, suggested["seconds"], frame, scene,
-                                                  repair_rounds=2, style=style, start=start)
+                                                  repair_rounds=2, style=style, start=start, staging=staging)
         except llm.HelperBusy as e:
             raise PromptxError(str(e), 503) from None
         except RuntimeError as e:
