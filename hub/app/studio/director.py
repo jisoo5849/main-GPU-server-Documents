@@ -351,6 +351,12 @@ def video_scene_notes(story: dict, i: int) -> str:
     return video.scene_notes(story, i)
 
 
+def video_scene_direction(story: dict, i: int, prev_plan) -> str:
+    """연출 계획표를 짜는 모델에게 줄 앞뒤 장면·이음새 정보 (video.scene_direction)"""
+    from .. import video
+    return video.scene_direction(story, i, prev_plan if isinstance(prev_plan, dict) else None)
+
+
 def video_scene_image_text(story: dict, i: int, plan) -> str:
     from .. import video
     return video.scene_image_text(story, i, plan)
@@ -1011,17 +1017,20 @@ class Director:
         if chain and not files.result_path(chain):
             chain = None                      # 앞 장면의 마지막 프레임이 없어졌다: 새 장면 이미지로 시작한다
         await store.event(turn["id"], "long_scene_start", {"index": i, "seconds": sc["seconds"], "chain": bool(chain)})
-        # 1) 연출 계획표와 (새 장면이면) 장면 이미지 글
-        if st.get("plan") is None or (not chain and not st.get("scene_prompt")):
+        direction = video_scene_direction(story, i, prev.get("plan"))
+        # 1) 연출 계획표와 (새 장면이면) 장면 이미지 글.
+        #    이어지는 장면의 계획표는 여기서 쓰지 않는다: 이어 받은 첫 화면을 읽은 뒤 영상 글을 쓰는 같은 차례 안에서 쓴다
+        #    (11-18 3분 실측: 첫 화면을 모른 채 쓴 계획표가 클로즈업 뒤에 미디엄 와이드를 계획해 큰 점프가 났다)
+        if (st.get("plan") is None and not chain) or (not chain and not st.get("scene_prompt")):
             with self.deps.llm_context() as bag:
                 ctx.bag = bag
                 ctx.stage, ctx.text = "prompt", "연출 계획 중"
                 await self.emit(ctx, True)
-                if st.get("plan") is None:
+                if st.get("plan") is None and not chain:
                     try:
                         st["plan"] = await self._guard_llm(ctx, self.deps.plan(
                             ctx.user, ip, ctx.env, text=sc["ko"], notes=notes, profile_id=ctx.recipe["video_profile"],
-                            seconds=sc["seconds"], staging=None))
+                            seconds=sc["seconds"], staging=None, direction=direction, safe=True))
                     except StepError as e:
                         if e.code == "queue_wait":
                             raise
@@ -1052,12 +1061,12 @@ class Director:
             await self._save_scene(ctx, work, scenes, i, st)
         # 3) 영상 글 (첫 화면 읽기 → 계획표·설정집을 지킨 네 단락 + 음악 없는 소리 단락)
         if not st.get("prompt"):
-            st.update(await self._long_prompt(ctx, work, i, st, notes))
+            st.update(await self._long_prompt(ctx, work, i, st, notes, direction))
             if st.get("first_from") == "last" and st.get("frame_people") == 0 and video_scene_has_person(story, i):
                 # 앞 장면이 사람이 화면 밖으로 나간 채 끝나 이어 받은 첫 화면이 비었다 (11-17 메인 첫 긴 영상). 빈 화면에서 영상 모델이
-                # 사람을 새로 지어내게 두지 않고, 계획표만 남겨 새 장면 이미지로 다시 시작한다
+                # 사람을 새로 지어내게 두지 않고 새 장면 이미지로 다시 시작한다. 빈 첫 화면을 보고 쓴 계획표는 버리고 새로 쓴다
                 await store.event(turn["id"], "long_chain_empty", {"index": i})
-                st = {**({"plan": st["plan"]} if st.get("plan") else {}), "no_chain": True}
+                st = {"no_chain": True}
                 await self._save_scene(ctx, work, scenes, i, st)
                 return await self._long_scene(ctx, work, scenes, i)
             await self._save_scene(ctx, work, scenes, i, st)
@@ -1094,7 +1103,7 @@ class Director:
         st["image_rel"] = main["rel_path"]
         return await self.deps.stage_image(ctx.env, ctx.user, ctx.turn, main["rel_path"])
 
-    async def _long_prompt(self, ctx: Ctx, work: dict, i: int, st: dict, notes: str) -> dict:
+    async def _long_prompt(self, ctx: Ctx, work: dict, i: int, st: dict, notes: str, direction: str = "") -> dict:
         turn, story = ctx.turn, work["story"]
         sc = story["scenes"][i]
         ip = turn.get("client_ip") and str(turn["client_ip"]) or ""
@@ -1113,7 +1122,8 @@ class Director:
                 r = await self._guard_llm(ctx, self.deps.render(
                     ctx.user, ip, ctx.env, text=sc["ko"], notes=notes, style="", profile_id=ctx.recipe["video_profile"],
                     seconds=sc["seconds"], image=image, image_prompt=st.get("scene_prompt") or "", staging=None,
-                    plan=st.get("plan"), crew=None, read_frame_on=True, auto_length=True, frame=None, music=False))
+                    plan=st.get("plan"), crew=None, read_frame_on=True, auto_length=True, frame=None, music=False,
+                    direction=direction, safe=True))
                 f = None
                 if needs_fix(r.get("violations")):
                     ctx.has_fix = True
@@ -1142,7 +1152,8 @@ class Director:
                                                  "rounds": r.get("rounds"), "fixed": bool(f), "left": left,
                                                  "frame_read": self.deps.frame_known(r.get("frame"))})
         people = (r.get("frame") or {}).get("people") if isinstance(r.get("frame"), dict) else None
-        return {"prompt": final, "ko": {**(r.get("ko") or {}), **((f or {}).get("ko") or {})}, "profile": r.get("profile"),
+        return {"prompt": final, "plan": r.get("plan") or st.get("plan"),
+                "ko": {**(r.get("ko") or {}), **((f or {}).get("ko") or {})}, "profile": r.get("profile"),
                 "settings": r.get("settings"), "frame_known": self.deps.frame_known(r.get("frame")), "violations": left,
                 "frame_people": people if isinstance(people, int) and not isinstance(people, bool) else None}
 

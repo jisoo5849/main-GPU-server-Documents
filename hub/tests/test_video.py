@@ -1669,7 +1669,7 @@ STORY_OK = {
         {"seconds": 10, "place": "P1", "characters": ["A"], "continues": False, "shot": "wide shot, slow push-in",
          "action": "The man walks along the wet street under his umbrella, shoulders slightly hunched.",
          "sound": "steady rain on the umbrella and asphalt, distant traffic", "ko": "남자가 비 오는 거리를 걷는다."},
-        {"seconds": 10, "place": "P1", "characters": ["A"], "continues": True, "shot": "medium tracking shot from the side",
+        {"seconds": 10, "place": "P1", "characters": ["A"], "continues": True, "shot": "medium wide tracking shot from the side",
          "action": "He keeps walking past the shop windows and lifts his gaze to the road ahead.",
          "sound": "rain on the umbrella, footsteps on wet stone", "ko": "남자가 상점 앞을 지나며 고개를 든다."},
         {"seconds": 10, "place": "P2", "characters": ["A"], "continues": False, "shot": "close shot, static",
@@ -1691,7 +1691,7 @@ def test_story_counts_follow_ten_second_scenes():
 
 def test_story_problems_reject_hand_and_door_handling():
     """11-18 3분 실측: 손잡이를 쥔 손 클로즈업·문 여닫기를 영상 모델이 물리에 맞지 않게 그렸다. 구성안에서 막는다"""
-    def with_action(text, shot="medium shot"):
+    def with_action(text, shot="medium wide shot"):
         s = _story()
         s["scenes"][1].update(action=text, shot=shot)
         return video.story_problems(s, 30)
@@ -1706,6 +1706,61 @@ def test_story_problems_reject_hand_and_door_handling():
                "He keeps walking and lifts his gaze to the road ahead.", "Rain streaks down the brick as his eyes close briefly.",
                "The man stands in the doorway, umbrella dripping, warm light enveloping him."):
         assert with_action(ok) == [], ok
+
+
+def test_story_problems_keep_continued_shots_and_looks_steady():
+    """11-18 3분 실측: 클로즈업 뒤 이어진 장면이 미디엄 와이드로 뛰었고, 설정집에 없는 안경이 장면 3에 나왔다"""
+    def scenes_of(a, b):
+        s = _story()
+        s["scenes"][0].update(shot=a)
+        s["scenes"][1].update(shot=b)
+        return video.story_problems(s, 30)
+    assert any("shot size jumps" in p for p in scenes_of("close-up, static", "medium wide, panning right"))
+    assert any("shot size jumps" in p for p in scenes_of("wide shot, static", "medium shot, static"))
+    assert scenes_of("wide shot, static", "medium wide, tracking") == []         # 한 단계는 허용
+    assert scenes_of("close-up, static", "medium close-up, slow pull back") == []
+    assert video.shot_rank("Extreme close-up") == 0 and video.shot_rank("medium wide shot") == 3 and video.shot_rank("establishing") is None
+    s = _story()
+    s["scenes"][1].update(action="Raindrops cling to his glasses as he keeps walking.")
+    assert any("glasses" in p and "bible look" in p for p in video.story_problems(s, 30))
+    s["bible"]["characters"][0]["look"] += ", round glasses"
+    assert not any("bible look does not list" in p for p in video.story_problems(s, 30))
+
+
+def test_scene_direction_tells_the_planner_about_neighbours_and_the_seam():
+    story = clean_story_for_direction()
+    d1 = video.scene_direction(story, 1, {"ending": "He stands mid-frame facing the camera, umbrella above him."})
+    assert "IS the last frame of the previous clip" in d1 and "facing the camera" in d1 and "same shot size" in d1
+    assert "NEXT clip starts" not in d1 and "after a cut" in d1                    # 다음 장면이 새 장면이면 컷이라고만 알린다
+    story["scenes"][2]["continues"] = True
+    d1 = video.scene_direction(story, 1)
+    assert "NEXT clip starts from this clip's last frame" in d1 and "face visible" in d1 and "never sitting or lying" in d1
+    story["scenes"][2]["continues"] = False
+    d0 = video.scene_direction(story, 0)
+    assert "previous" not in d0.lower() and "NEXT clip starts" in d0
+    d2 = video.scene_direction(story, 2)
+    assert "new scene after a cut" in d2 and "NEXT clip" not in d2
+
+
+def clean_story_for_direction():
+    s = copy.deepcopy(STORY_OK)
+    s["seconds"] = 30
+    return s
+
+
+def test_plan_asks_for_last_frame_depth_air_and_no_handling():
+    assert "ending" in video.PLAN_SYSTEM and "three depth layers" in video.PLAN_SYSTEM and "hands" not in video.PLAN_SYSTEM.split("Rules:")[0].split('"acting"')[1].split("; for an animal")[0]
+    base = {"place": ["wet street", "shop fronts", "kerb"], "light": "Cool light from the left.", "air": "rain",
+            "details": ["wet coat"], "acting": ["He walks.", "He walks on.", "He keeps walking."], "ending": "He stands mid-frame, face visible."}
+    assert video.clean_plan(base)["ending"] == "He stands mid-frame, face visible."
+    assert video.clean_plan(dict(base, acting=["His hand grips the handle.", "He walks on.", "He keeps walking."]), safe=True) is None
+    assert video.clean_plan(dict(base, acting=["His hand grips the handle.", "He walks on.", "He keeps walking."])) is not None   # 패널 영상은 그대로
+    plan = video.clean_plan(base)
+    assert "Last frame" in video.plan_block(plan, True)
+    ok = {"shot": "wet street shop fronts kerb", "camera_light": "Cool light left rain", "action": "He walks. He walks on. He keeps walking wet coat",
+          "ending": "He stands mid-frame, face visible."}
+    assert video.plan_problems(ok, plan) == []
+    assert any("last frame" in p for p in video.plan_problems(dict(ok, ending="Fog drifts over empty ground."), plan))
 
 
 def test_story_problems_catch_bad_storyboards():
@@ -1778,7 +1833,7 @@ def test_scene_notes_and_image_text_carry_the_bible():
     st = video.clean_story(STORY_OK, 30)
     notes = video.scene_notes(st, 1)
     assert "scene 2 of 3" in notes and "navy wool coat" in notes and "wet asphalt" in notes
-    assert "medium tracking shot" in notes and "footsteps on wet stone" in notes
+    assert "medium wide tracking shot" in notes and "footsteps on wet stone" in notes
     # 앞뒤 장면은 넣지 않는다: '반드시 지킬 말' 검사가 다른 장면의 날씨·카메라를 이 장면에 요구하게 된다 (11-17 검토)
     assert "Previous scene" not in notes and "Next scene" not in notes and "현관" not in notes
     plan = {"place": ["the sidewalk", "the curb", "the shop fronts"], "light": "warm window light from the left", "air": "rain",

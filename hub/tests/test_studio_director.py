@@ -160,7 +160,8 @@ class FakeDeps:
                 "settings": {"frames": int(sec * 24) + 1, "seconds": sec} if ltx else {"frames": 81, "seconds": 5.0},
                 "frame": {"subject": "cockpit"},
                 "violations": self.violation_seq.pop(0) if self.violation_seq else self.violations,
-                "length_choice": {"tier": "long", "reason": "자세해서", "by": "rule"}, "crew": None, "rounds": 0}
+                "length_choice": {"tier": "long", "reason": "자세해서", "by": "rule"}, "crew": None, "rounds": 0,
+                "plan": kw.get("plan") or (dict(self.PLAN) if kw.get("direction") else None)}
 
     async def write_edit(self, user, ip, text, frame=None):
         self.calls.append(("write_edit", text))
@@ -1673,7 +1674,12 @@ async def t_long_video_story_plan_scenes_music_and_assembly():
             assert renders[1]["text"] == "남자가 고개를 든다." and "scene 2 of 3" in renders[1]["notes"]
             assert renders[1]["image_prompt"] == "" and renders[0]["image_prompt"].startswith("IMG ")    # 이어진 장면은 첫 화면만 읽는다
             plans = [c[1] for c in deps.calls if c[0] == "plan"]
-            assert len(plans) == 3 and plans[2]["text"] == "남자가 현관에서 우산을 접는다." and "apartment entrance" in plans[2]["notes"]
+            # 이어지는 장면(2)의 계획표는 첫 화면을 읽은 뒤 영상 글을 쓰는 차례 안에서 쓴다 (먼저 쓰지 않는다)
+            assert len(plans) == 2 and plans[1]["text"] == "남자가 현관에서 우산을 접는다." and "apartment entrance" in plans[1]["notes"]
+            assert renders[1]["plan"] is None and renders[0]["plan"] is not None and renders[2]["plan"] is not None
+            assert all(r["safe"] for r in renders) and all(p["safe"] for p in plans)
+            assert "IS the last frame of the previous clip" in renders[1]["direction"] and "same shot size" in renders[1]["direction"]
+            assert "NEXT clip starts from this clip's last frame" in plans[0]["direction"] and "after a cut" in plans[1]["direction"]
             assert len([c for c in deps.calls if c[0] == "expand_image"]) == 2
             video = subs[2][1]["prompt"]
             assert video["398:362"]["inputs"]["value"] == 10 and video["902"]["inputs"]["batch_index"] == -1
@@ -1868,7 +1874,7 @@ async def t_long_video_empty_chained_frame_falls_back_to_a_scene_image():
             assert subs == [IMG["id"], LTX["id"], IMG["id"], LTX["id"], IMG["id"], LTX["id"], MUS["id"]]
             s1 = t["work"]["scenes"][1]
             assert s1["first_from"] == "image" and s1["no_chain"] and s1["frame_people"] == 1
-            assert len([c for c in deps.calls if c[0] == "plan"]) == 3                # 계획표는 다시 쓰지 않는다
+            assert len([c for c in deps.calls if c[0] == "plan"]) == 3                # 장면 1·3 + 새 장면 이미지가 된 장면 2 (빈 화면에서 쓴 계획표는 버린다)
         finally:
             settings.results_dir = old
 
