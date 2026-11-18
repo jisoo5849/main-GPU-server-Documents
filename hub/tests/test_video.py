@@ -1673,7 +1673,7 @@ STORY_OK = {
          "action": "He keeps walking past the shop windows and lifts his gaze to the road ahead.",
          "sound": "rain on the umbrella, footsteps on wet stone", "ko": "남자가 상점 앞을 지나며 고개를 든다."},
         {"seconds": 10, "place": "P2", "characters": ["A"], "continues": False, "shot": "close shot, static",
-         "action": "He folds the umbrella at the glass door and shakes off the water.",
+         "action": "He stops under the entrance light, shakes the rain off his shoulders and breathes out.",
          "sound": "rain dripping, the umbrella snapping shut", "ko": "남자가 현관에서 우산을 접는다."}]}
 
 
@@ -1687,6 +1687,25 @@ def test_story_counts_follow_ten_second_scenes():
     assert video.story_counts(180) == (18, 12, 26) and video.story_tolerance(180) == 18
     assert video.story_counts(30) == (3, 2, 5) and video.story_tolerance(30) == 3
     assert video.story_counts(60)[0] == 6
+
+
+def test_story_problems_reject_hand_and_door_handling():
+    """11-18 3분 실측: 손잡이를 쥔 손 클로즈업·문 여닫기를 영상 모델이 물리에 맞지 않게 그렸다. 구성안에서 막는다"""
+    def with_action(text, shot="medium shot"):
+        s = _story()
+        s["scenes"][1].update(action=text, shot=shot)
+        return video.story_problems(s, 30)
+    for bad in ("The man's hand grips the umbrella handle tightly, knuckles pale.",
+                "The man's fingers touch the cold door handle.", "The man turns the handle and the door creaks open.",
+                "The man steps inside, the door closing behind him.", "He picks up the keys and puts on his coat.",
+                "He folds the umbrella and shakes off the water."):
+        probs = with_action(bad)
+        assert any("handling action" in p for p in probs), bad
+    assert any("handling action" in p for p in with_action("He walks on.", shot="close-up of his hands"))
+    for ok in ("The man walks slowly toward the camera, head down, umbrella tilted against the rain.",
+               "He keeps walking and lifts his gaze to the road ahead.", "Rain streaks down the brick as his eyes close briefly.",
+               "The man stands in the doorway, umbrella dripping, warm light enveloping him."):
+        assert with_action(ok) == [], ok
 
 
 def test_story_problems_catch_bad_storyboards():
