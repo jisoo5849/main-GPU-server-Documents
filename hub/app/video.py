@@ -664,6 +664,7 @@ Return JSON only:
   - "places": for each place, {{"id": "P1", "look": "..."}}: the ground, the main surfaces and objects and their colours, in English, at most 45 words.
   - "time": time of day and weather in English, the same in every scene unless the request asks for a change.
   - "light": the light and colour palette of the whole film in English.
+  - "style": the visual style of the whole film in one English sentence, copied into every scene: when the request names a look (animation, anime, 2D, 3D, cel-shaded, hand-drawn, watercolour, clay, comic) describe exactly that look (line, shading, texture, colour); when it names none, write "photorealistic cinematic live action".
 - "music": the background music laid under the whole film as one track: "tags" (English: genre, mood, three or four instruments, and the word instrumental), "bpm" (a whole number from 50 to 180), "key" (one of: {keys}), "ko" (one Korean sentence).
 - "scenes": about {count} scenes ({n_min} to {n_max}). Each scene: "seconds" (a whole number from 5 to 20; most scenes about 10), "place" (a place id), "characters" (the character ids in the shot), "continues" (true only when the shot follows the previous scene in the same place with no time jump, so its first frame is the previous scene's last frame), "shot" (shot size and one camera move, in English), "action" (the one main action of the shot in English, at most 35 words; show mood through the body), "sound" (the ambient sound and the sounds of the action in English; never music), "ko" (one Korean sentence for the user).
 Rules:
@@ -680,6 +681,7 @@ Rules:
 STORY_SCHEMA = {"type": "object", "required": ["title_ko", "logline_ko", "bible", "music", "scenes"], "properties": {
     "title_ko": {"type": "string"}, "logline_ko": {"type": "string"},
     "bible": {"type": "object", "required": ["characters", "places", "time", "light"], "properties": {
+        "style": {"type": "string"},
         "characters": {"type": "array", "items": {"type": "object", "required": ["id", "look"],
                                                   "properties": {"id": {"type": "string"}, "look": {"type": "string"}}}},
         "places": {"type": "array", "items": {"type": "object", "required": ["id", "look"],
@@ -773,6 +775,8 @@ def story_problems(data, seconds: float, person_ok: bool = True) -> list[str]:
                 p.append(f'The {kind} "{cid}" needs an English "look".')
             elif len(look.split()) > 60:
                 p.append(f'The {kind} "{cid}" look has {len(look.split())} words; keep it under 45.')
+    if _s(bible.get("style")) and HANGUL_RE.search(_s(bible.get("style"))):
+        p.append("bible.style must be an English sentence.")
     for k in ("time", "light"):
         if not _s(bible.get(k)) or HANGUL_RE.search(_s(bible.get(k))):
             p.append(f'bible.{k} must be an English sentence.')
@@ -889,7 +893,8 @@ def clean_story(data, seconds: float) -> dict | None:
     key = _s(music.get("key"))
     bpm = _sec(music.get("bpm"))
     story = {"title_ko": _s(data.get("title_ko"))[:60], "logline_ko": _s(data.get("logline_ko"))[:300],
-             "bible": {"characters": chars, "places": places, "time": _s(bible.get("time")), "light": _s(bible.get("light"))},
+             "bible": {"characters": chars, "places": places, "time": _s(bible.get("time")), "light": _s(bible.get("light")),
+                       "style": _s(bible.get("style"))[:240]},
              "music": {"tags": _s(music.get("tags"))[:400] or "calm cinematic instrumental, soft piano, warm strings",
                        "bpm": bpm if bpm and 50 <= bpm <= 180 else 90, "key": key if key in MUSIC_KEYS else "C major",
                        "ko": _s(music.get("ko"))[:200]},
@@ -930,6 +935,15 @@ def _mark_chains(scenes: list[dict]):
             run = 0
 
 
+PHOTO_STYLE_RE = re.compile(r"photo[- ]?real|live[- ]action|photograph|cinematic live", re.I)
+
+
+def story_style(story: dict) -> str:
+    """사실적이지 않은 화풍 한 줄 (애니메이션 등). 사진·실사면 빈 글: 기존 영상 글은 그대로 쓴다"""
+    st = _s(((story or {}).get("bible") or {}).get("style"))
+    return "" if not st or PHOTO_STYLE_RE.search(st) else st
+
+
 def scene_notes(story: dict, i: int) -> str:
     """장면 하나의 '지킬 것' (영어): 설정집 + 이 장면의 카메라·동작·소리. 영상 렌더러·연출 계획표에 넘긴다.
     앞뒤 장면은 넣지 않는다: 이 글은 '반드시 지킬 말' 검사(checked_demands)에도 쓰여, 실내 고정 장면에 앞 장면의 비·다음 장면의
@@ -946,6 +960,8 @@ def scene_notes(story: dict, i: int) -> str:
             lines.append(f"- {cid}: {looks[cid]}")
     lines.append(f"- Place: {place}")
     lines.append(f"- Time: {b['time']} Light: {b['light']}")
+    if story_style(story):
+        lines.append(f"- Style: {story_style(story)} Keep this look in every frame, never photographic realism.")
     lines.append(f"This shot: {sc['shot']}. Action: {sc['action']}")
     if sc.get("sound"):
         lines.append(f"Sound: {sc['sound']}")
@@ -995,8 +1011,9 @@ def scene_image_text(story: dict, i: int, plan: dict | None = None, limit: int =
     looks = {c["id"]: c["look"] for c in b["characters"]}
     place = next((p["look"] for p in b["places"] if p["id"] == sc["place"]), "")
     who = " ".join(f"{looks[c]}." for c in sc["characters"] if c in looks)
-    base = (f"{sc['ko']}\nThe first instant of this shot as one still photograph: {sc['shot']}. {sc['action']} "
-            f"{who} Place: {place} Time: {b['time']} Light: {b['light']}")
+    style = story_style(story)
+    base = (f"{sc['ko']}\nThe first instant of this shot as one still {'frame' if style else 'photograph'}: {sc['shot']}. {sc['action']} "
+            f"{who} Place: {place} Time: {b['time']} Light: {b['light']}" + (f" Style: {style}" if style else ""))
     extra = (" " + plan_scene_text(plan)) if plan else ""
     text = base + extra
     return text if len(text) <= limit else base[:limit]

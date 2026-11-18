@@ -680,6 +680,16 @@ class Director:
     # ── 글→영상: 장면 이미지를 먼저 만들고 그 이미지로 영상을 만든다 (사용자에게는 한 작업) ──
     SCENE_HINT = ("(Make this the first instant of the scene as one still photograph, not a sequence. If someone or something moves, "
                   "show it already in motion, slightly off-center with open space ahead of its direction.)")
+    @classmethod
+    def scene_hint(cls, story: dict) -> str:
+        """장면 그림 글 뒤에 붙이는 힌트. 화풍이 사실이 아니면(애니메이션 등) '사진' 말고 그 화풍의 한 컷으로 그리게 한다"""
+        from .. import video
+        style = video.story_style(story)
+        if not style:
+            return cls.SCENE_HINT
+        return (f"(Make this the first instant of the scene as one still frame drawn in this style: {style} Not a photograph, not a sequence. "
+                "If someone or something moves, show it already in motion, slightly off-center with open space ahead of its direction.)")
+
     SCENE_HINT_POV = (" The view is first-person: no head or shoulders of the viewer; if the viewer is operating something, "
                       "only a small pair of hands at the bottom edge, and the whole interior and the view ahead in clear detail.")
 
@@ -1039,7 +1049,7 @@ class Director:
                 if not chain and not st.get("scene_prompt"):
                     ctx.text = "장면 그림 글 쓰는 중"
                     r = await self._guard_llm(ctx, self.deps.expand_image(
-                        ctx.user, ip, video_scene_image_text(story, i, st.get("plan")) + "\n" + self.SCENE_HINT))
+                        ctx.user, ip, video_scene_image_text(story, i, st.get("plan")) + "\n" + self.scene_hint(story)))
                     if not (r.get("prompt") or "").strip():
                         raise StepError("llm_error", f"장면 {i + 1} 의 그림 글을 만들지 못했습니다")
                     st["scene_prompt"] = r["prompt"]

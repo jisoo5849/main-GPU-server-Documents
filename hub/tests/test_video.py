@@ -1763,6 +1763,29 @@ def test_plan_asks_for_last_frame_depth_air_and_no_handling():
     assert any("last frame" in p for p in video.plan_problems(dict(ok, ending="Fog drifts over empty ground."), plan))
 
 
+def test_story_style_reaches_every_scene_text_and_stays_out_when_photoreal():
+    """11-18 애니메이션 시험: 요청의 화풍(2D+3D)이 설정집에 안 들어가 사실적인 아이가 나올 뻔했다. 설정집 style 이 모든 장면 글에 간다"""
+    assert "style" in video.STORY_SYSTEM and "photorealistic cinematic live action" in video.STORY_SYSTEM
+    anim = _story()
+    anim["bible"]["style"] = "2D hand-drawn lines on cel-shaded 3D characters, soft painted backgrounds, bright pastel colours"
+    assert video.story_style(anim).startswith("2D hand-drawn")
+    assert video.story_style(STORY_OK) == ""                                         # 화풍이 없으면 기존 글 그대로
+    photo = _story()
+    photo["bible"]["style"] = "photorealistic cinematic live action"
+    assert video.story_style(photo) == ""
+    notes = video.scene_notes(dict(anim, seconds=30), 0)
+    assert "- Style: 2D hand-drawn" in notes and "never photographic realism" in notes
+    assert "Style:" not in video.scene_notes(dict(STORY_OK, seconds=30), 0)
+    img = video.scene_image_text(dict(anim, seconds=30), 0)
+    assert "one still frame" in img and "Style: 2D hand-drawn" in img and "one still photograph" not in img
+    assert "one still photograph" in video.scene_image_text(dict(STORY_OK, seconds=30), 0)
+    cleaned = video.clean_story(anim, 30)
+    assert cleaned["bible"]["style"].startswith("2D hand-drawn")
+    bad = _story()
+    bad["bible"]["style"] = "손그림 느낌"
+    assert any("bible.style must be an English sentence" in p for p in video.story_problems(bad, 30))
+
+
 def test_story_problems_catch_bad_storyboards():
     assert video.story_problems(STORY_OK, 30) == []
 
