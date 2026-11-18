@@ -499,13 +499,16 @@ PLAN_SYSTEM = """You are the director of a small film crew. Before anything is s
 Return JSON only:
 - "place": 3 or 4 short phrases, each a concrete, visible thing that tells where the shot is (for a street: the sidewalk, the curb, the building fronts, a side street; for a room: the furniture and surfaces; for a landscape: the ground cover, the horizon line, the nearest rock or tree).
 - "light": one sentence: where the main light comes from, how it separates the subject from the background (an edge of light, a lit face, a lit outline), and ONE small accent light in the far background (a lit window, a lamp, a glow on water) whose colour differs from the main light.
-- "air": one sentence on weather, mist, dust, steam or any particles and how they cross the light and touch surfaces (rain crossing pools of light and dripping from an edge; dust turning in a beam). Write an empty string when the scene has none.
+- "air": one sentence on weather, mist, dust, steam or any particles in three depth layers: near the lens, in the middle, far away, and how each layer is seen and touches the surfaces and light (rain streaking against dark walls near the lens, droplets stippling the ground in the middle, haze softening the far buildings). Write an empty string when the scene has none.
 - "details": 2 or 3 short phrases for small signature details of the subject or its material that the camera can see (a glistening wet sleeve, a chipped glaze, a scuffed boot).
-- "acting": exactly 3 phrases, one per third of the clip: the opening moment, the one main action unfolding (with ONE small living detail that does not change the action, such as a lifted glance, a gust, a ripple), and how the same action carries on at the end. For a person show the mood through the body (head, shoulders, steps, hands), never a mood word alone; for an animal the paws, wings or body; for an object or vehicle how its material, wheels or surfaces respond; for a landscape or weather how its own elements move.
+- "ending": one sentence: the exact last frame of the clip, because a later shot may start from it: the subject fully in frame (its size and position), standing or walking, the camera settled; when a person is in the shot and the film context below asks for it, the face is visible (front or three-quarter view).
+- "acting": exactly 3 phrases, one per third of the clip: the opening moment, the one main action unfolding (with ONE small living detail that does not change the action, such as a lifted glance, a gust, a ripple), and how the same action carries on at the end. For a person show the mood through the body (head, shoulders, gaze, posture, steps), never a mood word alone; for an animal the paws, wings or body; for an object or vehicle how its material, wheels or surfaces respond; for a landscape or weather how its own elements move.
 Rules:
 - Honour every word of the request first; it is the top priority. Invent only what fits the place and the request, and nothing that contradicts it.
 - Write short English phrases, each at most 20 words. Name no brands, songs, artists or real people, and write no text, signs or logos.
 - Positive phrasing only: never write what is absent (no "no", "not", "without").
+- A person's fixed look (hair, glasses, coat colour, build) comes from the must-keep details; repeat it in "details" exactly and never add or change anything (no new glasses, hats, scarves or beards).
+- The video model draws touching and handling wrongly (bent fingers, doors that open twice). Never plan a close-up of hands or an action where hands grip, touch, pick up, hand over, open, close, push, pull, put on, take off, fold or adjust anything (doors, umbrellas, coats, keys, phones, cups). A person may keep carrying an object already in the hand.
 - A person must not be added when the request has none."""
 PLAN_KEYS = ("place", "light", "air", "details", "acting")
 
@@ -518,8 +521,9 @@ def _clean_items(v, lo: int, hi: int) -> list[str] | None:
     return out[:hi] if len(out) >= lo else None
 
 
-def clean_plan(data) -> dict | None:
-    """모델이 돌려준 계획표를 다듬는다. 모양이 틀리면 None (계획표 없이 기존 방식으로 간다)."""
+def clean_plan(data, safe: bool = False) -> dict | None:
+    """모델이 돌려준 계획표를 다듬는다. 모양이 틀리면 None (계획표 없이 기존 방식으로 간다).
+    safe 이면 손·접촉 동작(PHYSICS_RE)이 들어간 계획표도 버린다 (긴 영상의 장면: 11-18 3분 실측의 물리 오류)"""
     if not isinstance(data, dict):
         return None
     place = _clean_items(data.get("place"), 3, 4)
@@ -530,14 +534,19 @@ def clean_plan(data) -> dict | None:
     if not (place and acting and details and light):
         return None
     plan = {"place": place, "light": light, "air": air, "details": details, "acting": acting}
-    flat = " ".join(place + acting + details + [light, air])
+    ending = re.sub(r"\s+", " ", str(data.get("ending") or "")).strip()
+    if ending:
+        plan["ending"] = ending
+    flat = " ".join(place + acting + details + [light, air, ending])
     if HANGUL_RE.search(flat) or SOUND_NEGATION_RE.search(flat):
+        return None
+    if safe and PHYSICS_RE.search(flat):
         return None
     return plan
 
 
 async def write_plan(call, text: str, notes: str, profile: dict, seconds: float, frame: dict | None = None,
-                     scene: str = "", staging: str | None = None) -> dict | None:
+                     scene: str = "", staging: str | None = None, direction: str = "", safe: bool = False) -> dict | None:
     """연출 계획표 하나를 같은 LLM 차례 안에서 쓴다. 실패하면 None (영상은 계획표 없이도 만들어진다)."""
     if not is_long(profile):
         return None
@@ -553,22 +562,26 @@ async def write_plan(call, text: str, notes: str, profile: dict, seconds: float,
                  "shows; the acting beats are what happens next:\n" + frame_text(frame) + "\n")
     elif scene:
         user += f"Look reference (an image prompt for this shot; stay consistent with it): {scene[:1500]}\n"
+    if direction:
+        user += f"Film context and continuity (obey it): {direction[:1800]}\n"
     schema = {"type": "object", "required": list(PLAN_KEYS), "properties": {
         "place": {"type": "array", "items": {"type": "string"}}, "light": {"type": "string"}, "air": {"type": "string"},
-        "details": {"type": "array", "items": {"type": "string"}}, "acting": {"type": "array", "items": {"type": "string"}}}}
+        "details": {"type": "array", "items": {"type": "string"}}, "acting": {"type": "array", "items": {"type": "string"}},
+        "ending": {"type": "string"}}}
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     for _ in range(2):
         reply = await call({"messages": messages, "format": schema, "think": False, "options": {"temperature": 0.7}})
         content = (reply.get("message") or {}).get("content", "")
         try:
-            plan = clean_plan(json.loads(content))
+            plan = clean_plan(json.loads(content), safe)
         except (ValueError, TypeError):
             plan = None
         if plan:
             return plan
         messages = messages + [{"role": "assistant", "content": content or "{}"},
                                {"role": "user", "content": "Rewrite the plan: place 3-4 phrases, one light sentence, the air sentence "
-                                "(empty if none), 1-3 details, exactly 3 acting phrases; English only, positive phrasing only."}]
+                                "(empty if none), 1-3 details, exactly 3 acting phrases and the ending sentence; English only, positive "
+                                "phrasing only" + ("; plan no hands, no touching or handling of doors, umbrellas, coats or objects" if safe else "") + "."}]
     return None
 
 
@@ -593,7 +606,8 @@ def plan_block(plan: dict | None, timeline: bool) -> str:
             f"- Place (name these in \"shot\"): {'; '.join(plan['place'])}\n"
             f"- Light (write it in \"camera_light\"): {plan['light']}{air}\n"
             f"- Details (show them in \"shot\" or \"action\"): {'; '.join(plan['details'])}\n"
-            f"- Acting, as {how}: {beats}")
+            f"- Acting, as {how}: {beats}"
+            + (f"\n- Last frame (write it in \"ending\"): {plan['ending']}" if plan.get("ending") else ""))
 
 
 _PLAN_STOP = frozenset("the and with from into onto over under across near far its his her their this that while small slight "
@@ -625,6 +639,8 @@ def plan_problems(result, plan: dict | None) -> list[str]:
     for i, b in enumerate(plan["acting"], 1):
         if not (_plan_tokens(b) & action):
             miss.append(f'acting beat {i} "{b}"')
+    if plan.get("ending") and not (_plan_tokens(plan["ending"]) & _plan_tokens(str(result.get("ending") or ""))):
+        miss.append(f'last frame "{plan["ending"]}"')
     if not miss:
         return []
     return ["The director's plan items missing from the prompt: " + "; ".join(miss[:5])
@@ -656,6 +672,8 @@ Rules:
 - Vary the shot sizes (wide, medium, close) and keep the screen direction of a moving subject the same from scene to scene.
 - A shot that the next scene continues must end with the main subject still fully in frame, because the next scene starts from its last frame: never let the subject walk out of frame, cross to the edge or disappear in such a shot; keep a moving subject in frame with a tracking camera, or let it walk toward or away from the camera.
 - The video model draws touching and handling wrongly (bent fingers, doors that open twice, objects that pass through hands). Never write a close-up of hands, and never write an action where hands grip, touch, pick up, hand over, open, close, push, pull, put on, take off, fold, unfold or adjust anything (doors, gates, umbrellas, coats, keys, phones, cups). A person may hold an object that was already in the hand at the start (an umbrella while walking), but the shot must not show the hand or the handling. Show mood through the whole body, the walk, the face and the gaze, the weather and the place.
+- A scene that continues the previous scene starts from that scene's last frame, so it must open in the same shot size and the same camera height; it may change the size only slowly during the shot (a slow push in or pull back), never jump from a close-up to a wide shot. Write the camera as height or angle, move and speed (for example "eye-level, slow dolly back at walking pace").
+- The bible look of a character lists everything worn or carried that the audience sees (hair, face, glasses or none, coat, bag, umbrella). A scene must not add anything to a character that the bible look does not list (glasses, hats, scarves, beards, masks).
 - Every scene can be shot from one still frame: one place, one main action, no cut inside it, no flashback, and no text, signs or logos.
 - Name no brands, songs, artists or real people. English everywhere except "title_ko", "logline_ko" and "ko".
 - A person must not be added when the request has none."""
@@ -697,6 +715,21 @@ PHYSICS_RE = re.compile(
     r"|\b(?:opens?|opening|closes?|closing|shuts?|pushes?|pushing|pulls?|pulling|unlocks?|locks?|knocks?)\b[^.;]{0,25}\b(?:doors?|gates?|umbrella|window|zipper|coat|jacket|buttons?)\b"
     r"|\b(?:doors?|gates?)\b[^.;]{0,20}\b(?:opens?|opening|swings?|closes?|closing)\b"
     r"|\b(?:picks? up|pick(?:ing)? up|puts? down|putting down|hands? over|hold(?:s|ing) out|reach(?:es|ing) (?:out|for|into)|takes? (?:out|off)|puts? on|puts? away|pulls? out|unfold(?:s|ing)?|fold(?:s|ing)?|adjusts?|tightens?|buttons?|zips?)\b", re.I)
+
+
+# 샷 크기 (작은 쪽부터). 이어지는 장면은 앞 장면 마지막 프레임에서 시작하므로 크기가 한 단계 넘게 뛰면 안 된다.
+# 11-18 3분 실측: 얼굴 클로즈업 → 이어서 '미디엄 와이드' 장면이라 디졸브 구간에서 큰 점프가 보였다. 긴 이름을 먼저 찾는다
+SHOT_SIZES = (("extreme close", 0), ("extreme wide", 5), ("medium close", 1), ("medium wide", 3), ("medium long", 3), ("close-up", 0),
+              ("close up", 0), ("closeup", 0), ("close shot", 0), ("full shot", 3), ("long shot", 4), ("wide", 4), ("medium", 2))
+ACCESSORY_RE = re.compile(r"\b(?:glasses|spectacles|sunglasses|hats?|caps?|scarf|scarves|beards?|masks?|earrings?|necklaces?|gloves)\b", re.I)
+
+
+def shot_rank(shot: str) -> int | None:
+    t = (shot or "").lower()
+    for name, rank in SHOT_SIZES:
+        if name in t:
+            return rank
+    return None
 
 
 def story_counts(seconds: float) -> tuple[int, int, int]:
@@ -781,6 +814,18 @@ def story_problems(data, seconds: float, person_ok: bool = True) -> list[str]:
             p.append(f"Scene {i + 1} continues scene {i}, so scene {i} must end with the subject still in frame, but its action "
                      f'or shot lets it leave ("{EXIT_RE.search(_s(sc.get("action")) + " " + _s(sc.get("shot"))).group(0)}"): '
                      "keep the subject in frame with a tracking camera or a walk toward or away from the camera.")
+        if sc.get("continues") is True and i > 1 and isinstance(scenes[i - 2], dict):
+            a, b = shot_rank(_s(scenes[i - 2].get("shot"))), shot_rank(_s(sc.get("shot")))
+            if a is not None and b is not None and abs(a - b) > 1:
+                p.append(f"Scene {i} continues scene {i - 1}, so it starts from that last frame, but its shot size jumps "
+                         f'from "{_s(scenes[i - 2].get("shot"))}" to "{_s(sc.get("shot"))}". Open scene {i} in the same shot size as scene {i - 1} '
+                         "(or one step away) and change the size only with a slow camera move, or make scene " + str(i) + " a new scene (continues false).")
+        seen_looks = " ".join(_s(chars[c].get("look")) for c in (sc.get("characters") or []) if _s(c) in chars).lower()
+        add = sorted({m.group(0).lower() for m in ACCESSORY_RE.finditer(_s(sc.get("action")) + " " + _s(sc.get("shot")))
+                      if m.group(0).lower() not in seen_looks and m.group(0).lower().rstrip("s") not in seen_looks})
+        if add and sc.get("characters"):
+            p.append(f"Scene {i} gives the character {', '.join(add)}, which the bible look does not list; add it to the character's look "
+                     "in the bible (so every scene has it) or remove it from the scene.")
         mt = PHYSICS_RE.search(_s(sc.get("action")) + " " + _s(sc.get("shot")))
         if mt:
             p.append(f'Scene {i}: "{mt.group(0)}" is a hand or handling action the video model draws wrongly. Rewrite the shot so no hands, '
@@ -909,6 +954,31 @@ def scene_notes(story: dict, i: int) -> str:
         lines.append("The next shot begins from this shot's last frame: keep the main subject fully visible in frame until "
                      "the very last frame, with the camera following it if it moves.")
     return "\n".join(lines)[:1990]
+
+
+def scene_direction(story: dict, i: int, prev: dict | None = None) -> str:
+    """연출 계획표를 짜는 모델에게 주는 앞뒤 장면·이음새 정보 (영어). 영상 렌더러의 notes 에는 넣지 않는다
+    ('반드시 지킬 말' 검사에 쓰여 이웃 장면의 말이 요구가 되기 때문). prev 는 앞 장면의 계획표(마지막 프레임 글을 가져온다)"""
+    scenes = story["scenes"]
+    sc = scenes[i]
+    lines = []
+    if sc.get("continues") and i > 0:
+        last = ((prev or {}).get("ending") or ((prev or {}).get("acting") or [""])[-1] or "").strip()
+        lines.append(f"This clip's first frame IS the last frame of the previous clip (scene {i}: {scenes[i - 1]['action']}"
+                     + (f" It ended with: {last}." if last else "") + "). Continue the same moment: the opening beat keeps the same shot size, "
+                     "camera height, subject position and pose as that frame; change the size only with a slow camera move.")
+    elif i > 0:
+        lines.append(f"This clip starts a new scene after a cut. The previous scene was: {scenes[i - 1]['action']} (do not repeat its action).")
+    if i + 1 < len(scenes):
+        nxt = scenes[i + 1]
+        if nxt.get("continues"):
+            lines.append("The NEXT clip starts from this clip's last frame, so \"ending\" must show the main subject fully in frame, "
+                         "standing or walking (never sitting or lying), the camera settled, and the face visible (front or three-quarter) "
+                         f"when a person is in the shot. The next scene is: {nxt['action']}")
+        else:
+            lines.append(f"The next scene (after a cut) is: {nxt['action']}")
+    lines.append(f"Scene {i + 1} of {len(scenes)}; the camera keeps one steady height and speed unless the shot says otherwise.")
+    return " ".join(lines)[:1800]
 
 
 def scene_has_person(story: dict, i: int) -> bool:
@@ -2133,7 +2203,7 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
                  profile_id: str | None = None, seconds=None, image: dict | None = None, image_prompt: str = "",
                  crew=None, read_frame_on: bool = True, rng=None, auto_length: bool = False,
                  frame: dict | None = None, staging: str | None = None, plan: dict | None = None,
-                 music: bool | None = None) -> dict:
+                 music: bool | None = None, direction: str = "", safe: bool = False) -> dict:
     """요청 → (첫 화면 읽기) → (T2V 장면) → 움직임 초안 → 최종 영상 프롬프트와 설정 제안.
 
     frame 은 이미 읽은 첫 화면 결과다. 주면 첫 화면을 다시 읽지 않는다(채팅의 영상 고치기). 패널은 넘기지 않는다.
@@ -2197,7 +2267,7 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
                 advice += [a for a in scene_info.get("advice") or [] if a not in advice]
             if plan is None and is_long(profile):
                 # 감독이 미리 짠 계획표가 없으면(패널·사진으로 만드는 영상) 같은 차례 안에서 지금 짠다. 실패하면 계획표 없이 쓴다
-                plan = await write_plan(call, text, notes, profile, suggested["seconds"], frame, scene, staging)
+                plan = await write_plan(call, text, notes, profile, suggested["seconds"], frame, scene, staging, direction, safe)
             if cat:
                 menus = await asyncio.to_thread(build_menus, said, cat, rng)
                 result, rounds, left = await draft(call, text, notes, profile, suggested["seconds"], frame, scene,
@@ -2240,7 +2310,7 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
 
 
 async def plan(user, ip: str, username: str, slug: str, text: str, notes: str = "", profile_id: str | None = None,
-               seconds=None, staging: str | None = None) -> dict | None:
+               seconds=None, staging: str | None = None, direction: str = "", safe: bool = False) -> dict | None:
     """연출 계획표 (감독이 장면 이미지를 그리기 전에 한 번). 실패해도 예외 없이 None."""
     from . import llm
 
@@ -2250,7 +2320,7 @@ async def plan(user, ip: str, username: str, slug: str, text: str, notes: str = 
     suggested = suggest_settings(profile, seconds)
     try:
         async with llm.llm_turn(user, ip, settings.expand_model, "video_plan") as call:
-            return await write_plan(call, text, notes, profile, suggested["seconds"], None, "", staging)
+            return await write_plan(call, text, notes, profile, suggested["seconds"], None, "", staging, direction, safe)
     except llm.HelperBusy as e:
         raise PromptxError(str(e), 503) from None
     except RuntimeError as e:
