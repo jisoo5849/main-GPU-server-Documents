@@ -178,6 +178,16 @@
     return acts;
   }
 
+  // 말풍선 시간: 오늘이면 '오후 3:11', 다른 날이면 '11월 17일 오후 3:11' (이 브라우저의 시간대)
+  function msgTime(iso) {
+    const d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d)) return null;
+    const hm = d.toLocaleTimeString("ko-KR", { hour: "numeric", minute: "2-digit", hour12: true });
+    const n = new Date();
+    const same = d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+    return { text: same ? hm : (d.getMonth() + 1) + "월 " + d.getDate() + "일 " + hm, full: d.toLocaleString("ko-KR") };
+  }
+
   function renderMessage(m) {
     if (state.shown.has(m.id)) return;
     state.shown.add(m.id); state.lastId = Math.max(state.lastId, m.id);
@@ -200,6 +210,8 @@
       if (!m.body && !(data.attachment_ids || []).length) b.textContent = "…";
       wrap.append(b);
     }
+    const when = msgTime(m.created_at);
+    if (when) { const t = el("div", "mtime", when.text); t.title = when.full; wrap.append(t); }
     feed.append(wrap);
     if (m.kind === "result" || m.kind === "notice" || m.kind === "plan") dropCard(m.turn_id);
     scrollDown();

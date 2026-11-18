@@ -38,6 +38,7 @@ button { font:inherit; cursor:pointer; }
 .empty { margin:auto; color:var(--sub); text-align:center; }
 .msg { max-width:min(640px, 92%); }
 .msg.user { align-self:flex-end; }
+.mtime { margin-top:3px; text-align:right; font-size:11px; color:var(--sub); }
 .bubble { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:10px 14px; white-space:pre-wrap; word-break:break-word; }
 .msg.user .bubble { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
 .bubble img, .bubble video { display:block; max-width:100%; border-radius:10px; margin-top:6px; background:#000; }

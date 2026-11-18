@@ -71,6 +71,7 @@ LONG_FAIL_TEXT = {
 LONG_SCENE_OVERHEAD = 135      # 장면마다 GPU 실행 말고 더 걸리는 시간(초) [추정]: 장면 이미지 약 25 + LLM 약 90 + 콜드 스타트 약 20
 LONG_TAIL = 70                 # 음악 약 40 + 합치기 약 30 [추정]
 LONG_RESUME_MAX = 5            # 허브가 다시 시작될 때 긴 영상을 자동으로 이어 가는 횟수 (재시작이 되풀이될 때 끝없이 돌지 않게)
+DISSOLVE_SECONDS = 0.6     # 이어 만든 장면 사이의 디졸브 길이(초) [추정 값, 메인 시험 전]
 LONG_SCENE_KEYS = ("plan", "scene_prompt", "image_rel", "first_from", "prompt", "ko", "profile", "settings", "frame_known",
                    "frame_people", "no_chain", "clip_rel", "clip_sha", "last_rel", "check_rel", "seed", "seconds", "violations")
 # 고쳐 쓴 뒤에도 남으면 그 프롬프트로 영상을 만들지 않는 위반: 요청과 다른 장면(예시 베끼기)이다 (11-16 파일럿 요청)
@@ -278,9 +279,9 @@ class RealDeps:
         from .. import video
         return await video.storyboard(user, ip, env["username"], env["slug"], kw.pop("text"), **kw)
 
-    def assemble(self, clips, music, out, sound=True):
+    def assemble(self, clips, music, out, sound=True, transitions=None):
         """장면 클립 + 음악 합치기 (ffmpeg, 스레드에서 부른다)"""
-        return assemble.run(clips, music, out, sound)
+        return assemble.run(clips, music, out, sound, transitions)
 
     async def inspect(self, user, ip, username, filename, subfolder, expect):
         from .. import promptx
@@ -1229,7 +1230,10 @@ class Director:
         out_rel = f"{os.path.dirname(scenes[0]['clip_rel'])}/long_{str(turn['id'])[:8]}.mp4"
         out_abs = os.path.join(os.path.realpath(settings.results_dir), out_rel)
         try:
-            info = await asyncio.to_thread(self.deps.assemble, clips, music_abs, out_abs, True)
+            # 앞 클립의 마지막 프레임에서 이어 만든 장면과의 이음새는 짧은 디졸브로 움직임 끊김을 가리고,
+            # 장면이 바뀌는 이음새는 일부러 컷으로 보이게 둔다 (11-18 3분 실측: 10초마다 끊김)
+            seams = [DISSOLVE_SECONDS if (scenes[i + 1].get("first_from") == "last") else 0.0 for i in range(len(scenes) - 1)]
+            info = await asyncio.to_thread(self.deps.assemble, clips, music_abs, out_abs, True, seams)
         except assemble.AssembleError as e:
             await store.event(turn["id"], "error", {"where": "assemble", "detail": str(e)[:500]})
             raise StepError("assemble", str(e)[:300]) from None

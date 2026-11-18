@@ -115,11 +115,53 @@ def same_video(probes: list[dict]) -> bool:
     return bool(probes) and all(all(p.get(k) == probes[0].get(k) for k in keys) for p in probes)
 
 
+def fit_transitions(durations: list[float], transitions: list[float] | None) -> list[float]:
+    """이음새마다 겹침 길이(초). 0 이면 컷. 이웃 두 클립 중 짧은 쪽의 절반을 넘지 않게 자른다. 길이가 안 맞거나 없으면 전부 컷"""
+    n = len(durations)
+    if not transitions or len(transitions) != n - 1:
+        return [0.0] * max(0, n - 1)
+    out = []
+    for i, o in enumerate(transitions):
+        try:
+            o = float(o)
+        except (TypeError, ValueError):
+            o = 0.0
+        cap = min(durations[i], durations[i + 1]) / 2 - 0.05
+        out.append(round(max(0.0, min(o, cap)), 3) if o > 0.05 and cap > 0.05 else 0.0)
+    return out
+
+
+def timeline_total(durations: list[float], overlaps: list[float]) -> float:
+    return sum(durations) - sum(overlaps)
+
+
+def build_video_filter(durations: list[float], overlaps: list[float], fps: float) -> str:
+    """장면 영상(입력 0..N-1)을 이음새마다 컷(concat) 또는 디졸브(xfade)로 잇는 filter_complex. 출력 라벨 [v]"""
+    n = len(durations)
+    parts = [f"[{i}:v]fps={fps:g},settb=AVTB,setsar=1,format=yuv420p[v{i}]" for i in range(n)]
+    cur, cur_len = "[v0]", durations[0]
+    for i in range(1, n):
+        o = overlaps[i - 1]
+        out = "[v]" if i == n - 1 else f"[x{i}]"
+        if o > 0:
+            parts.append(f"{cur}[v{i}]xfade=transition=fade:duration={o:.3f}:offset={cur_len - o:.3f}{out}")
+            cur_len += durations[i] - o
+        else:
+            parts.append(f"{cur}[v{i}]concat=n=2:v=1:a=0{out}")
+            cur_len += durations[i]
+        cur = out
+    if n == 1:
+        parts.append("[v0]null[v]")
+    return ";".join(parts)
+
+
 def build_mix_filter(durations: list[float], has_audio: list[bool], gains: list[float],
-                     music_gain: float | None) -> str:
-    """장면 소리(입력 0..N-1)와 음악(입력 N)을 섞는 filter_complex. 출력 라벨 [mix]"""
+                     music_gain: float | None, overlaps: list[float] | None = None) -> str:
+    """장면 소리(입력 0..N-1)와 음악(입력 N)을 섞는 filter_complex. 출력 라벨 [mix].
+    overlaps(이음새마다 겹침 초)가 있으면 겹치는 이음새는 소리도 교차 페이드(acrossfade)로 잇고 가장자리 페이드를 빼며, 컷은 그대로 잇는다"""
     parts, labels = [], []
     n = len(durations)
+    ov = overlaps if overlaps and any(o > 0 for o in overlaps) else None
     for i, (d, has, g) in enumerate(zip(durations, has_audio, gains)):
         fo = max(0.0, d - EDGE_FADE)
         if has:
@@ -127,13 +169,30 @@ def build_mix_filter(durations: list[float], has_audio: list[bool], gains: list[
                    f"asetpts=PTS-STARTPTS,volume={g:.2f}dB")
         else:
             src = f"anullsrc=r=48000:cl=stereo,atrim=0:{d:.3f},asetpts=PTS-STARTPTS"
-        parts.append(f"{src},afade=t=in:st=0:d={EDGE_FADE},afade=t=out:st={fo:.3f}:d={EDGE_FADE}[a{i}]")
+        fades = ""
+        if ov is None or i == 0 or ov[i - 1] <= 0:
+            fades += f",afade=t=in:st=0:d={EDGE_FADE}"
+        if ov is None or i == n - 1 or ov[i] <= 0:
+            fades += f",afade=t=out:st={fo:.3f}:d={EDGE_FADE}"
+        parts.append(f"{src}{fades}[a{i}]")
         labels.append(f"[a{i}]")
-    total = sum(durations)
+    total = timeline_total(durations, ov or [])
+    sfx = "[mix]" if music_gain is None else "[sfx]"
+    if ov is None:
+        parts.append("".join(labels) + f"concat=n={n}:v=0:a=1{sfx}")
+    elif n == 1:
+        parts.append(f"[a0]anull{sfx}")
+    else:
+        cur = "[a0]"
+        for i in range(1, n):
+            out = sfx if i == n - 1 else f"[y{i}]"
+            if ov[i - 1] > 0:
+                parts.append(f"{cur}[a{i}]acrossfade=d={ov[i - 1]:.3f}:c1=tri:c2=tri{out}")
+            else:
+                parts.append(f"{cur}[a{i}]concat=n=2:v=0:a=1{out}")
+            cur = out
     if music_gain is None:
-        parts.append("".join(labels) + f"concat=n={n}:v=0:a=1[mix]")
         return ";".join(parts)
-    parts.append("".join(labels) + f"concat=n={n}:v=0:a=1[sfx]")
     fo = max(0.0, total - MUSIC_FADE_OUT)
     parts.append(f"[{n}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad,atrim=0:{total:.3f},"
                  f"asetpts=PTS-STARTPTS,volume={music_gain:.2f}dB,afade=t=in:st=0:d={MUSIC_FADE_IN},"
@@ -175,8 +234,33 @@ def build_final_cmd(list_file: str, mix_wav: str | None, out: str, copy_video: b
     return cmd + ["-movflags", "+faststart", out]
 
 
-def run(clips: list[str], music: str | None, out: str, sound: bool = True) -> dict:
-    """장면 클립(절대 경로, 순서대로)과 음악을 합쳐 out 에 쓴다. 실패하면 AssembleError. 같은 이름이 있으면 덮어쓴다"""
+def build_xfade_cmd(clips: list[str], mix_wav: str | None, out: str, vfilter: str, measured: dict | None) -> list[str]:
+    """디졸브가 있을 때의 합치기: 영상은 filter_complex 로 잇고(다시 인코딩), 소리는 미리 섞은 wav 를 쓴다"""
+    cmd = ["ffmpeg", "-hide_banner", "-nostats", "-y"]
+    for c in clips:
+        cmd += ["-i", c]
+    if mix_wav:
+        cmd += ["-i", mix_wav]
+    cmd += ["-filter_complex", vfilter, "-map", "[v]", "-c:v", "libx264", "-crf", "17", "-preset", "medium", "-pix_fmt", "yuv420p"]
+    if mix_wav:
+        cmd += ["-map", f"{len(clips)}:a:0", "-af", final_audio_filter(measured), "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-shortest"]
+    else:
+        cmd += ["-an"]
+    return cmd + ["-movflags", "+faststart", out]
+
+
+def _fps(p: dict) -> float:
+    try:
+        a, _, b = str(p.get("fps") or "").partition("/")
+        v = float(a) / float(b or 1)
+        return v if 1 <= v <= 120 else 24.0
+    except (ValueError, ZeroDivisionError):
+        return 24.0
+
+
+def run(clips: list[str], music: str | None, out: str, sound: bool = True, transitions: list[float] | None = None) -> dict:
+    """장면 클립(절대 경로, 순서대로)과 음악을 합쳐 out 에 쓴다. 실패하면 AssembleError. 같은 이름이 있으면 덮어쓴다.
+    transitions: 이음새(장면 i 와 i+1 사이)마다 디졸브 길이(초), 0 이면 컷. 없으면 전부 컷(다시 인코딩하지 않음)"""
     if not available():
         raise AssembleError("허브에 ffmpeg 가 없습니다 (hub/Dockerfile 에 넣은 판으로 업데이트해야 합니다)")
     if not clips:
@@ -188,9 +272,12 @@ def run(clips: list[str], music: str | None, out: str, sound: bool = True) -> di
     if len(sizes) > 1:
         raise AssembleError(f"장면 크기가 서로 다릅니다: {sorted(sizes)}")
     durations = [p["duration"] for p in probes]
-    total = sum(durations)
-    copy_video = same_video(probes)
-    info = {"scenes": len(clips), "seconds": round(total, 3), "copy_video": copy_video, "music": bool(music and sound)}
+    overlaps = fit_transitions(durations, transitions)
+    dissolve = any(o > 0 for o in overlaps)
+    total = timeline_total(durations, overlaps)
+    copy_video = same_video(probes) and not dissolve
+    info = {"scenes": len(clips), "seconds": round(total, 3), "copy_video": copy_video, "music": bool(music and sound),
+            "dissolves": sum(1 for o in overlaps if o > 0)}
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     tmp_out = out + ".part.mp4"
     with tempfile.TemporaryDirectory(prefix="studio-long-") as tmp:
@@ -205,10 +292,13 @@ def run(clips: list[str], music: str | None, out: str, sound: bool = True) -> di
             if music and music_gain == 0.0:
                 music_gain = MUSIC_LUFS - SCENE_LUFS      # 음악 크기를 못 재면 장면 소리보다 8dB 작게
             mix_wav = os.path.join(tmp, "mix.wav")
-            _run(build_mix_cmd(clips, music, build_mix_filter(durations, has_audio, gains, music_gain), mix_wav))
+            _run(build_mix_cmd(clips, music, build_mix_filter(durations, has_audio, gains, music_gain, overlaps), mix_wav))
             measured = measure(mix_wav)
             info.update(gains=gains, music_gain=music_gain, mix=measured)
-        _run(build_final_cmd(list_file, mix_wav, tmp_out, copy_video, measured))
+        if dissolve:
+            _run(build_xfade_cmd(clips, mix_wav, tmp_out, build_video_filter(durations, overlaps, _fps(probes[0])), measured))
+        else:
+            _run(build_final_cmd(list_file, mix_wav, tmp_out, copy_video, measured))
     got = probe(tmp_out)
     if abs(got["duration"] - total) > DURATION_SLACK or (sound and not got["audio"]):
         try:
