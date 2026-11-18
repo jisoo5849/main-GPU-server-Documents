@@ -655,6 +655,7 @@ Rules:
 - The scene seconds add up to {seconds} (within {tolerance}).
 - Vary the shot sizes (wide, medium, close) and keep the screen direction of a moving subject the same from scene to scene.
 - A shot that the next scene continues must end with the main subject still fully in frame, because the next scene starts from its last frame: never let the subject walk out of frame, cross to the edge or disappear in such a shot; keep a moving subject in frame with a tracking camera, or let it walk toward or away from the camera.
+- The video model draws touching and handling wrongly (bent fingers, doors that open twice, objects that pass through hands). Never write a close-up of hands, and never write an action where hands grip, touch, pick up, hand over, open, close, push, pull, put on, take off, fold, unfold or adjust anything (doors, gates, umbrellas, coats, keys, phones, cups). A person may hold an object that was already in the hand at the start (an umbrella while walking), but the shot must not show the hand or the handling. Show mood through the whole body, the walk, the face and the gaze, the weather and the place.
 - Every scene can be shot from one still frame: one place, one main action, no cut inside it, no flashback, and no text, signs or logos.
 - Name no brands, songs, artists or real people. English everywhere except "title_ko", "logline_ko" and "ko".
 - A person must not be added when the request has none."""
@@ -687,6 +688,15 @@ STORY_PERSON_KO_RE = re.compile(r"남성|여성|남자|여자|사람|인물|소�
 # (11-17 메인 첫 긴 영상: "static wide shot, walks left to right across the frame" → 마지막 프레임이 빈 거리 → 다음 장면이 사람 없이 시작)
 EXIT_RE = re.compile(r"\b(?:exits?|exiting|leaves? (?:the )?(?:frame|shot|screen)|out of (?:the )?(?:frame|shot|view)|off[- ]?(?:screen|frame)"
                      r"|disappears?|vanish(?:es)?|across the (?:whole )?frame|to the (?:right|left|far) edge|reach(?:es)? the (?:right|left) edge)\b", re.I)
+
+
+# 영상 모델이 물리를 자주 틀리는 접촉 동작. 11-18 3분 실측: 우산 손잡이를 쥔 손 클로즈업의 손가락, 두 문이 동시에 열린 채 문을 잡는 장면.
+# 손으로 물건을 쥐거나 만지거나 주고받는 동작, 문·우산·옷을 여닫고 입고 벗는 동작은 구성안에서 쓰지 않는다 (몸과 얼굴, 걸음, 시선으로 감정을 보인다)
+PHYSICS_RE = re.compile(
+    r"\b(?:hands?|fingers?|palms?|knuckles?|grips?|gripping|grasps?|grasping|clutch(?:es|ing)?|fists?|wrists?)\b"
+    r"|\b(?:opens?|opening|closes?|closing|shuts?|pushes?|pushing|pulls?|pulling|unlocks?|locks?|knocks?)\b[^.;]{0,25}\b(?:doors?|gates?|umbrella|window|zipper|coat|jacket|buttons?)\b"
+    r"|\b(?:doors?|gates?)\b[^.;]{0,20}\b(?:opens?|opening|swings?|closes?|closing)\b"
+    r"|\b(?:picks? up|pick(?:ing)? up|puts? down|putting down|hands? over|hold(?:s|ing) out|reach(?:es|ing) (?:out|for|into)|takes? (?:out|off)|puts? on|puts? away|pulls? out|unfold(?:s|ing)?|fold(?:s|ing)?|adjusts?|tightens?|buttons?|zips?)\b", re.I)
 
 
 def story_counts(seconds: float) -> tuple[int, int, int]:
@@ -771,6 +781,10 @@ def story_problems(data, seconds: float, person_ok: bool = True) -> list[str]:
             p.append(f"Scene {i + 1} continues scene {i}, so scene {i} must end with the subject still in frame, but its action "
                      f'or shot lets it leave ("{EXIT_RE.search(_s(sc.get("action")) + " " + _s(sc.get("shot"))).group(0)}"): '
                      "keep the subject in frame with a tracking camera or a walk toward or away from the camera.")
+        mt = PHYSICS_RE.search(_s(sc.get("action")) + " " + _s(sc.get("shot")))
+        if mt:
+            p.append(f'Scene {i}: "{mt.group(0)}" is a hand or handling action the video model draws wrongly. Rewrite the shot so no hands, '
+                     "doors, umbrellas, coats or objects are touched, opened, closed or moved; show the mood with the whole body, the walk, the face or the place.")
         for k in ("shot", "action", "sound"):
             v = _s(sc.get(k))
             if not v:
