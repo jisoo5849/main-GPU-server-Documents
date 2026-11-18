@@ -1849,6 +1849,12 @@ async def t_long_progress_shows_scene_and_step_next_to_the_percent():
     assert p["pct"] is None and p["band"] is None and p["text"] == "구성안 쓰는 중"     # % 없는 단계는 글만
 
 
+def t_scene_hint_follows_the_story_style():
+    assert D.Director.scene_hint({"bible": {}}) == D.Director.SCENE_HINT                 # 사진(기본)
+    h = D.Director.scene_hint({"bible": {"style": "cel-shaded 3D with hand-drawn outlines"}})
+    assert "cel-shaded 3D" in h and "Not a photograph" in h and "one still frame" in h
+
+
 async def t_long_video_empty_chained_frame_falls_back_to_a_scene_image():
     """11-17 메인: 앞 장면이 사람이 나간 채 끝나 이어 받은 첫 화면에 사람이 없으면, 그 장면은 새 장면 이미지로 다시 시작한다"""
     old = settings.results_dir
