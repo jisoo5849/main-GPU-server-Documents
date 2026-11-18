@@ -71,6 +71,43 @@ def t_mix_and_final_commands():
     assert "linear=true" not in A.final_audio_filter(None)
 
 
+def t_transitions_are_clamped_and_total_shrinks_by_overlaps():
+    assert A.fit_transitions([10, 10, 10], None) == [0.0, 0.0] and A.fit_transitions([10, 10, 10], [0.6]) == [0.0, 0.0]   # 길이가 안 맞으면 전부 컷
+    assert A.fit_transitions([10, 10, 10], [0.6, 0]) == [0.6, 0.0]
+    assert A.fit_transitions([10, 1.0], [0.6]) == [0.45]                  # 짧은 쪽 절반을 넘지 않는다
+    assert A.fit_transitions([10, 0.2], [0.6]) == [0.0] and A.fit_transitions([10, 10], ["x"]) == [0.0]
+    assert abs(A.timeline_total([10, 10, 10], [0.6, 0.0]) - 29.4) < 1e-9
+
+
+def t_video_filter_mixes_dissolves_and_cuts():
+    f = A.build_video_filter([10, 10, 10], [0.6, 0.0], 24)
+    assert f.count("fps=24,settb=AVTB,setsar=1,format=yuv420p") == 3
+    assert "[v0][v1]xfade=transition=fade:duration=0.600:offset=9.400[x1]" in f
+    assert f.endswith("[x1][v2]concat=n=2:v=1:a=0[v]")                    # 컷은 그대로 잇는다
+    f2 = A.build_video_filter([10, 10, 10], [0.6, 0.6], 24)
+    assert "[x1][v2]xfade=transition=fade:duration=0.600:offset=18.800[v]" in f2    # 앞 디졸브로 줄어든 길이 기준
+    assert A.build_video_filter([5], [], 24).endswith("[v0]null[v]")
+
+
+def t_mix_filter_crossfades_at_dissolves_and_keeps_edge_fades_at_cuts():
+    f = A.build_mix_filter([10, 10, 10], [True, True, True], [0, 0, 0], None, [0.6, 0.0])
+    assert "[a0][a1]acrossfade=d=0.600:c1=tri:c2=tri[y1]" in f and f.endswith("[y1][a2]concat=n=2:v=0:a=1[mix]")
+    a0 = [p for p in f.split(";") if p.endswith("[a0]")][0]
+    a1 = [p for p in f.split(";") if p.endswith("[a1]")][0]
+    assert "afade=t=in" in a0 and "afade=t=out" not in a0                  # 디졸브 쪽 가장자리에는 페이드를 넣지 않는다
+    assert "afade=t=in" not in a1 and "afade=t=out" in a1                  # 앞이 디졸브, 뒤가 컷
+    fm = A.build_mix_filter([10, 10], [True, True], [0, 0], -8.0, [0.6])
+    assert "atrim=0:19.400" in fm and "[y" not in fm.split("[sfx]")[0].split(";")[-1] or "[sfx]" in fm       # 음악은 겹침을 뺀 전체 길이
+    assert A.build_mix_filter([10, 10], [True, True], [0, 0], None, [0.0]) == A.build_mix_filter([10, 10], [True, True], [0, 0], None)
+
+
+def t_xfade_command_reencodes_and_uses_mix_audio():
+    cmd = A.build_xfade_cmd(["a.mp4", "b.mp4"], "/t/mix.wav", "/r/o.mp4", "VF", MEAS)
+    assert cmd.count("-i") == 3 and cmd[cmd.index("-filter_complex") + 1] == "VF" and cmd[cmd.index("-map") + 1] == "[v]"
+    assert "libx264" in cmd and "2:a:0" in cmd and "-shortest" in cmd and cmd[-1] == "/r/o.mp4"
+    assert "-an" in A.build_xfade_cmd(["a.mp4"], None, "/r/o.mp4", "VF", None)
+
+
 def t_same_video_needs_matching_streams():
     p = {"width": 1280, "height": 704, "vcodec": "h264", "fps": "24/1", "pix_fmt": "yuv420p"}
     assert A.same_video([p, dict(p)]) and not A.same_video([p, dict(p, fps="25/1")]) and not A.same_video([])
@@ -117,6 +154,12 @@ def t_real_join_when_ffmpeg_is_present():
         got = A.probe(out)
         assert abs(got["duration"] - 5.0) < 0.3 and got["audio"] and info["scenes"] == 2 and info["music"]
         assert not os.path.exists(out + ".part.mp4")
+        # 디졸브: 겹친 만큼 짧아지고(2+3-0.6), 소리도 이어진다
+        c = make("c.mp4", 3, True)
+        out2 = os.path.join(tmp, "out", "dissolve.mp4")
+        info2 = A.run([a, c], music, out2, True, [0.6])
+        got2 = A.probe(out2)
+        assert abs(got2["duration"] - 4.4) < 0.3 and got2["audio"] and info2["dissolves"] == 1 and not info2["copy_video"]
 
 
 if __name__ == "__main__":

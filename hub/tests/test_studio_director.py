@@ -1567,8 +1567,9 @@ class LongDeps(FakeDeps):
         await asyncio.sleep(0.01)
         return {"story": copy.deepcopy(LONG_STORY), "violations": [], "rounds": 1}
 
-    def assemble(self, clips, music, out, sound=True):
+    def assemble(self, clips, music, out, sound=True, transitions=None):
         self.calls.append(("assemble", (list(clips), music, out)))
+        self.transitions = transitions
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
             f.write(b"final video")
@@ -1690,6 +1691,8 @@ async def t_long_video_story_plan_scenes_music_and_assembly():
             work = t["work"]
             assert len(work["scenes"]) == 3 and all(s.get("clip_sha") for s in work["scenes"]) and work["music_rel"].endswith(".mp3")
             assert work["scenes"][1]["first_from"] == "last" and work["scenes"][0]["first_from"] == "image"
+            firsts = [s["first_from"] for s in work["scenes"]]
+            assert deps.transitions == [D.DISSOLVE_SECONDS if f == "last" else 0.0 for f in firsts[1:]] and any(deps.transitions)   # 이어 만든 이음새만 디졸브
             assert {"story", "scenes", "music", "assemble"} <= set(fs.stages)
             prog = fs.progress[t["id"]]
             assert prog["title"] == "긴 영상 만드는 중" and [c["key"] for c in prog["chips"]] == ["story", "scenes", "music", "assemble"]
