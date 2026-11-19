@@ -189,6 +189,44 @@ def t_real_dialogue_join_when_ffmpeg_is_present():
         assert abs(A.probe(os.path.join(tmp, "o", "nomusic.mp4"))["duration"] - 10.0) < 0.3 and info2["music"] is False
 
 
+def t_voice_trim_command_and_subtitle_wrapping():
+    """대사 소리: 앞뒤 무음과 작은 숨·잡음 꼬리를 자르고 끝에 0.3초 무음 (11-19 숲길: 10초 대사 뒤 22초 잡음 꼬리)"""
+    cmd = A.build_voice_cmd("in.mp3", "out.wav")
+    af = cmd[cmd.index("-af") + 1]
+    assert af.count("silenceremove=start_periods=1:start_threshold=-50dB") == 2 and af.count("areverse") == 2
+    assert af.endswith("apad=pad_dur=0.30") and cmd[-1] == "out.wav" and "pcm_s16le" in cmd
+    # 자막 줄바꿈: 띄어쓰기에서 나누고, 긴 낱말은 글자 단위로, 세 줄을 넘으면 마지막 줄에 모은다
+    fits = lambda t: len(t) <= 10      # noqa: E731
+    assert A.wrap_subtitle("아픔은 없애는 게 아니란다. 함께 걸어가는 법을", fits) == ["아픔은 없애는 게", "아니란다. 함께", "걸어가는 법을"]
+    assert A.wrap_subtitle("가" * 25, fits) == ["가" * 10, "가" * 10, "가" * 5]
+    assert len(A.wrap_subtitle("하나 둘 셋 넷 다섯 여섯 일곱 여덟 아홉 열 열하나 열둘", lambda t: len(t) <= 6)) == 3
+    assert A.wrap_subtitle("  ", fits) == []
+
+
+def t_subtitle_png_is_transparent_when_pillow_and_font_exist():
+    """ComfyUI 로 저장한 PNG 는 투명도가 빠져 자막 구간이 검게 덮였다 (11-19). 허브가 RGBA 로 바로 그린다"""
+    try:
+        from PIL import Image
+    except ImportError:
+        print("  (Pillow 가 없어 자막 그림 시험은 건너뜀)")
+        return
+    if not A.subtitle_font():
+        print("  (한글 글꼴이 없어 자막 그림 시험은 건너뜀)")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        out = A.render_subtitle("할아버지, 아픈 건 언제 없어져요?", (640, 352), os.path.join(tmp, "s.png"))
+        img = Image.open(out)
+        assert img.mode == "RGBA" and img.size == (640, 352) and img.getpixel((5, 5))[3] == 0
+        box = img.getbbox()
+        assert box and box[1] > 352 * 0.6                     # 글자는 아래쪽에만 있다
+    keep = A.subtitle_font
+    A.subtitle_font = lambda: None
+    try:                                                     # 글꼴이 없으면 그리지 않는다 (자막 없이 합치고 안내 한 줄)
+        assert A.render_subtitle("x", (64, 64), os.path.join(tempfile.gettempdir(), "never.png")) is None
+    finally:
+        A.subtitle_font = keep
+
+
 def t_same_video_needs_matching_streams():
     p = {"width": 1280, "height": 704, "vcodec": "h264", "fps": "24/1", "pix_fmt": "yuv420p"}
     assert A.same_video([p, dict(p)]) and not A.same_video([p, dict(p, fps="25/1")]) and not A.same_video([])

@@ -30,6 +30,16 @@ MUTE_RE = re.compile(r"소리\s*(?:는|도|를|가)?\s*(?:없이|빼|꺼|필요\
                      r"|\bsilent\b|\bno sound\b|without sound", re.I)
 
 
+# 대사가 있는 영상 (11-19): 따옴표로 쓴 말, 또는 대화·대사·말하기 말. 긴 영상이면 목소리를 먼저 녹음하는 대사 영상으로 만든다
+DIALOGUE_RE = re.compile(r"[\"“”「『][^\"“”」』]{2,}[\"“”」』]|대사|대화|이야기를\s*나누|말을\s*(?:걸|주고받)|말하(?:며|고|는|면서|자)"
+                         r"|묻(?:고|는|자|으며)|물어보|대답|답하|설명해\s*주|속삭이|외치|수다|인터뷰|토론|낭독|내레이션")
+
+
+def wants_dialogue(text: str) -> bool:
+    """요청에 사람이 말하는 장면이 있는가 (따옴표 대사, 대화·설명·묻고 답하기 말)"""
+    return bool(DIALOGUE_RE.search(text or ""))
+
+
 class InputError(ValueError):
     def __init__(self, code: str, message: str):
         super().__init__(message)

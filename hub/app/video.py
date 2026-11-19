@@ -1049,16 +1049,18 @@ async def write_story(call, text: str, notes: str, seconds: float, rounds: int =
     return best[0], best[1], rnd
 
 
-async def storyboard(user, ip: str, username: str, slug: str, text: str, notes: str = "", seconds=None) -> dict:
-    """긴 영상 구성안 (감독이 계획 카드 전에 한 번). 못 쓰면 PromptxError"""
+async def storyboard(user, ip: str, username: str, slug: str, text: str, notes: str = "", seconds=None,
+                     dialogue: bool = False) -> dict:
+    """긴 영상 구성안 (감독이 계획 카드 전에 한 번). dialogue 면 대사 영상 구성안. 못 쓰면 PromptxError"""
     from . import llm
 
     text = clean_input(text)
     notes = str(notes or "").strip()[:2000]
     sec = max(STORY_MIN_SECONDS, min(STORY_MAX_SECONDS, float(seconds or 60)))
+    writer = write_dialogue_story if dialogue else write_story
     try:
         async with llm.llm_turn(user, ip, settings.expand_model, "video_story") as call:
-            story, left, rounds = await write_story(call, text, notes, sec)
+            story, left, rounds = await writer(call, text, notes, sec)
     except llm.HelperBusy as e:
         raise PromptxError(str(e), 503) from None
     except RuntimeError as e:
@@ -1066,6 +1068,261 @@ async def storyboard(user, ip: str, username: str, slug: str, text: str, notes: 
     if story is None:
         raise PromptxError("구성안을 만들지 못했습니다: " + "; ".join(left[:3]), 502)
     return {"story": story, "violations": left, "rounds": rounds, "model": settings.expand_model}
+
+
+# ── 대사 영상 구성안 (11-19, docs/short-film-dialogue-design.md 12절) ──
+# 숲길 단편(11-19)에서 손으로 확인한 방식: 목소리를 먼저 녹음하고(인물마다 목소리 하나로 고정), 말하는 장면은 그 사람만 화면에 두고
+# 대사 소리로 입을 맞추고(LTX-2.3 IA2V), 나머지 장면은 긴 영상과 같이 만든 뒤 디졸브·대사·자막·음악으로 합친다.
+DIALOGUE_EXTRA = """
+This film has spoken dialogue in Korean. The voices are recorded first, one fixed voice per character, and each speaking shot is lip-synced to its recorded line. Follow these extra rules:
+- Every character who speaks also has "name_ko" (the Korean name or role word, for example "니키" or "할아버지"), "voice" (an English description for a voice designer: age, gender, pitch, timbre, pace and manner, at most 40 words; never name a real person, actor or famous voice) and "voice_ko" (a short Korean description of the voice).
+- Each scene also has "kind", "speaker", "line_ko" and "emotion":
+  - "talk": one character speaks one line to someone off-screen. "characters" is exactly that one character and "speaker" is its id. The shot is a close-up or medium close-up of the speaker alone in the frame, the face in three-quarter view toward the listener, with a still or very slowly pushing camera. "action" describes the face, the eyes and small head movements while speaking. Never two people in a talk scene.
+  - "shot": every other scene (the place, walking together, a listening face, an insert, a reveal). It may carry a voice-over line, heard while the speaker is far away, seen from behind or off-screen: then "speaker" is that character and "line_ko" is the line; otherwise both are "".
+  - "line_ko": natural spoken Korean, one or two short sentences, at most 60 Korean characters. Never put the speaker's name in front of the line.
+  - "emotion": how the line is said, in English (for example "calm and wise, slow"); "" when the scene has no line.
+- Write about one line for every 8 to 12 seconds of film, in the order of the conversation. Let the speakers take turns naturally, and now and then cut to the listener's face (a "shot" close-up with no line).
+- The "seconds" of a talk scene is your guess of how long the line takes (about 1 second per 4 Korean characters plus 1); the film follows the recorded voice later.
+- A talk scene never continues the previous scene and is never continued: "continues" is false for a talk scene and for the scene right after it."""
+DIALOGUE_LINE_MAX = 80          # 대사 한 줄의 글자 수 상한 (규칙은 60, 넘어도 80 까지는 쓴다)
+DIALOGUE_SCHEMA = json.loads(json.dumps(STORY_SCHEMA))
+DIALOGUE_SCHEMA["properties"]["bible"]["properties"]["characters"]["items"]["properties"].update(
+    {"name_ko": {"type": "string"}, "voice": {"type": "string"}, "voice_ko": {"type": "string"}})
+DIALOGUE_SCHEMA["properties"]["scenes"]["items"]["required"] += ["kind", "speaker", "line_ko", "emotion"]
+DIALOGUE_SCHEMA["properties"]["scenes"]["items"]["properties"].update(
+    {"kind": {"type": "string", "enum": ["talk", "shot"]}, "speaker": {"type": "string"}, "line_ko": {"type": "string"},
+     "emotion": {"type": "string"}})
+REAL_VOICE_RE = re.compile(r"\b(?:like|sounds? like|in the style of|imitat\w*|impersonat\w*)\s+(?:[A-Z][a-z]+\s?){1,3}\b")
+
+
+def dialogue_problems(data, seconds: float, person_ok: bool = True) -> list[str]:
+    """대사 영상 구성안 검사: 긴 영상 검사 + 대사·목소리 규칙. 고칠 말을 영어로 돌려준다"""
+    p = story_problems(data, seconds, person_ok)
+    if not isinstance(data, dict):
+        return p
+    bible = data.get("bible") if isinstance(data.get("bible"), dict) else {}
+    chars = {_s(c.get("id")): c for c in bible.get("characters") or [] if isinstance(c, dict) and _s(c.get("id"))}
+    scenes = data.get("scenes") if isinstance(data.get("scenes"), list) else []
+    speakers, talks, lines = [], 0, 0
+    for i, sc in enumerate(scenes, 1):
+        if not isinstance(sc, dict):
+            continue
+        kind, who, line = _s(sc.get("kind")), _s(sc.get("speaker")), _s(sc.get("line_ko"))
+        if kind not in ("talk", "shot"):
+            p.append(f'Scene {i}: "kind" must be "talk" or "shot".')
+            continue
+        if line or kind == "talk":
+            if who not in chars:
+                p.append(f'Scene {i}: "speaker" "{who}" is not in bible.characters.')
+            if not HANGUL_RE.search(line):
+                p.append(f'Scene {i}: "line_ko" must be a spoken Korean line.')
+            elif len(line) > DIALOGUE_LINE_MAX:
+                p.append(f'Scene {i}: the line has {len(line)} characters; keep it under 60 (split it over two scenes).')
+            if not _s(sc.get("emotion")) or HANGUL_RE.search(_s(sc.get("emotion"))):
+                p.append(f'Scene {i}: "emotion" must say in English how the line is spoken.')
+            if who in chars and who not in speakers:
+                speakers.append(who)
+            lines += 1
+        if kind == "talk":
+            talks += 1
+            if [_s(c) for c in sc.get("characters") or []] != [who]:
+                p.append(f'Scene {i} is a talk scene: "characters" must be exactly ["{who}"] (the speaker alone in the frame).')
+            rank = shot_rank(_s(sc.get("shot")))
+            if rank is None or rank > 2:
+                p.append(f'Scene {i} is a talk scene: the shot must be a close-up or a medium close-up of the speaker.')
+            if sc.get("continues") is True:
+                p.append(f"Scene {i} is a talk scene, so it cannot continue the previous scene.")
+        prev = scenes[i - 2] if i > 1 and isinstance(scenes[i - 2], dict) else None
+        if prev is not None and _s(prev.get("kind")) == "talk" and sc.get("continues") is True:
+            p.append(f"Scene {i} comes right after a talk scene, so it cannot continue it.")
+    if not talks:
+        p.append('The film needs talk scenes: write at least one "talk" scene with a spoken line.')
+    for cid in speakers:
+        c = chars[cid]
+        v = _s(c.get("voice"))
+        if not _s(c.get("name_ko")) or not HANGUL_RE.search(_s(c.get("name_ko"))):
+            p.append(f'Character "{cid}" speaks, so it needs a Korean "name_ko".')
+        if not v or HANGUL_RE.search(v):
+            p.append(f'Character "{cid}" speaks, so it needs an English "voice" description.')
+        elif len(v.split()) > 55:
+            p.append(f'The voice of "{cid}" has {len(v.split())} words; keep it under 40.')
+        elif REAL_VOICE_RE.search(v):
+            p.append(f'The voice of "{cid}" refers to a real or famous voice; describe the voice itself instead.')
+    return p[:16]
+
+
+def clean_dialogue_story(data, seconds: float) -> dict | None:
+    """대사 영상 구성안을 다듬는다: 긴 영상 다듬기 + 장면의 말하는 사람·대사, 인물의 이름·목소리. 대사가 하나도 없으면 None"""
+    story = clean_story(data, seconds)
+    if story is None:
+        return None
+    raw = [sc for sc in data.get("scenes") or [] if isinstance(sc, dict)]
+    rawc = {_s(c.get("id")): c for c in (data.get("bible") or {}).get("characters") or [] if isinstance(c, dict)}
+    chars = {c["id"]: c for c in story["bible"]["characters"]}
+    for c in story["bible"]["characters"]:
+        rc = rawc.get(c["id"]) or {}
+        voice = _s(rc.get("voice"))
+        c["name_ko"] = _s(rc.get("name_ko"))[:20] or c["id"]
+        c["voice"] = "" if HANGUL_RE.search(voice) else voice[:400]
+        c["voice_ko"] = _s(rc.get("voice_ko"))[:80]
+    lines = 0
+    for i, (sc, rs) in enumerate(zip(story["scenes"], raw)):
+        who, line = _s(rs.get("speaker")), _s(rs.get("line_ko"))[:DIALOGUE_LINE_MAX]
+        ok = who in chars and bool(HANGUL_RE.search(line))
+        talk = ok and _s(rs.get("kind")) == "talk"
+        sc.update(kind="talk" if talk else "shot", speaker=who if ok else "", line_ko=line if ok else "",
+                  emotion=_s(rs.get("emotion"))[:120] if ok and not HANGUL_RE.search(_s(rs.get("emotion"))) else "")
+        if talk:
+            sc["characters"] = [who]
+            sc["continues"] = False
+            if i + 1 < len(story["scenes"]):
+                story["scenes"][i + 1]["continues"] = False
+        lines += 1 if ok else 0
+    if not lines:
+        return None
+    for c in story["bible"]["characters"]:
+        if not c["voice"] and any(s["speaker"] == c["id"] for s in story["scenes"]):
+            c["voice"] = "A natural, clear Korean speaking voice that suits the character, calm and steady."
+    story["dialogue"] = True
+    return story
+
+
+async def write_dialogue_story(call, text: str, notes: str, seconds: float, rounds: int = 3) -> tuple[dict | None, list[str], int]:
+    """대사 영상 구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수)"""
+    count, n_min, n_max = story_counts(seconds)
+    n_max = max(n_max, math.ceil(float(seconds) / 5))      # 말하는 장면은 짧다: 장면이 더 많아도 된다
+    system = STORY_SYSTEM.format(seconds=int(seconds), keys=", ".join(MUSIC_KEYS), count=count, n_min=n_min, n_max=n_max,
+                                 tolerance=story_tolerance(seconds)) + DIALOGUE_EXTRA
+    user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "")
+    said = f"{text or ''} {notes or ''}"
+    person_ok = True if PERSON_REQ_RE.search(said) or STORY_PERSON_KO_RE.search(said) else bool(re.search(r"대화|대사|말하", said))
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    best, problems, rnd = None, ["no answer"], 0
+    for rnd in range(1, rounds + 1):
+        reply = await call({"messages": messages, "format": DIALOGUE_SCHEMA, "think": False, "options": {"temperature": 0.7}})
+        content = (reply.get("message") or {}).get("content", "")
+        try:
+            data = parse_json_reply(content)
+        except PromptxError as e:
+            data, problems = None, [str(e)]
+        else:
+            problems = [x for x in dialogue_problems(data, seconds, person_ok)
+                        if not (x.startswith("Write ") and "scenes (you wrote" in x)]     # 장면 수는 대사 수를 따른다
+        story = clean_dialogue_story(data, seconds) if data is not None else None
+        if story is not None and (best is None or len(problems) < len(best[1])):
+            best = (story, problems)
+        if not problems:
+            break
+        messages = messages + [{"role": "assistant", "content": content or "{}"}, repair_message(problems)]
+    if best is None:
+        return None, problems, rnd
+    return best[0], best[1], rnd
+
+
+def speakers_of(story: dict) -> list[str]:
+    """대사가 있는 인물 id (처음 말하는 차례대로)"""
+    out = []
+    for sc in story.get("scenes") or []:
+        if sc.get("line_ko") and sc.get("speaker") and sc["speaker"] not in out:
+            out.append(sc["speaker"])
+    return out
+
+
+def speaker_side(story: dict, cid: str) -> str:
+    """말하는 사람이 바라보는 화면 쪽. 대화하는 두 사람이 서로 마주 보게(180도 규칙) 첫 번째는 오른쪽, 두 번째는 왼쪽을 본다"""
+    order = speakers_of(story)
+    return "right" if (order.index(cid) if cid in order else 0) % 2 == 0 else "left"
+
+
+def cast_scene(story: dict, i: int) -> str | None:
+    """장면 i 의 첫 화면을 인물 기준 그림에서 고쳐 만들 인물 id. 말하는 장면은 그 사람, 대사 없는 장면도 한 사람만 가깝게(미디엄 이하)
+    나오면 그 사람 (듣는 얼굴 등). 여럿이 나오거나 멀리 잡은 장면은 None: 긴 영상과 같이 장면 이미지를 새로 그린다"""
+    sc = story["scenes"][i]
+    if not story.get("dialogue"):
+        return None
+    if sc.get("kind") == "talk":
+        return sc.get("speaker") or None
+    chars = sc.get("characters") or []
+    rank = shot_rank(sc.get("shot") or "")
+    return chars[0] if len(chars) == 1 and rank is not None and rank <= 2 else None
+
+
+def cast_ids(story: dict) -> list[str]:
+    """기준 그림이 필요한 인물 id (처음 나오는 차례대로)"""
+    out = []
+    for i in range(len(story.get("scenes") or [])):
+        cid = cast_scene(story, i)
+        if cid and cid not in out:
+            out.append(cid)
+    return out
+
+
+def _look(story: dict, cid: str) -> str:
+    look = next((c["look"] for c in story["bible"]["characters"] if c["id"] == cid), "").strip()
+    return look if not look or look.endswith((".", "!", "?")) else look + "."
+
+
+def _style_line(story: dict) -> str:
+    st = story_style(story)
+    return f" Style: {st}" if st else " Photorealistic cinematic look."
+
+
+VOICE_REF_TEXT = "안녕하세요. 오늘은 바람이 참 좋네요. 천천히 함께 걸어 볼까요?"
+
+
+def voice_instruct(story: dict, cid: str) -> str:
+    """목소리 설계 지시문 (인물마다 한 번, 이 목소리를 모든 대사에 복제해 쓴다)"""
+    c = next((c for c in story["bible"]["characters"] if c["id"] == cid), {})
+    voice = c.get("voice") or "A natural, clear Korean speaking voice."
+    return f"{voice.rstrip('.')}. Natural Korean speech, clear pronunciation. Emotion: calm and friendly, relaxed."
+
+
+def cast_prompt(story: dict, cid: str) -> str:
+    """인물 기준 그림 (Z-Image): 말하는 장면·혼자 나오는 가까운 장면은 모두 이 그림을 고쳐 만들어 얼굴을 맞춘다"""
+    side = speaker_side(story, cid)
+    return (f"Character reference portrait of one person: {_look(story, cid)} Head and shoulders, centered in a wide frame, "
+            f"the face in three-quarter view turned toward the {side} side of the frame, a calm natural expression, mouth closed, "
+            "hands not visible, a plain softly lit neutral background, soft even light, sharp detail on the face and clothing. "
+            "Only this one person, no text." + _style_line(story))
+
+
+def cast_edit_prompt(story: dict, i: int) -> str:
+    """기준 그림을 장면 i 의 첫 화면으로 고치는 편집 지시 (Qwen 편집). 얼굴·옷은 그대로, 구도·표정·배경만 바꾼다"""
+    sc = story["scenes"][i]
+    b = story["bible"]
+    cid = sc.get("speaker") if sc.get("kind") == "talk" else (sc.get("characters") or [""])[0]
+    side = speaker_side(story, cid)
+    place = next((p["look"] for p in b["places"] if p["id"] == sc["place"]), "")
+    mood = sc.get("emotion") or "attentive and natural"
+    talking = "lips slightly parted as if about to speak" if sc.get("kind") == "talk" else "listening quietly, lips closed"
+    return (f"Keep the same person from the image exactly: the same face, age, hair, clothing and colours. {sc['shot']}. "
+            f"The head is turned in three-quarter view toward the {side} side of the frame, looking at someone off-screen, "
+            f"a {mood} expression, {talking}. The background is now this place, softly out of focus: {place} "
+            f"Time: {b['time']} Light: {b['light']} The hands are not visible. Only this one person in the frame."
+            + _style_line(story))[:1990]
+
+
+def talk_prompt(story: dict, i: int) -> str:
+    """말하는 장면 영상 글 (LTX-2.3 IA2V). 다른 사람을 지어내지 않게 '화면에 혼자' 를 꼭 넣는다 (11-19 시범: 빼면 화면 밖 상대를 만들어 냄)"""
+    sc = story["scenes"][i]
+    b = story["bible"]
+    cid = sc.get("speaker") or (sc.get("characters") or [""])[0]
+    place = next((p["look"] for p in b["places"] if p["id"] == sc["place"]), "")
+    return (f"{sc['shot']} of one person alone in the frame, no other people: {_look(story, cid)} {sc['action']} "
+            f"The person speaks to someone off-screen to the {speaker_side(story, cid)}, {sc.get('emotion') or 'natural'}; "
+            "the lips and jaw move clearly with the words, natural blinking, small head movements and calm breathing. "
+            f"Behind, softly out of focus: {place} Time: {b['time']} Light: {b['light']}"
+            + _style_line(story) + " The camera stays still with a very slow push in.")[:3000]
+
+
+def line_tokens(line: str) -> int:
+    """목소리 복제의 토큰 상한 (256 단위, 약 12토큰/초). 짧은 대사가 끝나지 않고 늘어지는 것을 막는다 (11-19)"""
+    return 256 if len(line or "") <= 24 else 512
+
+
+def line_max_seconds(line: str) -> float:
+    """대사 소리가 이보다 길면 늘어진 것으로 보고 시드를 바꿔 한 번 더 녹음한다 (한국어 느린 말투 약 초당 3글자 + 여유)"""
+    return 4.0 + len(line or "") * 0.45
 
 
 def pov_line() -> str:

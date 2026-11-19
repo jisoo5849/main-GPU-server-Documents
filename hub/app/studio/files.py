@@ -110,6 +110,51 @@ def write_sample_png(env: dict) -> str:
     return path
 
 
+def write_sample_wav(env: dict) -> str:
+    """레시피 검사(V12)용 0.5초 무음 WAV 를 입력 폴더의 studio/_check/sample.wav 에 만든다 (목소리 복제·입 맞춤 레시피의 LoadAudio)"""
+    import struct
+    rate, n = 16000, 8000
+    data = bytes(2 * n)              # 16비트 무음
+    wav = (b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+           + b"data" + struct.pack("<I", len(data)) + data)
+    path = os.path.join(input_dir(env["slug"]), "studio", "_check", "sample.wav")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(wav)
+    try:
+        os.chmod(path, 0o664)
+    except OSError:
+        pass
+    return path
+
+
+def turn_input_rel(username: str, user_id: int, turn_id, name: str) -> str:
+    """요청 하나가 만든 입력 파일(대사 소리 등)의 입력 폴더 기준 상대 경로: studio/<사용자 폴더>/<요청 앞 8자>/<이름>"""
+    if "/" in name or "\\" in name or ".." in name:
+        raise ValueError("파일 이름이 올바르지 않습니다")
+    return f"{input_subdir(username, user_id)}/{str(turn_id)[:8]}/{name}"
+
+
+def input_write_path(env: dict, rel: str) -> str:
+    """입력 폴더 안에 쓸 파일의 절대 경로 (폴더를 만든다). 폴더 밖으로 나가면 ValueError"""
+    base = os.path.realpath(input_dir(env["slug"]))
+    p = os.path.realpath(os.path.join(base, rel))
+    if not p.startswith(base + os.sep):
+        raise ValueError("입력 폴더 밖 경로입니다")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    return p
+
+
+def own_input(env: dict, path: str):
+    """허브가 입력 폴더에 쓴 파일을 실행 공간(작업공간 주인 권한)이 읽을 수 있게 한다 (write_upload 와 같다)"""
+    try:
+        os.chmod(path, 0o664)
+        os.chmod(os.path.dirname(path), 0o775)
+        os.chown(path, env["linux_uid"], settings.group_gid)
+    except (OSError, KeyError, AttributeError):       # AttributeError: 개발 PC(Windows)에는 chown 이 없다
+        pass
+
+
 def input_path(env: dict, rel: str) -> str | None:
     base = os.path.realpath(input_dir(env["slug"]))
     p = os.path.realpath(os.path.join(base, rel))

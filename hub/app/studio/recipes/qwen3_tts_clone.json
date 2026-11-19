@@ -1,0 +1,152 @@
+{
+ "schema": "studio-recipe-1",
+ "id": "qwen3_tts_clone",
+ "version": 1,
+ "title": "목소리 복제로 대사 녹음 · Qwen3-TTS VoiceClone (CPU)",
+ "quality_label": "빠름",
+ "action": "voice_clone",
+ "engine": "tts",
+ "negative_source": "none",
+ "source": {
+  "nodes": "ComfyUI-QwenTTS (1038lab, GPL-3.0) AILab_Qwen3TTS* 노드, 모델 Qwen3-TTS 1.7B (Apache-2.0)",
+  "why_cpu": "11-19 메인: GPU 로 돌리면 메모리 부족(같은 실행 공간에 LTX 가 올라가 있음). CPU fp32 로 대사 한 줄 약 1~3.5분",
+  "why_cap": "11-19 숲길 단편: 8줄을 한 작업에 넣었더니 한 줄이 끝나지 않고 1024 토큰까지 늘어져 10분 넘게 걸림. 줄마다 따로 접수하고 토큰 상한을 둔다 (약 12토큰/초)"
+ },
+ "prompt": {
+  "3": {
+   "class_type": "LoadAudio",
+   "inputs": {
+    "audio": "studio/_check/sample.wav"
+   }
+  },
+  "1": {
+   "class_type": "AILab_Qwen3TTSVoiceClone_Advanced",
+   "inputs": {
+    "target_text": "안녕하세요.",
+    "model_size": "1.7B",
+    "device": "cpu",
+    "precision": "fp32",
+    "language": "Korean",
+    "max_new_tokens": 512,
+    "do_sample": true,
+    "top_p": 0.9,
+    "top_k": 50,
+    "temperature": 0.9,
+    "repetition_penalty": 1.0,
+    "attention": "auto",
+    "unload_models": false,
+    "seed": 1,
+    "reference_audio": [
+     "3",
+     0
+    ],
+    "reference_text": "",
+    "x_vector_only": true
+   }
+  },
+  "2": {
+   "class_type": "SaveAudioMP3",
+   "inputs": {
+    "audio": [
+     "1",
+     0
+    ],
+    "filename_prefix": "studio/_check/voice",
+    "quality": "V0"
+   }
+  }
+ },
+ "inject": {
+  "prompt": {
+   "node": "1",
+   "input": "target_text",
+   "type": "string",
+   "role": "speech",
+   "max_len": 400
+  },
+  "seed": {
+   "node": "1",
+   "input": "seed",
+   "type": "int",
+   "min": 0,
+   "max": 2147483647
+  },
+  "max_tokens": {
+   "node": "1",
+   "input": "max_new_tokens",
+   "type": "int",
+   "min": 256,
+   "max": 1024,
+   "step": 256
+  },
+  "save_prefix": [
+   {
+    "node": "2",
+    "input": "filename_prefix",
+    "type": "prefix",
+    "suffix": "line"
+   }
+  ],
+  "audio": {
+   "node": "3",
+   "input": "audio",
+   "type": "input_audio"
+  }
+ },
+ "fixed": {
+  "device": {
+   "node": "1",
+   "input": "device",
+   "type": "string",
+   "value": "cpu"
+  },
+  "language": {
+   "node": "1",
+   "input": "language",
+   "type": "string",
+   "value": "Korean"
+  }
+ },
+ "outputs": {
+  "main": {
+   "node": "2",
+   "kind": "audio",
+   "ext": [
+    ".mp3"
+   ]
+  }
+ },
+ "defaults": {},
+ "progress": {
+  "bands": [
+   {
+    "key": "tts",
+    "label": "녹음",
+    "weight": 90,
+    "nodes": [
+     "1",
+     "3"
+    ]
+   },
+   {
+    "key": "save",
+    "label": "마무리",
+    "weight": 10,
+    "nodes": [
+     "2"
+    ]
+   }
+  ]
+ },
+ "inspect": {
+  "output": "main",
+  "when": "off"
+ },
+ "estimate": {
+  "gpu_seconds": 120,
+  "basis": "2026-11-19 메인 CPU 실측: 대사 한 줄 1~3.5분 (GPU 를 쓰지 않지만 대기열 차례는 한 칸)"
+ },
+ "limits": {
+  "max_run_seconds": 900
+ }
+}

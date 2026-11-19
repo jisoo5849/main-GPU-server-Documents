@@ -661,7 +661,7 @@ async def t_all_shipped_recipes_pass_checks_and_build():
         assert recipes.recipe_ok(rep), (rid, [x for x in rep if not x["ok"]])
         p = recipes.build(r, recipes.sample_values(r))
         assert D.negative_problem(r, p) is None, (rid, D.negative_problem(r, p))
-    assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music"}
+    assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music", "voice", "voice_clone", "talk"}
     # 4스텝 LoRA 는 레시피가 켠 채로 고정한다
     assert rs["wan22_t2v_14b_fast"]["prompt"]["128:129"]["inputs"]["value"] is True
     assert rs["qwen_image_edit"]["prompt"]["170:168"]["inputs"]["value"] is True
@@ -1615,10 +1615,13 @@ class LongDeps(FakeDeps):
         if outcome == "success":
             self.n += 1
             main = rec["outputs"]["main"]["node"]
-            if rec["action"] == "image":
-                outs = [{"node_id": main, "rel_path": self._file(f"img_{self.n}.png"), "media": "images"}]
-            elif rec["action"] == "music":
-                outs = [{"node_id": main, "rel_path": self._file(f"music_{self.n}.mp3"), "media": "audio"}]
+            ext = (rec["outputs"]["main"].get("ext") or [".mp4"])[0]
+            if rec["action"] in ("image", "edit"):
+                outs = [{"node_id": main, "rel_path": self._file(f"img_{self.n}{ext}"), "media": "images"}]
+            elif rec["action"] in ("music", "voice", "voice_clone"):
+                outs = [{"node_id": main, "rel_path": self._file(f"{rec['action']}_{self.n}{ext}"), "media": "audio"}]
+            elif rec["action"] == "talk":
+                outs = [{"node_id": main, "rel_path": self._file(f"talk_{self.n}.mp4"), "media": "videos"}]
             else:
                 outs = [{"node_id": main, "rel_path": self._file(f"video_{self.n}.mp4"), "media": "videos"},
                         {"node_id": "901", "rel_path": self._file(f"check_{self.n}.png"), "media": "images"},
@@ -2029,6 +2032,190 @@ async def t_long_video_reset_is_saved_before_the_new_job():
         finally:
             store.merge_work = orig_merge
             settings.results_dir = old
+
+
+# ── 대사 영상 (11-19): 목소리 먼저 → 대사 녹음 → 인물 기준 그림 → 장면(말하는 장면은 입 맞춤) → 음악 → 합치기 ──
+VOICE = recipes.load_all()["qwen3_tts_voice"]
+CLONE = recipes.load_all()["qwen3_tts_clone"]
+TALK = recipes.load_all()["ltx23_ia2v_talk"]
+EDITR = recipes.load_all()["qwen_image_edit"]
+
+
+def dialogue_story():
+    from app import video
+    raw = {
+        "title_ko": "숲길 끝의 화원", "logline_ko": "니키와 푸토르가 숲길을 걸으며 이야기한다.",
+        "bible": {"characters": [
+            {"id": "A", "look": "a twelve-year-old girl with two long black braids, wine-red hat and cape", "name_ko": "니키",
+             "voice": "A twelve-year-old Korean girl, clear and natural.", "voice_ko": "맑은 여자아이"},
+            {"id": "B", "look": "a short old dwarf herbalist with a long white beard", "name_ko": "푸토르",
+             "voice": "A kind Korean grandpa, low warm gravelly voice, slow.", "voice_ko": "굵은 할아버지"}],
+            "places": [{"id": "P1", "look": "a winding forest path"}], "time": "morning", "light": "soft sunbeams",
+            "style": "semi-realistic painterly 2.5D fantasy film look"},
+        "music": {"tags": "gentle fantasy instrumental, piano", "bpm": 70, "key": "D major", "ko": "잔잔한 피아노"},
+        "scenes": [
+            {"seconds": 10, "place": "P1", "characters": ["A", "B"], "continues": False, "shot": "wide shot from behind",
+             "action": "They walk side by side along the path.", "sound": "footsteps", "ko": "둘이 걷는다", "kind": "shot",
+             "speaker": "B", "line_ko": "얘야, 굽은 길은 천천히 보게 해 준단다.", "emotion": "calm and wise"},
+            {"seconds": 6, "place": "P1", "characters": ["A"], "continues": False, "shot": "close-up",
+             "action": "She looks up and asks softly.", "sound": "breeze", "ko": "니키가 묻는다", "kind": "talk", "speaker": "A",
+             "line_ko": "할아버지, 아픈 건 언제 없어져요?", "emotion": "hesitant"},
+            {"seconds": 8, "place": "P1", "characters": ["B"], "continues": False, "shot": "medium close-up",
+             "action": "He smiles and answers slowly.", "sound": "birds", "ko": "푸토르가 답한다", "kind": "talk", "speaker": "B",
+             "line_ko": "아픔은 없애는 게 아니란다.", "emotion": "warm and wise"},
+            {"seconds": 6, "place": "P1", "characters": ["A"], "continues": False, "shot": "close-up",
+             "action": "She listens quietly, eyes lowered.", "sound": "birds", "ko": "니키가 생각한다", "kind": "shot",
+             "speaker": "", "line_ko": "", "emotion": ""}]}
+    story = video.clean_dialogue_story(raw, 30)
+    assert story is not None
+    return story
+
+
+class DialogueDeps(LongDeps):
+    """대사 영상 시험용: 대사 구성안, 녹음 다듬기(길이를 정해 돌려준다), 자막, 대사 합치기를 가짜로"""
+
+    def __init__(self, fs, root, **kw):
+        super().__init__(fs, root, **kw)
+        self.recs.update({VOICE["id"]: VOICE, CLONE["id"]: CLONE, TALK["id"]: TALK, EDITR["id"]: EDITR})
+        self.line_secs = {}            # 입력 파일 이름 → 다듬은 길이 차례 (없으면 목소리 3.0초, 대사 2.6초)
+
+    async def storyboard(self, user, ip, env, **kw):
+        self.calls.append(("storyboard", kw))
+        await asyncio.sleep(0.01)
+        return {"story": dialogue_story(), "violations": [], "rounds": 1}
+
+    def trim_voice(self, src, out):
+        self.calls.append(("trim_voice", (src, out)))
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(b"wav")
+        name = os.path.basename(out)
+        seq = self.line_secs.get(name)
+        return seq.pop(0) if seq else (3.0 if name.startswith("voice") else 2.6)
+
+    def render_subtitle(self, text, size, out):
+        self.calls.append(("render_subtitle", (text, tuple(size))))
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(b"png")
+        return out
+
+    def assemble_dialogue(self, clips, lines, music, out, trims=None):
+        self.calls.append(("assemble_dialogue", (list(clips), [dict(x) for x in lines], music, out, list(trims or []))))
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(b"dialogue video")
+        return {"shots": len(clips), "lines": len(lines), "seconds": 30.0}
+
+
+def dialogue_turn(fs, seconds=30.0):
+    t = new_via(fs, "니키와 푸토르가 숲속을 걸어가며 대화하는 30초 영상", rec=LTX, spec={"seconds": seconds})
+    t["request"]["long"] = True
+    t["request"]["dialogue"] = True
+    return t
+
+
+async def t_dialogue_video_records_voices_first_then_lip_syncs_the_talk_shots():
+    old = (settings.results_dir, settings.envs_dir)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = DialogueDeps(fs, settings.results_dir)
+            deps.line_secs = {"line_2.wav": [3.6]}
+            d = D.Director(deps, dict(deps.recs))
+            assert d.dialogue_ready()
+            t = dialogue_turn(fs)
+            await d.pump(); await settle(d, 10)
+            # 1) 대사 구성안 → 계획 카드: 목소리와 장면마다 대사를 보인다. GPU 작업은 아직 없다
+            assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))
+            assert [c[1].get("dialogue") for c in deps.calls if c[0] == "storyboard"] == [True]
+            plan = plan_msgs(fs)[-1]["data"]["plan"]
+            assert plan["dialogue"] and [v["name"] for v in plan["voices"]] == ["푸토르", "니키"]
+            assert plan["scenes"][0]["line"].startswith("푸토르: 얘야") and not plan["scenes"][0]["talk"] and plan["scenes"][1]["talk"]
+            assert "line" not in plan["scenes"][3]
+            assert not [c for c in deps.calls if c[0] == "submit"]
+            # 2) 승인 → 목소리 둘 → 대사 셋 → 기준 그림 둘 → 장면 넷 → 음악 → 대사 합치기
+            assert await d.approve(t) == "ok"
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            tid = str(t["id"])
+            tags = [c[1]["client_id"].split(f"studio-{tid}-")[1] for c in subs]
+            assert tags == ["V01", "V11", "T01", "T11", "T21", "C01", "C11", "L0i1", "L0v1", "L1e1", "L1v1", "L2e1", "L2v1",
+                            "L3e1", "L3v1", "M1"], tags
+            assert [recipe_of(c) for c in subs] == [VOICE["id"]] * 2 + [CLONE["id"]] * 3 + [IMG["id"]] * 3 + [LTX["id"]] + [
+                EDITR["id"], TALK["id"], EDITR["id"], TALK["id"], EDITR["id"], LTX["id"], MUS["id"]]
+            work = t["work"]
+            # 목소리: 인물마다 한 번 설계하고, 대사는 그 목소리(입력 폴더의 WAV)를 복제해 녹음한다
+            v0 = subs[0][1]["prompt"]["1"]["inputs"]
+            assert v0["instruct"].startswith("A kind Korean grandpa") and v0["device"] == "cpu" and v0["text"] == D._video().VOICE_REF_TEXT
+            t0 = subs[2][1]["prompt"]
+            assert t0["1"]["inputs"]["target_text"].startswith("얘야") and t0["3"]["inputs"]["audio"] == work["voices"]["B"]["in_rel"]
+            assert t0["1"]["inputs"]["max_new_tokens"] == 256 and subs[3][1]["prompt"]["3"]["inputs"]["audio"] == work["voices"]["A"]["in_rel"]
+            assert work["voices"]["B"]["in_rel"].endswith(f"{tid[:8]}/voice_0.wav") and work["lines"]["1"]["in_rel"].endswith("line_1.wav")
+            # 녹음 길이에 맞춰 장면 길이를 고친다: 말하는 장면은 대사 + 1초 (4초 이상), 화면 밖 목소리 장면은 줄이지 않는다
+            secs = [s["seconds"] for s in work["story"]["scenes"]]
+            assert secs == [10, 4, 5, 6], secs
+            # 기준 그림 → 편집한 첫 화면 → 입 맞춤 (대사 소리, 같은 크기, 녹음에 맞춘 길이, 혼자 나오는 글)
+            talk = subs[10][1]["prompt"]
+            assert talk["276"]["inputs"]["audio"] == work["lines"]["1"]["in_rel"] and talk["340:331"]["inputs"]["value"] == 4
+            assert talk["340:330"]["inputs"]["value"] == 1280 and talk["340:324"]["inputs"]["value"] == 704
+            assert "alone in the frame, no other people" in talk["340:319"]["inputs"]["value"]
+            edit = subs[9][1]["prompt"]
+            assert edit["170:151"]["inputs"]["prompt"].startswith("Keep the same person") and "41" in edit
+            staged = [c[1] for c in deps.calls if c[0] == "stage_image"]
+            assert len(staged) == 2 + 1 + 3                     # 기준 그림 둘, 넓은 장면 그림 하나, 편집한 첫 화면 셋
+            assert work["scenes"][1]["first_from"] == "edit" and work["scenes"][3]["first_from"] == "edit"
+            assert work["scenes"][0]["first_from"] == "image"
+            renders = [c[1] for c in deps.calls if c[0] == "render"]
+            assert len(renders) == 2                            # 영상 글은 말 없는 장면 둘만 (말하는 장면은 정해진 글)
+            # 합치기: 대사 셋(화면 밖 목소리 포함)과 자막, 말하는 샷은 대사 끝 + 0.9초에서 자른다
+            clips, lines, mus, out, trims = [c[1] for c in deps.calls if c[0] == "assemble_dialogue"][0]
+            assert [x["shot"] for x in lines] == [0, 1, 2] and all(x.get("sub") and os.path.isfile(x["file"]) for x in lines)
+            assert trims == [None, 3.5, 4.5, None] and mus.endswith(".mp3") and out.endswith(f"dialogue_{tid[:8]}.mp4")
+            assert [c[1][0] for c in deps.calls if c[0] == "render_subtitle"][0].startswith("얘야")
+            res = [m for m in fs.messages if m["kind"] == "result"]
+            assert len(res) == 1 and fs.atts[res[0]["data"]["attachment_ids"][0]]["meta"]["dialogue"]
+            prog = fs.progress[t["id"]]
+            assert prog["title"] == "대사 영상 만드는 중" and [c["key"] for c in prog["chips"]] == [
+                "story", "voices", "scenes", "music", "assemble"]
+            assert "voices" in fs.stages
+            assert kinds(fs).count("dialogue_line") == 3 and kinds(fs).count("dialogue_voice") == 2
+        finally:
+            settings.results_dir, settings.envs_dir = old
+
+
+async def t_dialogue_line_that_runs_on_is_recorded_again_and_a_resume_keeps_the_voices():
+    old = (settings.results_dir, settings.envs_dir)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = DialogueDeps(fs, settings.results_dir)
+            deps.line_secs = {"line_1.wav": [31.9, 2.4]}      # 11-19 숲길 L3: 말이 끝나지 않고 32초로 늘어진 녹음
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": dialogue_story(), "approved": True}
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done", (t["state"], t.get("error"))
+            clones = [c for c in deps.calls if c[0] == "submit" and recipe_of(c) == CLONE["id"]]
+            assert len(clones) == 4 and "dialogue_line_retry" in kinds(fs)
+            assert t["work"]["lines"]["1"]["seconds"] == 2.4 and t["work"]["story"]["scenes"][1]["seconds"] == 4
+            # 실패한 요청을 다시 시도하면 녹음한 목소리·대사·기준 그림을 이어받아 다시 녹음하지 않는다
+            fs2 = FakeStore(); fs2.patch()
+            fs2.turns, fs2.atts = fs.turns, fs.atts
+            deps2 = DialogueDeps(fs2, settings.results_dir)
+            d2 = D.Director(deps2, dict(deps2.recs))
+            t2 = dialogue_turn(fs2)
+            t["state"] = "failed"
+            t2["request"].update(source_turn=str(t["id"]), mode="retry")
+            await d2.pump(); await settle(d2, 20)
+            assert t2["state"] == "done", (t2["state"], t2.get("error"))
+            got = [recipe_of(c) for c in deps2.calls if c[0] == "submit"]
+            assert VOICE["id"] not in got and CLONE["id"] not in got and got.count(IMG["id"]) == 0, got
+        finally:
+            settings.results_dir, settings.envs_dir = old
 
 
 async def main():

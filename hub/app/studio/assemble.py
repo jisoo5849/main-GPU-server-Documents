@@ -441,6 +441,104 @@ def run_dialogue(clips: list[str], lines: list[dict], music: str | None, out: st
             "overlaps": overlaps, "lead": lead, "music": bool(music), "subtitles": len(sub_files), "bytes": os.path.getsize(out)}
 
 
+# ── 대사 소리 다듬기와 자막 그림 (대사 영상, 11-19) ──
+VOICE_GATE_DB = -50.0     # 이보다 작은 소리는 무음으로 본다. 11-19 숲길 단편: 대사 끝 뒤 -58~-80dB 숨·잡음 꼬리가 20초 넘게 붙은 줄이 있었다
+VOICE_PAD = 0.3           # 자른 뒤 끝에 붙이는 무음(초): 마지막 음절이 잘려 들리지 않게
+
+
+def build_voice_cmd(src: str, out: str, gate_db: float = VOICE_GATE_DB, pad: float = VOICE_PAD) -> list[str]:
+    """TTS 결과의 앞뒤 무음(과 긴 숨·잡음 꼬리)을 자르고 끝에 짧은 무음을 붙인 WAV (48kHz 모노). 가운데의 쉼은 그대로 둔다"""
+    edge = f"silenceremove=start_periods=1:start_threshold={gate_db:.0f}dB:start_silence=0.05"
+    af = f"{edge},areverse,{edge},areverse,apad=pad_dur={pad:.2f}"
+    return ["ffmpeg", "-hide_banner", "-nostats", "-y", "-i", src, "-af", af, "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", out]
+
+
+def trim_voice(src: str, out: str) -> float:
+    """대사 소리를 다듬어 out(WAV)에 쓰고 길이(초)를 돌려준다. 소리가 남지 않으면 AssembleError"""
+    if not available():
+        raise AssembleError("허브에 ffmpeg 가 없습니다")
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    tmp = out + ".part.wav"
+    _run(build_voice_cmd(src, tmp))
+    got = probe(tmp)
+    if not got["audio"] or got["duration"] <= VOICE_PAD + 0.05:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise AssembleError("대사 소리에 말소리가 없습니다")
+    os.replace(tmp, out)
+    return round(got["duration"], 3)
+
+
+SUBTITLE_FONTS = ("/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+                  "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                  "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc", r"C:\Windows\Fonts\malgunbd.ttf", r"C:\Windows\Fonts\malgun.ttf")
+
+
+def subtitle_font() -> str | None:
+    """한글 자막 글꼴 (STUDIO_SUBTITLE_FONT 가 먼저). 없으면 None: 자막 없이 합친다 (허브 이미지는 fonts-nanum 을 넣는다)"""
+    first = os.environ.get("STUDIO_SUBTITLE_FONT")
+    for f in ((first,) if first else ()) + SUBTITLE_FONTS:
+        if f and os.path.isfile(f):
+            return f
+    return None
+
+
+def wrap_subtitle(text: str, fits, max_lines: int = 3) -> list[str]:
+    """글을 띄어쓰기에서 나눠 한 줄이 fits(줄) 를 넘지 않게. 한 낱말이 너무 길면 글자 단위로 나눈다"""
+    words = re.sub(r"\s+", " ", str(text or "")).strip().split(" ")
+    lines: list[str] = []
+    cur = ""
+    for w in words:
+        cand = (cur + " " + w).strip()
+        if fits(cand):
+            cur = cand
+            continue
+        if cur:
+            lines.append(cur)
+        cur = ""
+        for ch in w:                   # 낱말 하나가 한 줄보다 길다
+            if fits(cur + ch):
+                cur += ch
+            else:
+                lines.append(cur)
+                cur = ch
+    if cur:
+        lines.append(cur)
+    if len(lines) > max_lines:          # 너무 길면 마지막 줄에 모은다 (화면 밖으로 나가는 것보다 낫다)
+        lines = lines[:max_lines - 1] + [" ".join(lines[max_lines - 1:])]
+    return lines
+
+
+def render_subtitle(text: str, size: tuple[int, int], out: str, font_path: str | None = None) -> str | None:
+    """영상과 같은 크기의 투명 PNG 에 흰 글자 + 검은 테두리 자막을 아래쪽 가운데에 그린다. 글꼴·Pillow 가 없으면 None.
+    11-19 숲길 단편: ComfyUI 로 저장한 PNG 는 투명도가 빠져 자막 구간이 검게 덮였다. 여기서는 RGBA 로 바로 쓴다"""
+    font_path = font_path or subtitle_font()
+    if not font_path:
+        return None
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return None
+    w, h = int(size[0]), int(size[1])
+    fs = max(18, round(h * 0.048))
+    font = ImageFont.truetype(font_path, fs)
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    stroke = max(2, fs // 8)
+    lines = wrap_subtitle(text, lambda t: draw.textlength(t, font=font) <= w * 0.86)
+    step = round(fs * 1.35)
+    y = h - round(h * 0.07) - step * (len(lines) - 1)
+    for ln in lines:
+        draw.text((w / 2, y), ln, font=font, fill=(255, 255, 255, 255), anchor="ms", stroke_width=stroke,
+                  stroke_fill=(0, 0, 0, 220))
+        y += step
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    img.save(out, format="PNG")
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     """python -m app.studio.assemble 타임라인.json 결과.mp4   (타임라인 자리에 - 를 쓰면 표준 입력에서 읽는다)
     타임라인.json: {"clips": [경로…], "lines": [{"file": 경로, "shot": 0, "delay": 0, "gain_db": 0}…], "music": 경로 또는 null,

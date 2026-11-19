@@ -12,10 +12,15 @@ import os
 import re
 
 RECIPE_DIR = os.path.join(os.path.dirname(__file__), "recipes")
-ACTIONS = {"image", "i2v", "t2v", "edit", "music"}       # music: 긴 영상의 배경음악 (ACE-Step, docs/long-video-design.md 7절)
-SLOT_TYPES = {"string", "int", "float", "bool", "input_image", "prefix"}
+ACTIONS = {"image", "i2v", "t2v", "edit", "music",       # music: 긴 영상의 배경음악 (ACE-Step, docs/long-video-design.md 7절)
+           "voice", "voice_clone", "talk"}               # 대사 영상(11-19): 목소리 설계·목소리 복제(Qwen3-TTS), 대사 소리로 입 맞춤(LTX-2.3 IA2V)
+# 대사 영상의 부품: 화질·엔진을 따지지 않고 action 마다 하나를 고른다 (음악과 같다)
+PART_ACTIONS = {"music", "voice", "voice_clone", "talk"}
+# 글이 영상·이미지 모델의 positive 로 가지 않는 레시피(목소리)는 부정 자리도 없다: negative_source "none"
+NO_NEGATIVE_ACTIONS = {"voice", "voice_clone"}
+SLOT_TYPES = {"string", "int", "float", "bool", "input_image", "input_audio", "prefix"}
 SLOT_NAMES = {"prompt", "first_frame", "edit_image", "seed", "frames", "seconds", "width", "height", "check_index", "save_prefix",
-              "duration", "bpm", "keyscale"}
+              "duration", "bpm", "keyscale", "audio", "voice_instruct", "max_tokens"}
 ZERO_OUT = {"ConditioningZeroOut"}
 SAVE_NODES = {"SaveVideo", "SaveImage", "SaveWEBM", "SaveAnimatedWEBP", "SaveAnimatedPNG",
               "SaveAudio", "SaveAudioMP3", "SaveAudioOpus", "SaveAudioAdvanced"}
@@ -92,7 +97,7 @@ def pick(recipe_map: dict, disabled, action: str, quality: str = "fast", engine:
         r = recipe_map[rid]
         if rid in disabled or r["action"] != action:
             continue
-        if action == "music" or (quality_of(r) == quality and engine_of(r) == engine):
+        if action in PART_ACTIONS or (quality_of(r) == quality and engine_of(r) == engine):
             return r
     return None
 
@@ -212,8 +217,9 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
         e.append("version 은 1 이상의 정수여야 합니다")
     if recipe.get("action") not in ACTIONS:
         e.append(f"action 은 {sorted(ACTIONS)} 중 하나여야 합니다")
-    if recipe.get("negative_source") not in ("node", "zero_out"):
-        e.append("negative_source 는 node 또는 zero_out 이어야 합니다")
+    no_neg = recipe.get("action") in NO_NEGATIVE_ACTIONS
+    if recipe.get("negative_source") not in (("none",) if no_neg else ("node", "zero_out")):
+        e.append("negative_source 는 " + ("목소리 레시피면 none" if no_neg else "node 또는 zero_out") + " 이어야 합니다")
     mx = (recipe.get("limits") or {}).get("max_run_seconds")
     if not isinstance(mx, int) or mx <= 0:
         e.append("limits.max_run_seconds 는 0 보다 큰 정수여야 합니다")
@@ -246,11 +252,13 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
             e.append(f"outputs.{name}: prompt 에 노드가 없습니다")
     add("V2", e)
 
-    # V4 긍정 자리
+    # V4 긍정 자리 (목소리 레시피의 글은 말할 대사라 positive 에 닿지 않는다)
     e = []
     ps = slots_of(recipe, "prompt")
     if len(ps) != 1:
         e.append("inject.prompt 는 자리 하나여야 합니다")
+    elif recipe.get("negative_source") == "none":
+        pass
     else:
         roles = roles_of(prompt, str(ps[0]["node"]))
         zero_ok = recipe.get("negative_source") == "zero_out"
@@ -276,6 +284,9 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
                 e.append(f"fixed.negative 노드가 negative 에만 닿아야 합니다 (닿는 곳: {sorted(nr)})")
             if ps and str(neg.get("node")) == str(ps[0].get("node")):
                 e.append("fixed.negative 와 inject.prompt 가 같은 노드입니다")
+    elif recipe.get("negative_source") == "none":
+        if neg:
+            e.append("negative_source=none 이면 fixed.negative 가 없어야 합니다")
     elif recipe.get("negative_source") == "zero_out":
         if neg:
             e.append("negative_source=zero_out 이면 fixed.negative 가 없어야 합니다")
@@ -305,8 +316,13 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
                 for cls, inp in cls_in:
                     if (cls, inp) not in hits:
                         e.append(f"inject.{name} 의 이미지가 {cls or '노드'} 의 {inp} 입력에 닿지 않습니다")
-    if recipe.get("action") == "i2v" and not slots_of(recipe, "first_frame"):
-        e.append("i2v 레시피는 inject.first_frame 이 필요합니다")
+    if recipe.get("action") in ("i2v", "talk") and not slots_of(recipe, "first_frame"):
+        e.append(f"{recipe.get('action')} 레시피는 inject.first_frame 이 필요합니다")
+    for s in slots_of(recipe, "audio"):
+        if prompt.get(str(s.get("node")), {}).get("class_type") != "LoadAudio":
+            e.append("inject.audio 노드는 LoadAudio 여야 합니다")
+    if recipe.get("action") in ("talk", "voice_clone") and not slots_of(recipe, "audio"):
+        e.append(f"{recipe.get('action')} 레시피는 inject.audio 가 필요합니다")
     if recipe.get("action") == "edit" and not slots_of(recipe, "edit_image"):
         e.append("edit 레시피는 inject.edit_image 가 필요합니다")
     add("V6", e)
@@ -339,13 +355,13 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
 
     # V9 금지 노드 (파일만 보고)
     e = []
-    loads = {str(s["node"]) for name in ("first_frame", "edit_image") for s in slots_of(recipe, name)}
+    loads = {str(s["node"]) for name in ("first_frame", "edit_image", "audio") for s in slots_of(recipe, name)}
     for nid, n in prompt.items():
         ct = str(n.get("class_type", ""))
         if BAD_NODE_RE.search(ct):
             e.append(f"노드 {nid}({ct}) 는 채팅 레시피에 쓸 수 없습니다")
-        if ct == "LoadImage" and nid not in loads:
-            e.append(f"노드 {nid}(LoadImage) 가 inject 자리가 아닙니다 (예시 파일이 남아 실행이 실패합니다)")
+        if ct in ("LoadImage", "LoadAudio") and nid not in loads:
+            e.append(f"노드 {nid}({ct}) 가 inject 자리가 아닙니다 (예시 파일이 남아 실행이 실패합니다)")
     add("V9", e)
 
     # V13 진행 띠
@@ -405,11 +421,12 @@ def check_value(slot: dict, value, input_dir: str | None = None):
         if not isinstance(value, bool):
             raise RecipeError(f"{slot['input']} 은 참/거짓이어야 합니다")
         return value
-    if t == "input_image":
+    if t in ("input_image", "input_audio"):
+        what = "이미지" if t == "input_image" else "소리"
         if not isinstance(value, str) or not value or value.startswith("/") or ".." in value.replace("\\", "/").split("/"):
-            raise RecipeError("입력 이미지 경로가 올바르지 않습니다")
+            raise RecipeError(f"입력 {what} 경로가 올바르지 않습니다")
         if input_dir is not None and not os.path.isfile(os.path.join(input_dir, value)):
-            raise RecipeError("입력 이미지 파일이 없습니다")
+            raise RecipeError(f"입력 {what} 파일이 없습니다")
         return value
     if t == "prefix":
         if not isinstance(value, str) or ".." in value or value.startswith("/") or "\\" in value:
@@ -466,6 +483,7 @@ def default_size(recipe: dict, photo: tuple[int, int] | None = None, aspect: str
 # ── 편집 공간이 필요한 검사 V11 (6.4)와 표본 값 V12 ──
 
 SAMPLE_IMAGE = "studio/_check/sample.png"
+SAMPLE_AUDIO = "studio/_check/sample.wav"
 EMPTY_LATENTS = {"EmptyLatentImage", "EmptySD3LatentImage", "EmptyHunyuanLatentVideo", "EmptyFlux2LatentImage"}
 
 
@@ -478,7 +496,8 @@ def sample_values(recipe: dict, frames: int | None = None) -> dict:
             "height": int(d.get("height") or 640), "frames": f, "check_index": max(0, min(f // 2, 80)),
             "first_frame": SAMPLE_IMAGE, "edit_image": SAMPLE_IMAGE,
             "seconds": max(2, min(int(round(max(f - 1, 1) / int(d.get("fps") or 24))), 20)),
-            "bpm": 90, "keyscale": "C major"}
+            "bpm": 90, "keyscale": "C major", "audio": SAMPLE_AUDIO, "voice_instruct": "A calm adult voice.",
+            "max_tokens": 512}
     vals["save_prefix"] = [f"_check/00000000/{s['suffix']}" for s in slots_of(recipe, "save_prefix")]
     if "duration" in inj:      # 음악 길이는 자리가 둘(빈 잠재·글 인코더)이라 자리마다 같은 값
         vals["duration"] = [float(d.get("duration") or 30)] * len(slots_of(recipe, "duration"))

@@ -9,6 +9,7 @@ GPU 는 직접 쓰지 않는다. 모든 GPU 사용은 기존 대기열(llm_turn�
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import random
 import re
@@ -73,7 +74,13 @@ LONG_TAIL = 70                 # 음악 약 40 + 합치기 약 30 [추정]
 LONG_RESUME_MAX = 5            # 허브가 다시 시작될 때 긴 영상을 자동으로 이어 가는 횟수 (재시작이 되풀이될 때 끝없이 돌지 않게)
 DISSOLVE_SECONDS = 0.6     # 이어 만든 장면 사이의 디졸브 길이(초) [추정 값, 메인 시험 전]
 LONG_SCENE_KEYS = ("plan", "scene_prompt", "image_rel", "first_from", "prompt", "ko", "profile", "settings", "frame_known",
-                   "frame_people", "no_chain", "clip_rel", "clip_sha", "last_rel", "check_rel", "seed", "seconds", "violations")
+                   "frame_people", "no_chain", "clip_rel", "clip_sha", "last_rel", "check_rel", "seed", "seconds", "violations",
+                   "edit_rel")
+# 대사 영상 (11-19, docs/short-film-dialogue-design.md 12절)
+TALK_TAIL = 0.9            # 말하는 장면은 대사 끝 + 이만큼에서 자른다 (11-19 숲길: 대사가 끝난 뒤 IA2V 화면이 어두워짐)
+TALK_MIN_SHOT = 3.0
+TALK_PAD = 1.0             # 말하는 장면 길이 = 대사 길이 + 이만큼 (올림, 4~20초)
+DIALOGUE_PART_OVERHEAD = 30   # 녹음·기준 그림·편집마다 실행 말고 더 걸리는 시간(초) [추정]
 # 고쳐 쓴 뒤에도 남으면 그 프롬프트로 영상을 만들지 않는 위반: 요청과 다른 장면(예시 베끼기)이다 (11-16 파일럿 요청)
 BLOCKING_RE = re.compile(r"copies the EXAMPLE|describes a different scene")
 PLAN_ACTIONS = [{"id": "approve", "label": "승인"}, {"id": "cancel", "label": "취소"}]
@@ -283,6 +290,18 @@ class RealDeps:
         """장면 클립 + 음악 합치기 (ffmpeg, 스레드에서 부른다)"""
         return assemble.run(clips, music, out, sound, transitions)
 
+    def trim_voice(self, src, out):
+        """녹음한 대사의 앞뒤 무음을 잘라 입력 폴더에 WAV 로 (ffmpeg, 스레드에서). 길이(초)"""
+        return assemble.trim_voice(src, out)
+
+    def render_subtitle(self, text, size, out):
+        """투명 PNG 자막 (Pillow, 스레드에서). 글꼴이 없으면 None"""
+        return assemble.render_subtitle(text, (int(size[0]), int(size[1])), out)
+
+    def assemble_dialogue(self, clips, lines, music, out, trims=None):
+        """대사 영상 합치기: 디졸브 + 대사 소리 + 자막 + 음악 (ffmpeg, 스레드에서)"""
+        return assemble.run_dialogue(clips, lines, music, out, trims=trims)
+
     async def inspect(self, user, ip, username, filename, subfolder, expect):
         from .. import promptx
         return await promptx.inspect(user, ip, username, filename, subfolder, expect)
@@ -328,6 +347,11 @@ class RealDeps:
 
     async def publish(self, user_id, event):
         await self.hub.send(user_id, event)
+
+
+def _video():
+    from .. import video
+    return video
 
 
 def video_pick_staging(text: str) -> str | None:
@@ -406,6 +430,10 @@ class Director:
             return r or recipes.pick(self.recipe_map, self.disabled, action, "fast", "ltx")
         return recipes.pick(self.recipe_map, self.disabled, action, quality)
 
+    def dialogue_ready(self) -> bool:
+        """대사 영상에 필요한 레시피(목소리 설계·복제, 입 맞춤, 장면 이미지)가 모두 켜져 있는가 (합치기 도구는 긴 영상 조건이 본다)"""
+        return all(self.recipe_for(a) is not None for a in ("voice", "voice_clone", "talk", "image"))
+
     def engine_of_turn(self, turn: dict | None) -> str:
         """이 요청이 쓴 영상 엔진 (이어 말하기·다시 만들기가 같은 엔진을 잇게)"""
         return recipes.engine_of(self.recipe_map.get((turn or {}).get("recipe_id") or ""))
@@ -460,14 +488,21 @@ class Director:
                 frac = ctx.tracker.pct / 100.0
             head = f"장면 {int(L.get('i') or 0) + 1}/{max(1, n)}"
             text = f"{head} · {text}" if text else head
+        elif phase == "voices":          # 대사 영상의 녹음: '녹음 3/9 · 대사 녹음 40%'
+            vn, vd = max(1, int(L.get("vn") or 1)), int(L.get("vdone") or 0)
+            cur = ctx.tracker.pct / 100.0 if ctx.sub and ctx.stage in ("generate", "collect") else 0.0
+            frac = (vd + cur) / vn
+            head = f"녹음 {min(vd + 1, vn)}/{vn}"
+            text = f"{head} · {text}" if text else head
         pct = progress.long_pct(int(L.get("done") or 0), n, phase, frac)
         if pct is not None:
             pct = max(pct, int(L.get("pct") or 0))     # 줄지 않게
             L["pct"] = pct
         # 채팅 화면은 % 가 있으면 '띠 · %' 만 보인다: 띠 자리에 '장면 1/3 · 생성' 을 넣는다 (지금 단계의 % 는 빼고 전체 % 만, 11-17 메인)
         band = re.sub(r"\s*\d+%$", "", text).strip() if pct is not None else None
-        return {"title": progress.CARD["long"][0], "stage": phase, "text": text, "pct": pct, "band": band or None,
-                "chips": progress.chips("long", False, phase)}
+        card = "dialogue" if L.get("dialogue") else "long"
+        return {"title": progress.CARD[card][0], "stage": phase, "text": text, "pct": pct, "band": band or None,
+                "chips": progress.chips(card, False, phase)}
 
     def schedule_emit(self, ctx: Ctx):
         """화면 갱신을 따로 돌린다. 이미 돌고 있으면 한 번만 더 돌게 표시한다"""
@@ -798,7 +833,8 @@ class Director:
     # ── 긴 영상: 구성안 → 계획 카드 → 장면마다(계획표 → 첫 화면 → 영상 글 → LTX) → 배경음악 → 합치기 (docs/long-video-design.md 7절) ──
     async def _run_long(self, ctx: Ctx, work: dict):
         turn = ctx.turn
-        ctx.long = {"phase": "story", "i": 0, "n": 0, "done": 0, "pct": 0}
+        dialogue = bool((turn.get("request") or {}).get("dialogue"))
+        ctx.long = {"phase": "story", "i": 0, "n": 0, "done": 0, "pct": 0, "dialogue": dialogue}
         ctx.stage = "prompt"
         if recipes.engine_of(ctx.recipe) != "ltx":
             # 장면표(10초 안팎, 효과음)는 소리 포함 LTX 레시피 기준이다. 소리 없는 Wan(5초)으로 조용히 바꾸지 않는다
@@ -817,6 +853,11 @@ class Director:
             return
         scenes = [dict(s or {}) for s in (work.get("scenes") or [])][:n]
         scenes += [{} for _ in range(n - len(scenes))]
+        if dialogue and story.get("dialogue"):
+            # 목소리를 먼저: 인물마다 목소리 하나 → 그 목소리로 모든 대사 → 장면 길이를 녹음에 맞춤 → 인물 기준 그림
+            if not await self._dlg_voices(ctx, work) or not await self._dlg_casts(ctx, work):
+                return           # 취소됐다
+            story = work["story"]
         ctx.long.update(phase="scenes", done=sum(1 for s in scenes if s.get("clip_rel")))
         for i in range(n):
             s = scenes[i]
@@ -826,7 +867,10 @@ class Director:
                 if ok:
                     continue
                 await self._long_reset(ctx, work, scenes, i)
-            st = await self._long_scene(ctx, work, scenes, i)
+            if dialogue and story.get("dialogue") and _video().cast_scene(story, i):
+                st = await self._dlg_scene(ctx, work, scenes, i)
+            else:
+                st = await self._long_scene(ctx, work, scenes, i)
             if st is None:
                 return           # 취소됐다 (_collect 가 상태를 끝냈다)
             scenes[i] = st
@@ -835,7 +879,10 @@ class Director:
         music = await self._long_music(ctx, work)
         if music is False:
             return               # 취소됐다
-        await self._long_finish(ctx, work, scenes, music)
+        if dialogue and story.get("dialogue"):
+            await self._dlg_finish(ctx, work, scenes, music)
+        else:
+            await self._long_finish(ctx, work, scenes, music)
 
     async def _long_reset(self, ctx: Ctx, work: dict, scenes: list, i: int):
         """끝난 장면 i 의 클립이 없어졌거나 바뀌었다: 그 장면과, 그 장면에서 이어지는 뒤 장면들(첫 화면이 i 의 마지막 프레임)을
@@ -885,6 +932,9 @@ class Director:
             patch["scenes"] = scenes
             if sw.get("music_rel") and files.result_path(sw["music_rel"]):
                 patch["music_rel"] = sw["music_rel"]
+            for k in ("voices", "lines", "casts"):        # 대사 영상: 녹음한 목소리·대사와 인물 기준 그림 (파일은 쓸 때 다시 확인한다)
+                if sw.get(k):
+                    patch[k] = sw[k]
             if sw.get("approved"):
                 patch["approved"] = True        # 승인한 적 없는 계획은 카드를 다시 보인다 (승인 없이 GPU 를 쓰지 않게)
         await store.merge_work(ctx.turn["id"], patch)
@@ -912,8 +962,9 @@ class Director:
             ctx.bag = bag
             ctx.stage, ctx.text = "story", "구성안 쓰는 중"
             await self.emit(ctx, True)
+            extra = {"dialogue": True} if (turn.get("request") or {}).get("dialogue") else {}
             r = await self._guard_llm(ctx, self.deps.storyboard(ctx.user, ip, ctx.env, text=ctx.req_text,
-                                                                seconds=(ctx.spec or {}).get("seconds")))
+                                                                seconds=(ctx.spec or {}).get("seconds"), **extra))
             for e in bag:
                 await store.event(turn["id"], "llm_job", {k: e.get(k) for k in LLM_JOB_KEYS})
             bag.clear()
@@ -921,7 +972,8 @@ class Director:
         if not story or not story.get("scenes"):
             raise StepError("llm_error", "구성안을 만들지 못했습니다")
         await store.event(turn["id"], "story", {"scenes": len(story["scenes"]), "seconds": story.get("seconds"),
-                                                "violations": r.get("violations"), "rounds": r.get("rounds")})
+                                                "violations": r.get("violations"), "rounds": r.get("rounds"),
+                                                "lines": sum(1 for sc in story["scenes"] if sc.get("line_ko")) if story.get("dialogue") else None})
         work = {**work, "story": story}
         await store.merge_work(turn["id"], {"story": story})
         return work
@@ -934,9 +986,21 @@ class Director:
         exp = float(est.get("exponent") or 1.0)
         fps = int(ctx.recipe["defaults"].get("fps") or 24)
         total = LONG_TAIL
+        dlg = bool(story.get("dialogue"))
+        talk = self.recipe_for("talk") if dlg else None
+        test = (talk or {}).get("estimate") or {}
         for sc in story["scenes"]:
             frames = int(sc["seconds"]) * fps + 1
-            total += own * max(0.4, min(8.0, (frames / ref) ** exp)) + LONG_SCENE_OVERHEAD
+            if talk is not None and sc.get("kind") == "talk":      # 말하는 장면: 편집 한 번 + 입 맞춤, LLM 없음
+                tref, texp = float(test.get("ref_frames") or 145), float(test.get("exponent") or 1.0)
+                total += float(test.get("gpu_seconds") or 60) * max(0.4, min(8.0, (frames / tref) ** texp)) + 2 * DIALOGUE_PART_OVERHEAD
+            else:
+                total += own * max(0.4, min(8.0, (frames / ref) ** exp)) + LONG_SCENE_OVERHEAD
+        if dlg:          # 녹음(CPU, 인물마다 목소리 한 번 + 대사마다 한 번)과 인물 기준 그림
+            v = _video()
+            tts = float(((self.recipe_for("voice_clone") or {}).get("estimate") or {}).get("gpu_seconds") or 120)
+            parts = len(v.speakers_of(story)) + sum(1 for sc in story["scenes"] if sc.get("line_ko"))
+            total += parts * (tts + DIALOGUE_PART_OVERHEAD) + len(v.cast_ids(story)) * (25 + DIALOGUE_PART_OVERHEAD)
         try:
             med = await self.deps.medians() or {}
             q = await self.deps.queue()
@@ -956,6 +1020,15 @@ class Director:
                 "fps": recipe["defaults"].get("fps"), "quality": recipe.get("quality_label"),
                 "estimate_s": await self.estimate_long(ctx, story), "recipe_version": recipe["version"],
                 "ttl_hours": settings.studio_plan_ttl_hours, "attachment_ids": []}
+        if story.get("dialogue"):        # 대사 영상: 목소리와 장면마다 대사를 카드에 보인다 (녹음 전에 대본을 확인하게)
+            chars = {c["id"]: c for c in story["bible"]["characters"]}
+            plan["dialogue"] = True
+            plan["voices"] = [{"name": chars[c].get("name_ko") or c, "ko": chars[c].get("voice_ko") or ""}
+                              for c in _video().speakers_of(story) if c in chars]
+            for ps, sc in zip(plan["scenes"], story["scenes"]):
+                if sc.get("line_ko"):
+                    ps["line"] = f"{chars.get(sc['speaker'], {}).get('name_ko') or sc['speaker']}: {sc['line_ko']}"
+                    ps["talk"] = sc.get("kind") == "talk"
         old_mid = (turn.get("work") or {}).get("plan_message_id")
         if old_mid:
             await store.set_message_data(old_mid, {"status": "replanned", "actions": []})
@@ -964,7 +1037,7 @@ class Director:
         await store.merge_work(turn["id"], {"plan_message_id": m["id"]})
         ctx.stage = "plan"
         await store.event(turn["id"], "plan", {"seconds": plan["seconds"], "scenes": len(plan["scenes"]), "size": plan["size"],
-                                               "estimate_s": plan["estimate_s"], "long": True})
+                                               "estimate_s": plan["estimate_s"], "long": True, "dialogue": bool(plan.get("dialogue"))})
         if not await self.finish_state(turn, "awaiting_approval", stage="plan", plan=plan):
             await store.set_message_data(m["id"], {"status": "cancelled"})
 
@@ -1239,14 +1312,7 @@ class Director:
         if await store.cancel_requested(turn["id"]):
             await self.finish_state(turn, "cancelled")
             return
-        clips = []
-        for i, s in enumerate(scenes):
-            p = files.result_path(s.get("clip_rel") or "")
-            if p is None:
-                raise StepError("gone", f"장면 {i + 1} 클립이 없습니다")
-            if s.get("clip_sha") and not await self._long_file_ok(s["clip_rel"], s["clip_sha"]):
-                raise StepError("changed", f"장면 {i + 1} 클립이 바뀌었습니다")
-            clips.append(p)
+        clips = await self._long_clips(scenes)
         music_abs = files.result_path(music_rel) if music_rel else None
         out_rel = f"{os.path.dirname(scenes[0]['clip_rel'])}/long_{str(turn['id'])[:8]}.mp4"
         out_abs = os.path.join(os.path.realpath(settings.results_dir), out_rel)
@@ -1259,6 +1325,23 @@ class Director:
             await store.event(turn["id"], "error", {"where": "assemble", "detail": str(e)[:500]})
             raise StepError("assemble", str(e)[:300]) from None
         await store.event(turn["id"], "long_assembled", info)
+        await self._long_deliver(ctx, work, scenes, out_rel, music_rel, [])
+
+    async def _long_clips(self, scenes: list) -> list[str]:
+        """합칠 장면 클립의 절대 경로. 없거나 지문이 바뀐 클립이 있으면 StepError (다시 시도하면 그 장면부터)"""
+        clips = []
+        for i, s in enumerate(scenes):
+            p = files.result_path(s.get("clip_rel") or "")
+            if p is None:
+                raise StepError("gone", f"장면 {i + 1} 클립이 없습니다")
+            if s.get("clip_sha") and not await self._long_file_ok(s["clip_rel"], s["clip_sha"]):
+                raise StepError("changed", f"장면 {i + 1} 클립이 바뀌었습니다")
+            clips.append(p)
+        return clips
+
+    async def _long_deliver(self, ctx: Ctx, work: dict, scenes: list, out_rel: str, music_rel, extra_notes: list):
+        """합친 영상을 결과 첨부로 남기고 채팅에 낸다"""
+        turn, story = ctx.turn, work["story"]
         await store.merge_work(turn["id"], {"final_rel": out_rel})
         try:
             nbytes, sha = await asyncio.to_thread(files.fingerprint, out_rel)
@@ -1269,9 +1352,10 @@ class Director:
         att = {"id": uuid.uuid4(), "thread_id": turn["thread_id"], "user_id": turn["user_id"], "source": "result",
                "media": "video", "mime": files.mime_of(out_rel), "width": size[0] if size else None,
                "height": size[1] if len(size) > 1 else None, "frames": None, "bytes": nbytes, "sha256": sha,
-               "result_rel": out_rel, "job_id": None, "meta": {"long": True, "scenes": len(scenes)}}
+               "result_rel": out_rel, "job_id": None,
+               "meta": {"long": True, "scenes": len(scenes), **({"dialogue": True} if story.get("dialogue") else {})}}
         await store.add_attachment(att)
-        notes = list(ctx.notes) + list((ctx.spec or {}).get("notes") or [])
+        notes = list(ctx.notes) + list((ctx.spec or {}).get("notes") or []) + list(extra_notes or [])
         if not music_rel and (story.get("music") or {}).get("tags"):
             notes.append("배경음악을 만들지 못해 음악 없이 이어 붙였습니다")
         ctx.text = "마무리"
@@ -1280,6 +1364,262 @@ class Director:
                                                                   "media": "video", "actions": RETRY})
         await self.finish_state(turn, "done", result={"attachment_ids": [str(att["id"])], "message_id": msg["id"],
                                                       "notices": notes, "media": "video"})
+
+    # ── 대사 영상: 목소리 → 대사 녹음 → 인물 기준 그림 → 장면(말하는 장면은 입 맞춤) → 음악 → 합치기(대사·자막) (11-19) ──
+    async def _dlg_job(self, ctx: Ctx, recipe: dict, tag: str, pend: str, label: str, swork: dict, step: str,
+                       scene_phase: bool = False, fresh: bool = False):
+        """대사 영상의 작업 하나 (실패하면 시드를 바꿔 한 번 더). 취소면 None"""
+        for attempt in (1, 2):
+            sub = self._sub_ctx(ctx, recipe, tag, step, pend, label, scene_phase=scene_phase)
+            try:
+                return await self._run_sub(ctx, sub, swork, fresh=fresh or attempt > 1)
+            except StepError as e:
+                if e.code not in LONG_RETRY_CODES or attempt == 2:
+                    raise
+                await store.event(ctx.turn["id"], "dialogue_retry", {"tag": tag, "code": e.code, "detail": e.detail})
+        return None
+
+    def _dlg_has(self, ctx: Ctx, rec) -> bool:
+        return bool(rec and rec.get("in_rel") and files.input_path(ctx.env, rec["in_rel"]))
+
+    async def _dlg_stage_audio(self, ctx: Ctx, result_rel: str, name: str) -> tuple[str, float]:
+        """녹음 결과(결과 폴더 mp3)의 앞뒤 무음을 잘라 입력 폴더에 WAV 로 둔다 (입 맞춤의 LoadAudio·목소리 복제의 기준·합치기가 쓴다)"""
+        src = files.result_path(result_rel)
+        if src is None:
+            raise StepError("gone", f"녹음 파일이 없습니다: {result_rel}")
+        in_rel = files.turn_input_rel(ctx.user["username"], ctx.user["id"], ctx.turn["id"], name)
+        dst = files.input_write_path(ctx.env, in_rel)
+        try:
+            sec = await asyncio.to_thread(self.deps.trim_voice, src, dst)
+        except assemble.AssembleError as e:
+            raise StepError("run_error", f"녹음 다듬기 실패: {e}") from None
+        files.own_input(ctx.env, dst)
+        return in_rel, float(sec)
+
+    async def _dlg_voices(self, ctx: Ctx, work: dict) -> bool:
+        """인물마다 목소리를 한 번 설계하고, 그 목소리를 복제해 대사를 한 줄씩 녹음한다. 녹음 길이에 맞춰 장면 길이를 고친다.
+        11-19 숲길 단편: 줄마다 목소리를 설계하면 컷마다 목소리가 바뀌었다 → 기준 목소리 하나를 복제해 고정. 여러 줄을 한 작업에
+        넣으면 한 줄이 늘어져 전체가 멈췄다 → 한 줄에 한 작업, 토큰 상한, 너무 길면 시드를 바꿔 한 번 더. 취소면 False"""
+        turn, story = ctx.turn, work["story"]
+        v = _video()
+        vrec, crec = self.recipe_for("voice"), self.recipe_for("voice_clone")
+        if vrec is None or crec is None:
+            raise StepError("unavailable", "대사 녹음 레시피가 꺼져 있습니다")
+        speakers = v.speakers_of(story)
+        idx = [i for i, sc in enumerate(story["scenes"]) if sc.get("line_ko")]
+        voices, lines = dict(work.get("voices") or {}), dict(work.get("lines") or {})
+        L = ctx.long
+        L.update(phase="voices", vn=len(speakers) + len(idx))
+
+        def done() -> int:
+            return (sum(1 for c in speakers if self._dlg_has(ctx, voices.get(c)))
+                    + sum(1 for i in idx if self._dlg_has(ctx, lines.get(str(i)))))
+        for k, cid in enumerate(speakers):
+            if self._dlg_has(ctx, voices.get(cid)):
+                continue
+            L["vdone"] = done()
+            ctx.text = "목소리 만드는 중"
+            await self.emit(ctx, True)
+            pend = f"V{k}_pending"
+            swork = {"prompt": v.VOICE_REF_TEXT, "instruct": v.voice_instruct(story, cid), "max_tokens": 512, pend: work.get(pend)}
+            main = await self._dlg_job(ctx, vrec, f"V{k}", pend, "목소리", swork, "voice")
+            if main is None:
+                return False
+            work[pend] = swork.get(pend)
+            in_rel, sec = await self._dlg_stage_audio(ctx, main["rel_path"], f"voice_{k}.wav")
+            voices[cid] = {"rel": main["rel_path"], "in_rel": in_rel, "seconds": sec}
+            work["voices"] = voices
+            await store.merge_work(turn["id"], {"voices": voices})
+            await store.event(turn["id"], "dialogue_voice", {"speaker": cid, "seconds": sec})
+        changed = False
+        for i in idx:
+            sc = story["scenes"][i]
+            if not self._dlg_has(ctx, lines.get(str(i))):
+                L["vdone"] = done()
+                ctx.text = "대사 녹음 중"
+                await self.emit(ctx, True)
+                pend = f"T{i}_pending"
+                got = None
+                for attempt in (1, 2):
+                    swork = {"prompt": sc["line_ko"], "audio_in": voices[sc["speaker"]]["in_rel"],
+                             "max_tokens": v.line_tokens(sc["line_ko"]), pend: work.get(pend)}
+                    main = await self._dlg_job(ctx, crec, f"T{i}", pend, "대사 녹음", swork, "voice", fresh=attempt > 1)
+                    if main is None:
+                        return False
+                    work[pend] = swork.get(pend)
+                    try:
+                        in_rel, sec = await self._dlg_stage_audio(ctx, main["rel_path"], f"line_{i}.wav")
+                    except StepError as e:
+                        if attempt == 2:
+                            raise
+                        await store.event(turn["id"], "dialogue_line_retry", {"index": i, "code": e.code, "detail": e.detail})
+                        continue
+                    got = {"rel": main["rel_path"], "in_rel": in_rel, "seconds": sec}
+                    if sec <= v.line_max_seconds(sc["line_ko"]) or attempt == 2:
+                        break
+                    # 대사보다 훨씬 길다: 말이 끝나지 않고 늘어진 녹음이다 (11-19 숲길 L3: 10초 대사가 32초)
+                    await store.event(turn["id"], "dialogue_line_retry", {"index": i, "seconds": sec, "reason": "too_long"})
+                lines[str(i)] = got
+                work["lines"] = lines
+                await store.merge_work(turn["id"], {"lines": lines})
+                await store.event(turn["id"], "dialogue_line", {"index": i, "seconds": got["seconds"]})
+            sec = float(lines[str(i)]["seconds"])
+            want = math.ceil(sec + TALK_PAD)
+            want = min(20, max(4, want) if sc.get("kind") == "talk" else max(int(sc["seconds"]), want))
+            if want != sc["seconds"]:
+                sc["seconds"] = want
+                changed = True
+        if changed:
+            story["seconds"] = sum(int(s["seconds"]) for s in story["scenes"])
+            work["story"] = story
+            await store.merge_work(turn["id"], {"story": story})
+            await store.event(turn["id"], "dialogue_timing", {"seconds": [s["seconds"] for s in story["scenes"]]})
+        L["vdone"] = len(speakers) + len(idx)
+        return True
+
+    async def _dlg_casts(self, ctx: Ctx, work: dict) -> bool:
+        """혼자 가까이 나오는 인물(말하는 사람·듣는 얼굴)의 기준 그림을 한 장씩 만든다. 그 장면들의 첫 화면은 이 그림을 고쳐 만들어
+        얼굴을 맞춘다 (11-19 시범: 같은 반신 사진에서 편집한 첫 화면 6장이 같은 얼굴). 취소면 False"""
+        story = work["story"]
+        v = _video()
+        need = v.cast_ids(story)
+        if not need:
+            return True
+        img = self.recipe_for("image")
+        if img is None:
+            raise StepError("prepare_down")
+        casts = dict(work.get("casts") or {})
+        vsz = work["long_size"]
+        ssz = list(recipes.default_size(img, photo=(vsz[0], vsz[1])))
+        ctx.long.update(phase="scenes", i=0)
+        for k, cid in enumerate(need):
+            c = dict(casts.get(cid) or {})
+            if c.get("att") and await store.attachments_of([c["att"]]):
+                continue
+            if not (c.get("rel") and files.result_path(c["rel"])):
+                ctx.text = "인물 준비 중"
+                await self.emit(ctx, True)
+                pend = f"C{k}_pending"
+                swork = {"prompt": v.cast_prompt(story, cid), "size": ssz, pend: work.get(pend)}
+                main = await self._dlg_job(ctx, img, f"C{k}", pend, "인물 준비", swork, "scene", scene_phase=True)
+                if main is None:
+                    return False
+                work[pend] = swork.get(pend)
+                c = {"rel": main["rel_path"]}
+            att = await self.deps.stage_image(ctx.env, ctx.user, ctx.turn, c["rel"])
+            c["att"] = att["id"]
+            casts[cid] = c
+            work["casts"] = casts
+            await store.merge_work(ctx.turn["id"], {"casts": casts})
+            await store.event(ctx.turn["id"], "dialogue_cast", {"character": cid, "rel": c["rel"]})
+        return True
+
+    async def _dlg_scene(self, ctx: Ctx, work: dict, scenes: list, i: int) -> dict | None:
+        """인물 한 명이 가까이 나오는 장면. 첫 화면은 기준 그림을 이 장면으로 고친 그림.
+        말하는 장면은 그 대사 소리로 입을 맞추고(IA2V), 듣는 얼굴 같은 장면은 긴 영상과 같은 길(계획표 → 영상 글 → LTX)로 만든다"""
+        turn, story = ctx.turn, work["story"]
+        v = _video()
+        sc = story["scenes"][i]
+        st = dict(scenes[i] or {})
+        cid = v.cast_scene(story, i)
+        ctx.long.update(phase="scenes", i=i)
+        ctx.motion, ctx.has_fix = False, False
+        if not st.get("first_att"):
+            await store.event(turn["id"], "long_scene_start", {"index": i, "seconds": sc["seconds"], "chain": False, "cast": cid,
+                                                               "talk": sc.get("kind") == "talk"})
+            cast = (work.get("casts") or {}).get(cid) or {}
+            if not cast.get("att"):
+                raise StepError("no_image", f"장면 {i + 1}: 인물 기준 그림이 없습니다")
+            erec = self.recipe_for("edit")
+            if erec is None:         # 편집 레시피가 꺼졌다: 기준 그림을 그대로 첫 화면으로 (배경은 다르지만 얼굴은 같다)
+                st.update(first_att=cast["att"], first_from="cast")
+            else:
+                pend = f"L{i}e_pending"
+                swork = {"prompt": v.cast_edit_prompt(story, i), "scene_att": cast["att"], pend: work.get(pend)}
+                ctx.text = "장면 준비 중"
+                main = await self._dlg_job(ctx, erec, f"L{i}e", pend, "장면 준비", swork, "scene", scene_phase=True)
+                if main is None:
+                    return None
+                work[pend] = swork.get(pend)
+                att = await self.deps.stage_image(ctx.env, ctx.user, turn, main["rel_path"])
+                st.update(first_att=att["id"], first_from="edit", edit_rel=main["rel_path"], scene_prompt=swork["prompt"])
+            await self._save_scene(ctx, work, scenes, i, st)
+        if sc.get("kind") != "talk":
+            return await self._long_scene(ctx, work, scenes, i)
+        trec = self.recipe_for("talk")
+        if trec is None:
+            raise StepError("unavailable", "입 맞춤 레시피가 꺼져 있습니다")
+        line = (work.get("lines") or {}).get(str(i)) or {}
+        if not self._dlg_has(ctx, line):
+            raise StepError("gone", f"장면 {i + 1}의 대사 소리가 없습니다")
+        st["prompt"] = st.get("prompt") or v.talk_prompt(story, i)
+        fps = int(trec["defaults"].get("fps") or 24)
+        pend = f"L{i}v_pending"
+        swork = {"prompt": st["prompt"], "scene_att": st["first_att"], "audio_in": line["in_rel"],
+                 "settings": {"frames": int(sc["seconds"]) * fps + 1}, "size": list(work["long_size"]), pend: work.get(pend)}
+        ctx.text = "생성 대기"
+        main = await self._dlg_job(ctx, trec, f"L{i}v", pend, "입 맞춤", swork, "generate")
+        if main is None:
+            return None
+        work[pend] = swork.get(pend)
+        try:
+            _n, sha = await asyncio.to_thread(files.fingerprint, main["rel_path"])
+        except OSError:
+            sha = None
+        st.update(clip_rel=main["rel_path"], clip_sha=sha, seed=swork.get("seed"), seconds=sc["seconds"])
+        await self._save_scene(ctx, work, scenes, i, st)
+        await store.event(turn["id"], "long_scene_done", {"index": i, "clip": st["clip_rel"], "first_from": st.get("first_from"),
+                                                          "talk": True})
+        return st
+
+    async def _dlg_finish(self, ctx: Ctx, work: dict, scenes: list, music_rel):
+        """대사 영상 합치기: 샷 사이 디졸브, 대사 소리를 샷 시작 + 0.2초에, 자막(투명 PNG), 배경음악. 말하는 샷은 대사 끝에서 자른다.
+        장면 클립 안의 소리는 쓰지 않는다 (11-19 사용자 확인 설정, assemble.run_dialogue)"""
+        turn, story = ctx.turn, work["story"]
+        ctx.long["phase"] = "assemble"
+        ctx.stage, ctx.text = "collect", "영상 합치는 중"
+        await self.emit(ctx, True)
+        if await store.cancel_requested(turn["id"]):
+            await self.finish_state(turn, "cancelled")
+            return
+        clips = await self._long_clips(scenes)
+        music_abs = files.result_path(music_rel) if music_rel else None
+        out_rel = f"{os.path.dirname(scenes[0]['clip_rel'])}/dialogue_{str(turn['id'])[:8]}.mp4"
+        out_abs = os.path.join(os.path.realpath(settings.results_dir), out_rel)
+        size = work.get("long_size") or [1280, 704]
+        lines_map = work.get("lines") or {}
+        items, trims, notes, subs_ok = [], [], [], True
+        for i, sc in enumerate(story["scenes"]):
+            ln = lines_map.get(str(i))
+            trims.append(max(TALK_MIN_SHOT, float(ln["seconds"]) + TALK_TAIL) if ln and sc.get("kind") == "talk" else None)
+            if not ln:
+                continue
+            path = files.input_path(ctx.env, ln.get("in_rel") or "")
+            if path is None:
+                raise StepError("gone", f"장면 {i + 1}의 대사 소리가 없습니다")
+            item = {"file": path, "shot": i}
+            if subs_ok:
+                sub_out = os.path.join(os.path.dirname(out_abs), f"sub_{str(turn['id'])[:8]}_{i}.png")
+                try:
+                    sub = await asyncio.to_thread(self.deps.render_subtitle, sc["line_ko"], size, sub_out)
+                except Exception as e:  # noqa: BLE001 - 자막을 못 그려도 영상은 낸다
+                    await store.event(turn["id"], "error", {"where": "subtitle", "detail": str(e)[:300]})
+                    sub = None
+                if sub:
+                    item["sub"] = sub
+                else:
+                    subs_ok = False
+            items.append(item)
+        if not subs_ok:
+            items = [{k: x for k, x in it.items() if k != "sub"} for it in items]
+            notes.append("자막을 그리지 못해 자막 없이 이어 붙였습니다")
+        try:
+            info = await asyncio.to_thread(self.deps.assemble_dialogue, clips, items, music_abs, out_abs, trims)
+        except assemble.AssembleError as e:
+            await store.event(turn["id"], "error", {"where": "assemble", "detail": str(e)[:500]})
+            raise StepError("assemble", str(e)[:300]) from None
+        await store.event(turn["id"], "long_assembled", {**(info or {}), "dialogue": True})
+        await self._long_deliver(ctx, work, scenes, out_rel, music_rel, notes)
 
     # ── 프롬프트 만들기 (LLM 차례) ──
     async def _reuse_prompt(self, ctx: Ctx) -> dict | None:
@@ -1668,6 +2008,14 @@ class Director:
             values["bpm"] = int(work.get("bpm") or 90)
         if "keyscale" in inject:
             values["keyscale"] = str(work.get("keyscale") or "C major")
+        if "audio" in inject:          # 목소리 복제의 기준 목소리, 입 맞춤의 대사 소리 (입력 폴더 상대 경로)
+            if not work.get("audio_in"):
+                raise StepError("gone", "소리 파일이 없습니다")
+            values["audio"] = work["audio_in"]
+        if "voice_instruct" in inject:
+            values["voice_instruct"] = str(work.get("instruct") or "A natural, clear Korean speaking voice.")
+        if "max_tokens" in inject:
+            values["max_tokens"] = int(work.get("max_tokens") or 512)
         if size:
             values["width"], values["height"] = size[0], size[1]
         if img is not None:
@@ -1978,6 +2326,8 @@ def negative_problem(recipe: dict, prompt: dict) -> str | None:
     ps = recipes.slots_of(recipe, "prompt")
     if not ps:
         return "프롬프트 자리가 없습니다"
+    if recipe.get("negative_source") == "none":       # 목소리 레시피: 글은 말할 대사다 (positive·negative 가 없다)
+        return None
     pn = str(ps[0]["node"])
     text = str(prompt[pn]["inputs"][ps[0]["input"]])
     if recipe["negative_source"] == "node":

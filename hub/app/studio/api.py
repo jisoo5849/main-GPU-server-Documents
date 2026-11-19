@@ -396,6 +396,9 @@ async def _post_message(request: Request, user: dict, thread: dict):
         req["via_image"] = True
     if long_ok and intent.is_long(spec.get("seconds")):
         req["long"] = True
+        # 대화가 있는 긴 영상은 목소리를 먼저 녹음하고 말하는 장면을 그 소리로 입 맞춤한다 (11-19). 켜져 있고 부품이 모두 있을 때만
+        if settings.studio_dialogue and intent.wants_dialogue(req_text) and d.dialogue_ready():
+            req["dialogue"] = True
     turn = await store.create_turn(thread["id"], user["id"], _client_ip(request), req, m["id"], recipe["id"],
                                    recipe["version"], dec["action"])
     await store.set_decision(turn["id"], {"action": dec["action"], "source": dec["source"], "carry": dec["carry"],

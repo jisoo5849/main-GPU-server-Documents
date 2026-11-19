@@ -100,20 +100,25 @@
 
   function longPlanBody(card, p) {
     // 긴 영상(여러 장면을 이어 붙임): 장면표·배경음악·총 길이·예상 시간
-    card.append(el("h4", null, "긴 영상 만들기 계획 (승인하면 시작합니다)"));
+    // 대사 영상(11-19): 목소리를 먼저 녹음하므로 녹음 전에 목소리와 대사를 보인다. 말하는 장면의 길이는 녹음에 맞춰 바뀐다
+    card.append(el("h4", null, (p.dialogue ? "대사 영상" : "긴 영상") + " 만들기 계획 (승인하면 시작합니다)"));
     const dl = el("dl");
     const row = (k, v) => { if (v) { dl.append(el("dt", null, k), el("dd", null, v)); } };
     row("제목", p.title);
     row("줄거리", p.logline);
-    row("길이", (p.label || (p.seconds ? p.seconds + "초" : "")) + (p.scenes ? " · 장면 " + p.scenes.length + "개" : ""));
+    row("길이", (p.label || (p.seconds ? p.seconds + "초" : "")) + (p.scenes ? " · 장면 " + p.scenes.length + "개" : "")
+      + (p.dialogue ? " (대사 녹음에 맞춰 조금 달라집니다)" : ""));
     row("크기", p.size && p.size.length ? p.size[0] + "×" + p.size[1] : "");
     row("품질", p.quality);
+    row("목소리", (p.voices || []).map((v) => v.name + (v.ko ? " (" + v.ko + ")" : "")).join(", "));
     row("배경음악", p.music);
     row("완료까지", p.estimate_s ? "약 " + Math.max(1, Math.round(p.estimate_s / 60)) + "분 (예상)" : "");
     card.append(dl);
     const ol = el("ol", "scenes");
     for (const s of (p.scenes || [])) {
-      ol.append(el("li", null, "(" + s.seconds + "초) " + s.ko + (s.continues ? " · 앞 장면에서 이어짐" : "")));
+      const li = el("li", null, "(" + s.seconds + "초) " + s.ko + (s.continues ? " · 앞 장면에서 이어짐" : ""));
+      if (s.line) li.append(el("div", "line", (s.talk ? "대사 · " : "화면 밖 목소리 · ") + s.line));
+      ol.append(li);
     }
     card.append(ol);
   }
