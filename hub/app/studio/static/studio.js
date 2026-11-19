@@ -110,6 +110,8 @@
       + (p.dialogue ? " (대사 녹음에 맞춰 조금 달라집니다)" : ""));
     row("크기", p.size && p.size.length ? p.size[0] + "×" + p.size[1] : "");
     row("품질", p.quality);
+    row("등록 인물", (p.library || []).join(", ") ? (p.library || []).join(", ") + " (정해진 모습·기준 그림 사용)" : "");
+    row("그림체", p.style);
     row("목소리", (p.voices || []).map((v) => v.name + (v.ko ? " (" + v.ko + ")" : "")).join(", "));
     row("배경음악", p.music);
     row("완료까지", p.estimate_s ? "약 " + Math.max(1, Math.round(p.estimate_s / 60)) + "분 (예상)" : "");

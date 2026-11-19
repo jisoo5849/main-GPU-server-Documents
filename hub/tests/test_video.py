@@ -2044,6 +2044,197 @@ def test_write_dialogue_story_uses_the_dialogue_schema_and_repairs():
     assert "line_ko" in video.DIALOGUE_SCHEMA["properties"]["scenes"]["items"]["required"]
 
 
+def _dlg_good():
+    import copy as _copy
+    g = _copy.deepcopy(DLG_OK)
+    g["scenes"][3]["continues"] = False          # 말하는 장면은 앞 장면을 잇지 않는다
+    return g
+
+
+def test_dialogue_wants_exchange_words():
+    # 인물끼리의 대화 말만 대화로 본다: 한 사람의 설명·따옴표 대사·풍경 요청은 아니다
+    for yes in ("니키와 푸토르가 숲속을 걸어가며 대화를 하는데", "두 사람이 서로 묻고 대답하는 영상", "친구들이 수다를 떤다",
+                "기자가 인터뷰를 한다", "두 사람이 토론한다", "이야기를 나누며 걷는다"):
+        assert video.wants_exchange(yes), yes
+    for no in ("푸토르가 \"안녕\" 이라고 말한다", "할아버지가 고통을 이기는 방법을 설명해 준다", "비 오는 거리 풍경 영상"):
+        assert not video.wants_exchange(no), no
+    assert [video.dialogue_min_lines(x) for x in (25, 30, 40, 60, 95, 180)] == [2, 2, 3, 4, 7, 13]
+
+
+def test_dialogue_rules_want_enough_lines_and_a_real_exchange():
+    import copy as _copy
+    # 대사 셋·두 인물·번갈아 말하고 둘 다 얼굴이 보이는 장면이 있는 구성안은 대화 요청에서도 통과한다
+    assert video.dialogue_problems(_dlg_good(), 48, True, exchange=True) == []
+    # 11-19 메인 첫 시험의 구성안: 푸토르 한 줄뿐, 니키는 말이 없다 → 줄이 모자라고 한 사람만 말한다
+    thin = _dlg_good()
+    for sc in thin["scenes"]:
+        sc.update(kind="shot", speaker="", line_ko="", emotion="")
+    thin["scenes"][1].update(kind="shot", speaker="B", line_ko="고통은 바람처럼 지나가.", emotion="calm and wise")
+    thin["scenes"][3].update(kind="talk", speaker="B", line_ko="숨을 고르고, 마음속 꽃을 바라봐.", emotion="warm")
+    left = video.dialogue_problems(thin, 48, True, exchange=True)
+    assert any("at least 3 spoken lines" in x and "you wrote 2" in x for x in left), left
+    assert any('only "B" speaks' in x and 'Let "A" speak too' in x for x in left), left
+    assert video.dialogue_problems(thin, 48, True) != [] and not any("only" in x and "speaks" in x for x in video.dialogue_problems(thin, 48, True))
+    # 대화 요청이 아니면 한 사람의 이야기도 된다 (줄 수는 여전히 본다)
+    one = _dlg_good()
+    one["scenes"][2].update(kind="talk", speaker="B", characters=["B"], line_ko="천천히 걸어 보거라.", emotion="calm")
+    assert video.dialogue_problems(one, 48, True) == []
+    assert any('only "B" speaks' in x for x in video.dialogue_problems(one, 48, True, exchange=True))
+    # 같은 사람이 세 줄 연속
+    run = _dlg_good()
+    run["scenes"][2].update(speaker="B", characters=["B"], line_ko="괜찮단다.", emotion="soft")
+    run["scenes"][4].update(kind="talk", speaker="A", characters=["A"], shot="close-up", line_ko="네, 할아버지.", emotion="quiet")
+    left = video.dialogue_problems(run, 48, True, exchange=True)
+    assert any('"B" speaks 3 lines in a row' in x for x in left), left
+    # 한 인물이 화면 밖 목소리로만 말한다 (얼굴이 보이는 말하기 장면이 없다)
+    voice_only = _dlg_good()
+    voice_only["scenes"][3].update(speaker="A", characters=["A"], line_ko="저도 해 볼게요.", emotion="hopeful")
+    left = video.dialogue_problems(voice_only, 48, True, exchange=True)
+    assert any('"B" speaks only as a voice-over' in x for x in left), left
+    # 긴 영화는 줄 수를 늘려야 한다 (90초면 6줄)
+    left = video.dialogue_problems(_dlg_good(), 90, True)
+    assert any("at least 6 spoken lines" in x for x in left), left
+    # 줄 수·대화 규칙은 다른 위반이 많아도 잘리지 않게 앞에 놓인다
+    messy = _copy.deepcopy(thin)
+    messy["scenes"][0]["shot"] = "wide"
+    left = video.dialogue_problems(messy, 48, True, exchange=True)
+    assert len(left) <= 16 and "spoken lines" in left[0]
+
+
+def test_dialogue_story_prompt_states_the_line_and_conversation_rules():
+    call = Call([_dlg_good()])
+    asyncio.run(video.write_dialogue_story(call, "니키와 푸토르가 숲속을 걸어가며 대화하는 40초 영상", "", 48))
+    system = call.calls[0]["messages"][0]["content"]
+    assert "at least 3 spoken lines in total" in system and "The request is a conversation" in system
+    assert "never more than 2 lines in a row" in system and "A listener answers in words" in system
+    # 대화가 아닌 요청은 줄 수만 말하고 번갈아 말하기는 요구하지 않는다
+    call = Call([_dlg_good()])
+    asyncio.run(video.write_dialogue_story(call, "할아버지가 \"고통은 지나간다\" 라고 말하는 영상", "", 48))
+    system = call.calls[0]["messages"][0]["content"]
+    assert "at least 3 spoken lines in total" in system and "The request is a conversation" not in system
+    # 한 사람만 말하는 구성안은 대화 요청에서 고쳐 쓰게 한다: 첫 답이 모자라면 다시 쓰라는 말이 규칙을 그대로 담는다
+    thin = _dlg_good()
+    for sc in thin["scenes"]:
+        sc.update(kind="shot", speaker="", line_ko="", emotion="")
+    thin["scenes"][3].update(kind="talk", speaker="B", line_ko="숨을 고르거라.", emotion="warm")
+    call = Call([thin, _dlg_good()])
+    story, left, rounds = asyncio.run(video.write_dialogue_story(call, "두 사람이 대화하는 영상", "", 48))
+    assert rounds == 2 and left == [] and len([x for x in story["scenes"] if x["line_ko"]]) == 3
+    repair = call.calls[1]["messages"][-1]["content"]
+    assert "at least 3 spoken lines" in repair and 'only "B" speaks' in repair
+
+
+# ── 인물 라이브러리 (11-19): 니키·푸토르는 정해진 모습·목소리·기준 그림·그림체로 고정한다 ──
+def test_cast_library_file_is_valid_and_fits_the_story_checks():
+    from app import cast_lib
+    lib = cast_lib.library()
+    assert [e["id"] for e in lib] == ["niki", "putor"]
+    for e in lib:
+        assert len(e["look"].split()) <= 45, e["id"]                 # 구성안 검사는 외형 글이 60낱말을 넘으면 고치게 한다
+        assert not video.HANGUL_RE.search(e["look"] + e["voice"] + e["style"])
+        assert video.story_style({"bible": {"style": e["style"]}}), "라이브러리 그림체가 실사로 읽히면 안 된다"
+        assert e["ref"].endswith(".png") and not e["ref"].startswith("/") and ".." not in e["ref"]
+        assert e["voice_ko"] and video.HANGUL_RE.search(e["names"][0])
+    assert lib[1]["voice_fx"] == "bass" and "voice_fx" not in lib[0]
+    # 외형 글에 쓰는 소품이 구성안 검사가 막는 소품 단어와 맞는다: 모자(니키)·수염·안경(푸토르)이 외형에 있다
+    assert "hat" in lib[0]["look"] and "beard" in lib[1]["look"] and "glasses" in lib[1]["look"]
+
+
+def test_cast_library_finds_names_in_the_request_and_matches_story_characters():
+    from app import cast_lib
+    assert [e["id"] for e in cast_lib.known_in("니키와 푸토르가 숲속을 걸어가며 대화")] == ["niki", "putor"]
+    assert [e["id"] for e in cast_lib.known_in("푸토르 할아버지가 니키에게 설명한다")] == ["putor", "niki"]    # 글에 나온 차례
+    assert [e["id"] for e in cast_lib.known_in("NIKI 와 아이가 걷는다")] == ["niki"]
+    assert cast_lib.known_in("Nikita 가 걷는다") == [] and cast_lib.known_in("비 오는 거리") == [] and cast_lib.known_in("") == []
+    lib = cast_lib.library()
+    assert cast_lib.match_character({"id": "B", "name_ko": "푸토르 할아버지"}, lib)["id"] == "putor"
+    assert cast_lib.match_character({"id": "putor", "name_ko": ""}, lib)["id"] == "putor"
+    assert cast_lib.match_character({"id": "C", "name_ko": "이웃"}, lib) is None
+    block = cast_lib.prompt_block(lib)
+    assert 'name_ko "니키"' in block and 'name_ko "푸토르"' in block and "golden-ochre coat" in block
+    assert "copy it into bible.style" in block and "voice" not in block.lower().replace("visual style", "")
+    assert cast_lib.prompt_block([]) == "" and cast_lib.prompt_block(None) == ""
+
+
+def test_cast_library_overrides_the_story_bible_and_the_style():
+    import copy as _copy
+    from app import cast_lib
+    lib = cast_lib.library()
+    story = video.clean_dialogue_story(DLG_OK, 48)
+    chars = {c["name_ko"]: c for c in story["bible"]["characters"]}
+    assert chars["니키"]["look"] != lib[0]["look"]
+    matched = cast_lib.apply_to_story(story, lib, "니키와 푸토르가 대화", keep_style=video.story_style(story) != "")
+    assert matched == {"A": "niki", "B": "putor"}
+    a, b = story["bible"]["characters"]
+    assert a["look"] == lib[0]["look"] and b["look"] == lib[1]["look"] and a["library"] == "niki"
+    assert a["voice"] == lib[0]["voice"] and b["voice_fx"] == "bass" and "voice_fx" not in a
+    assert a["ref"] == lib[0]["ref"] and b["ref"] == lib[1]["ref"] and a["name_ko"] == "니키"
+    # 구성안의 그림체: 사용자가 말한 화풍(비사실)은 지킨다
+    assert story["bible"]["style"] == "semi-realistic painterly 2.5D fantasy film look"
+    # 모델이 실사로 정했거나 그림체를 안 정했으면 라이브러리 그림체로, 사용자가 실사를 말했으면 그대로 둔다
+    real = _copy.deepcopy(story)
+    real["bible"]["style"] = "photorealistic cinematic live action"
+    assert cast_lib.apply_to_story(real, lib, "니키와 푸토르가 대화", keep_style=False)
+    assert real["bible"]["style"] == lib[0]["style"]
+    real["bible"]["style"] = "photorealistic cinematic live action"
+    cast_lib.apply_to_story(real, lib, "니키와 푸토르가 실사 영화처럼 대화", keep_style=False)
+    assert real["bible"]["style"] == "photorealistic cinematic live action"
+    # 라이브러리에 없는 인물만 있으면 아무것도 바꾸지 않는다
+    other = _copy.deepcopy(story)
+    other["bible"]["characters"][0].update(name_ko="이웃", id="Z")
+    other["bible"]["characters"] = other["bible"]["characters"][:1]
+    before = _copy.deepcopy(other)
+    assert cast_lib.apply_to_story(other, lib, "이웃이 걷는다") == {} and other == before
+
+
+def test_dialogue_storyboard_tells_the_model_the_known_characters_and_then_applies_them():
+    from app import cast_lib
+    turns = []
+    fake = types.ModuleType("app.llm")
+
+    class HelperBusy(Exception):
+        pass
+
+    @contextlib.asynccontextmanager
+    async def llm_turn(user, ip, model, purpose, wait_seconds=None):
+        turns.append(purpose)
+
+        async def call(payload):
+            turns.append(payload["messages"][0]["content"])
+            story = json.loads(json.dumps(DLG_OK))
+            story["scenes"][3]["continues"] = False
+            story["bible"]["style"] = "photorealistic cinematic live action"      # 모델이 실사로 정했다
+            story["bible"]["characters"][0]["look"] = "a tall woman in a grey coat"      # 모델이 외형을 다르게 썼다
+            return {"message": {"content": json.dumps(story)}}
+        yield call
+
+    fake.HelperBusy, fake.llm_turn = HelperBusy, llm_turn
+    saved = sys.modules.get("app.llm")
+    sys.modules["app.llm"] = fake
+    try:
+        r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat",
+                                         "니키와 푸토르가 숲속을 걸어가며 대화하는 40초 영상", seconds=48, dialogue=True))
+        system = turns[1]
+        assert "Known characters" in system and 'name_ko "니키"' in system and "golden-ochre coat" in system
+        lib = cast_lib.library()
+        a, b = r["story"]["bible"]["characters"]
+        assert a["look"] == lib[0]["look"] and b["look"] == lib[1]["look"] and a["ref"] == lib[0]["ref"]
+        assert r["story"]["bible"]["style"] == lib[0]["style"] and r["cast"] == {"A": "niki", "B": "putor"}
+        # 이름이 없는 요청과 긴 영상(대사 없음)은 라이브러리를 건드리지 않는다
+        turns.clear()
+        r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat",
+                                         "두 사람이 숲속을 걸어가며 대화하는 40초 영상", seconds=48, dialogue=True))
+        assert "Known characters" not in turns[1] and r["cast"] == {}
+        turns.clear()
+        r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", "니키가 걷는 30초 영상", seconds=30))
+        assert "Known characters" not in turns[1] and "cast" not in r
+    finally:
+        if saved is None:
+            sys.modules.pop("app.llm", None)
+        else:
+            sys.modules["app.llm"] = saved
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

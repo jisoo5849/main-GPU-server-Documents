@@ -446,20 +446,38 @@ VOICE_GATE_DB = -50.0     # 이보다 작은 소리는 무음으로 본다. 11-1
 VOICE_PAD = 0.3           # 자른 뒤 끝에 붙이는 무음(초): 마지막 음절이 잘려 들리지 않게
 
 
-def build_voice_cmd(src: str, out: str, gate_db: float = VOICE_GATE_DB, pad: float = VOICE_PAD) -> list[str]:
-    """TTS 결과의 앞뒤 무음(과 긴 숨·잡음 꼬리)을 자르고 끝에 짧은 무음을 붙인 WAV (48kHz 모노). 가운데의 쉼은 그대로 둔다"""
+# 목소리 후처리 (인물 라이브러리의 voice_fx). 11-19 사용자가 고른 푸토르 목소리 "P5a + 저음 보강 + 낮고 느리게 + 약한 따뜻한 포화"
+# 를 브라우저(WebAudio)에서 만들던 사슬을 ffmpeg 로 옮긴 근사다: 재생 속도 0.93(음높이도 같이 낮아짐) → 150Hz 저음 +6dB → 260Hz +3dB
+# → 5kHz -2dB → 부드러운 포화 → 압축(-28dB, 3:1) → 0.9배. 먼저 48kHz 로 맞춘다(asetrate 가 48kHz 기준이라서)
+# 쉘프는 Web Audio 와 같은 기울기(S=1), 포화는 같은 수식(0.6x + 0.4·tanh(2.5x)/tanh(2.5)). 압축기의 자동 보정 이득은 옮기지 않고
+# 아래 크기 맞추기(VOICE_LUFS)가 맡는다
+VOICE_FX = {
+    "bass": ("aresample=48000,asetrate=44640,aresample=48000,bass=g=6:f=150:t=s:w=1,equalizer=f=260:t=q:w=0.8:g=3,"
+             "treble=g=-2:f=5000:t=s:w=1,aeval=0.6*val(0)+0.4*tanh(2.5*val(0))/0.98661:c=same,"
+             "acompressor=threshold=0.04:ratio=3:attack=10:release=200:knee=4"),
+}
+# 대사 한 줄의 목표 크기(LUFS). 인물끼리(니키·푸토르) 크기를 맞추고 음악(-14dB)보다 확실히 크게 한다. 11-19 메인 시험의 결과에서
+# 대사 구간이 음악 구간보다 4~6dB 높을 뿐이었다 (TTS 원본은 작고, 손으로 만들 때는 브라우저 압축기의 보정 이득이 약 +11dB 를 더했다)
+VOICE_LUFS = -18.0
+
+
+def build_voice_cmd(src: str, out: str, gate_db: float = VOICE_GATE_DB, pad: float = VOICE_PAD, fx: str | None = None) -> list[str]:
+    """TTS 결과의 앞뒤 무음(과 긴 숨·잡음 꼬리)을 자르고 끝에 짧은 무음을 붙인 WAV (48kHz 모노). 가운데의 쉼은 그대로 둔다.
+    fx(VOICE_FX 의 이름)가 있으면 자른 뒤 그 후처리를 한다 (끝의 무음은 후처리 뒤에 붙인다)"""
     edge = f"silenceremove=start_periods=1:start_threshold={gate_db:.0f}dB:start_silence=0.05"
-    af = f"{edge},areverse,{edge},areverse,apad=pad_dur={pad:.2f}"
+    post = (VOICE_FX[fx] + ",") if fx in VOICE_FX else ""
+    af = f"{edge},areverse,{edge},areverse,{post}apad=pad_dur={pad:.2f}"
     return ["ffmpeg", "-hide_banner", "-nostats", "-y", "-i", src, "-af", af, "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", out]
 
 
-def trim_voice(src: str, out: str) -> float:
-    """대사 소리를 다듬어 out(WAV)에 쓰고 길이(초)를 돌려준다. 소리가 남지 않으면 AssembleError"""
+def trim_voice(src: str, out: str, fx: str | None = None, lufs: float | None = None) -> float:
+    """대사 소리를 다듬어 out(WAV)에 쓰고 길이(초)를 돌려준다. 소리가 남지 않으면 AssembleError.
+    lufs 가 있으면 다듬은 소리의 크기를 재서 그 크기(LUFS)로 맞춘다 (고정 이득 + 피크 보호). 목소리 복제의 기준 소리는 크기를 맞추지 않는다"""
     if not available():
         raise AssembleError("허브에 ffmpeg 가 없습니다")
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     tmp = out + ".part.wav"
-    _run(build_voice_cmd(src, tmp))
+    _run(build_voice_cmd(src, tmp, fx=fx))
     got = probe(tmp)
     if not got["audio"] or got["duration"] <= VOICE_PAD + 0.05:
         try:
@@ -467,6 +485,13 @@ def trim_voice(src: str, out: str) -> float:
         except OSError:
             pass
         raise AssembleError("대사 소리에 말소리가 없습니다")
+    if lufs is not None:
+        g = gain_db(measure(tmp), lufs)
+        if abs(g) >= 0.5:
+            lv = tmp + ".lv.wav"
+            _run(["ffmpeg", "-hide_banner", "-nostats", "-y", "-i", tmp, "-af", f"volume={g:.2f}dB,alimiter=limit=0.9",
+                  "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", lv])
+            os.replace(lv, tmp)
     os.replace(tmp, out)
     return round(got["duration"], 3)
 

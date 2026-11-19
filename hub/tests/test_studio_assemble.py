@@ -203,6 +203,36 @@ def t_voice_trim_command_and_subtitle_wrapping():
     assert A.wrap_subtitle("  ", fits) == []
 
 
+def t_voice_fx_chain_and_level_target():
+    """인물 라이브러리의 목소리 후처리(저음 보강): 자른 뒤 후처리 → 끝 무음. 대사 줄은 크기를 -18 LUFS 로 맞춘다 (11-19)"""
+    af = lambda *a, **k: (lambda c: c[c.index("-af") + 1])(A.build_voice_cmd(*a, **k))      # noqa: E731
+    plain, fx = af("in.mp3", "out.wav"), af("in.mp3", "out.wav", fx="bass")
+    assert "asetrate" not in plain and plain.endswith("apad=pad_dur=0.30") and fx.endswith("apad=pad_dur=0.30")
+    assert fx.startswith(plain.split(",apad")[0] + ",")                            # 앞뒤 자르기는 같고 그 뒤에 후처리가 붙는다
+    steps = ("asetrate=44640", "bass=g=6:f=150", "equalizer=f=260", "treble=g=-2:f=5000",
+             "aeval=0.6*val(0)+0.4*tanh(2.5*val(0))/0.98661", "acompressor=threshold=0.04:ratio=3", "apad=pad_dur")
+    pos = [fx.index(k) for k in steps]
+    assert pos == sorted(pos)                                                       # 재생 속도 → 저음 → 중저음 → 고음 → 포화 → 압축 → 끝 무음
+    assert af("a", "b", fx="nope") == plain                                         # 모르는 이름은 후처리 없음
+    assert A.VOICE_LUFS == -18.0 and set(A.VOICE_FX) == {"bass"}
+
+
+def t_real_voice_fx_and_level_when_ffmpeg_is_present():
+    """ffmpeg 가 있는 곳에서 후처리·크기 맞추기가 실제로 돌고 목표 크기에 가까운지 본다 (합성 신호)"""
+    if not A.available():
+        print("  (ffmpeg 가 없어 실제 목소리 후처리는 건너뜀)")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        raw = os.path.join(tmp, "raw.wav")
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        "sine=frequency=180:duration=3:sample_rate=24000,volume=0.05", raw], check=True)
+        for fx in (None, "bass"):
+            out = os.path.join(tmp, f"o_{fx}.wav")
+            sec = A.trim_voice(raw, out, fx=fx, lufs=A.VOICE_LUFS)
+            got = A.measure(out)["input_i"]
+            assert 2.5 < sec < 4.0 and abs(got - A.VOICE_LUFS) < 3.0, (fx, sec, got)
+
+
 def t_subtitle_png_is_transparent_when_pillow_and_font_exist():
     """ComfyUI 로 저장한 PNG 는 투명도가 빠져 자막 구간이 검게 덮였다 (11-19). 허브가 RGBA 로 바로 그린다"""
     try:

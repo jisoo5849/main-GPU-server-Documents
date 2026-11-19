@@ -101,6 +101,7 @@ class Settings:
     studio_t2v_via_image = _bool("STUDIO_T2V_VIA_IMAGE", True)   # 글→영상을 '장면 이미지 → 영상' 두 단계로 (사용자에게는 한 작업)
     # 대사 영상 (11-19): 대화가 있는 긴 영상을 '목소리 먼저 → 입 맞춤 → 편집' 으로. 채팅 작업공간에 TTS 노드를 넣은 뒤 켠다
     studio_dialogue = _bool("STUDIO_DIALOGUE", False)
+    studio_cast_file = _env("STUDIO_CAST_FILE")          # 인물 라이브러리 파일 (비우면 app/cast_library.json)
     studio_inspect = _env("STUDIO_INSPECT", "idle")            # on | idle | off
     studio_auto_reroll = _int("STUDIO_AUTO_REROLL", 0)
     studio_progress_min_interval_ms = _int("STUDIO_PROGRESS_MIN_INTERVAL_MS", 500)

@@ -21,7 +21,7 @@ import random
 import re
 from functools import lru_cache
 
-from . import crew_lib, promptx
+from . import cast_lib, crew_lib, promptx
 from .config import settings
 from .crew import PERSON_NOTE_RE, PERSON_REQ_RE, TEXT_NOTE_RE, skip_reason
 from .promptx import (HAND_WORDS_RE, NEGATION_RE, PromptxError, clean_input, hides_hands, image_in,
@@ -1057,17 +1057,21 @@ async def storyboard(user, ip: str, username: str, slug: str, text: str, notes: 
     text = clean_input(text)
     notes = str(notes or "").strip()[:2000]
     sec = max(STORY_MIN_SECONDS, min(STORY_MAX_SECONDS, float(seconds or 60)))
-    writer = write_dialogue_story if dialogue else write_story
+    known = cast_lib.known_in(f"{text} {notes}") if dialogue else []      # 요청에 이름이 나온 정해진 인물 (니키·푸토르 등)
     try:
         async with llm.llm_turn(user, ip, settings.expand_model, "video_story") as call:
-            story, left, rounds = await writer(call, text, notes, sec)
+            if dialogue:
+                story, left, rounds = await write_dialogue_story(call, text, notes, sec, known=known)
+            else:
+                story, left, rounds = await write_story(call, text, notes, sec)
     except llm.HelperBusy as e:
         raise PromptxError(str(e), 503) from None
     except RuntimeError as e:
         raise PromptxError(str(e), 502) from None
     if story is None:
         raise PromptxError("구성안을 만들지 못했습니다: " + "; ".join(left[:3]), 502)
-    return {"story": story, "violations": left, "rounds": rounds, "model": settings.expand_model}
+    cast = cast_lib.apply_to_story(story, known, f"{text} {notes}", keep_style=bool(story_style(story))) if dialogue else {}
+    return {"story": story, "violations": left, "rounds": rounds, "model": settings.expand_model, **({"cast": cast} if dialogue else {})}
 
 
 # ── 대사 영상 구성안 (11-19, docs/short-film-dialogue-design.md 12절) ──
@@ -1085,6 +1089,21 @@ This film has spoken dialogue in Korean. The voices are recorded first, one fixe
 - The "seconds" of a talk scene is your guess of how long the line takes (about 1 second per 4 Korean characters plus 1); the film follows the recorded voice later.
 - A talk scene never continues the previous scene and is never continued: "continues" is false for a talk scene and for the scene right after it."""
 DIALOGUE_LINE_MAX = 80          # 대사 한 줄의 글자 수 상한 (규칙은 60, 넘어도 80 까지는 쓴다)
+# 대사 줄 수와 대화 (11-19 메인 첫 시험: "니키와 푸토르가 대화" 40초 요청의 구성안에 대사가 푸토르 한 줄뿐, 니키는 한마디도 없었다.
+# 규칙문에는 '8~12초마다 한 줄, 번갈아'를 적었지만 검사가 강제하지 않아 모델이 최소한만 썼다)
+DIALOGUE_SECONDS_PER_LINE = 13      # 이 초마다 한 줄 이상 (최소 2줄)
+DIALOGUE_RUN_MAX = 2                # 같은 사람이 이어서 말하는 줄 수 상한 (대화 요청)
+CONVERSATION_RE = re.compile(r"대화|이야기를\s*나누|주고\s*받|묻고|물어|대답|수다|인터뷰|토론")
+
+
+def dialogue_min_lines(seconds: float) -> int:
+    """영화 길이에 맞는 최소 대사 줄 수: 약 13초에 한 줄, 적어도 두 줄"""
+    return max(2, int(float(seconds) // DIALOGUE_SECONDS_PER_LINE))
+
+
+def wants_exchange(text: str) -> bool:
+    """요청이 인물들이 서로 말을 주고받는 대화인가 (대화·묻고 대답·수다·인터뷰·토론 말). 이면 두 인물 이상이 번갈아 말해야 한다"""
+    return bool(CONVERSATION_RE.search(text or ""))
 DIALOGUE_SCHEMA = json.loads(json.dumps(STORY_SCHEMA))
 DIALOGUE_SCHEMA["properties"]["bible"]["properties"]["characters"]["items"]["properties"].update(
     {"name_ko": {"type": "string"}, "voice": {"type": "string"}, "voice_ko": {"type": "string"}})
@@ -1095,8 +1114,9 @@ DIALOGUE_SCHEMA["properties"]["scenes"]["items"]["properties"].update(
 REAL_VOICE_RE = re.compile(r"\b(?:like|sounds? like|in the style of|imitat\w*|impersonat\w*)\s+(?:[A-Z][a-z]+\s?){1,3}\b")
 
 
-def dialogue_problems(data, seconds: float, person_ok: bool = True) -> list[str]:
-    """대사 영상 구성안 검사: 긴 영상 검사 + 대사·목소리 규칙. 고칠 말을 영어로 돌려준다"""
+def dialogue_problems(data, seconds: float, person_ok: bool = True, exchange: bool = False) -> list[str]:
+    """대사 영상 구성안 검사: 긴 영상 검사 + 대사·목소리 규칙. 고칠 말을 영어로 돌려준다.
+    exchange 는 요청이 인물끼리의 대화일 때: 두 인물 이상이 번갈아 말하고, 말하는 인물마다 얼굴이 보이는 말하기 장면이 있어야 한다"""
     p = story_problems(data, seconds, person_ok)
     if not isinstance(data, dict):
         return p
@@ -1104,9 +1124,15 @@ def dialogue_problems(data, seconds: float, person_ok: bool = True) -> list[str]
     chars = {_s(c.get("id")): c for c in bible.get("characters") or [] if isinstance(c, dict) and _s(c.get("id"))}
     scenes = data.get("scenes") if isinstance(data.get("scenes"), list) else []
     speakers, talks, lines = [], 0, 0
+    order: list[tuple[int, str]] = []          # 대사가 있는 장면 (번호, 말하는 사람) — 장면 차례대로
+    seen_in_scenes: list[str] = []             # 장면에 나오는 인물 (처음 나오는 차례대로)
+    talk_by: set[str] = set()                  # 얼굴이 보이는 말하기 장면을 가진 인물
     for i, sc in enumerate(scenes, 1):
         if not isinstance(sc, dict):
             continue
+        for c in sc.get("characters") or []:
+            if _s(c) in chars and _s(c) not in seen_in_scenes:
+                seen_in_scenes.append(_s(c))
         kind, who, line = _s(sc.get("kind")), _s(sc.get("speaker")), _s(sc.get("line_ko"))
         if kind not in ("talk", "shot"):
             p.append(f'Scene {i}: "kind" must be "talk" or "shot".')
@@ -1122,9 +1148,12 @@ def dialogue_problems(data, seconds: float, person_ok: bool = True) -> list[str]
                 p.append(f'Scene {i}: "emotion" must say in English how the line is spoken.')
             if who in chars and who not in speakers:
                 speakers.append(who)
+            if who in chars:
+                order.append((i, who))
             lines += 1
         if kind == "talk":
             talks += 1
+            talk_by.add(who)
             if [_s(c) for c in sc.get("characters") or []] != [who]:
                 p.append(f'Scene {i} is a talk scene: "characters" must be exactly ["{who}"] (the speaker alone in the frame).')
             rank = shot_rank(_s(sc.get("shot")))
@@ -1137,6 +1166,29 @@ def dialogue_problems(data, seconds: float, person_ok: bool = True) -> list[str]
             p.append(f"Scene {i} comes right after a talk scene, so it cannot continue it.")
     if not talks:
         p.append('The film needs talk scenes: write at least one "talk" scene with a spoken line.')
+    rules: list[str] = []
+    need = dialogue_min_lines(seconds)
+    if lines < need:
+        rules.append(f"The film runs {int(seconds)} seconds, so write at least {need} spoken lines (about one every 10 to 13 seconds); "
+                     f"you wrote {lines}. Turn silent shots into talk scenes or give a shot a voice-over line instead of leaving long stretches without speech.")
+    if exchange:
+        silent = [c for c in seen_in_scenes if c not in speakers]
+        if len(seen_in_scenes) >= 2 and len(speakers) < 2:
+            rules.append(f'The request is a conversation between the characters, but only "{speakers[0] if speakers else "nobody"}" speaks. '
+                         f'Let "{(silent or seen_in_scenes)[0]}" speak too (a question, an answer, a reaction in words), '
+                         "and take turns: a line, an answer, a line.")
+        run, prev_who = 0, None
+        for i, who in order:
+            run = run + 1 if who == prev_who else 1
+            prev_who = who
+            if run > DIALOGUE_RUN_MAX:
+                rules.append(f'"{who}" speaks {run} lines in a row (up to scene {i}). Let the other character answer in between, '
+                             "so the conversation goes back and forth.")
+                break
+        for cid in speakers:
+            if cid not in talk_by and len(speakers) >= 2:
+                rules.append(f'"{cid}" speaks only as a voice-over. Give "{cid}" at least one "talk" scene, so the audience sees the face speak.')
+                break
     for cid in speakers:
         c = chars[cid]
         v = _s(c.get("voice"))
@@ -1148,7 +1200,7 @@ def dialogue_problems(data, seconds: float, person_ok: bool = True) -> list[str]
             p.append(f'The voice of "{cid}" has {len(v.split())} words; keep it under 40.')
         elif REAL_VOICE_RE.search(v):
             p.append(f'The voice of "{cid}" refers to a real or famous voice; describe the voice itself instead.')
-    return p[:16]
+    return (rules + p)[:16]          # 줄 수·대화 규칙을 앞에 둔다: 다른 위반이 많아도 잘리지 않게
 
 
 def clean_dialogue_story(data, seconds: float) -> dict | None:
@@ -1187,14 +1239,30 @@ def clean_dialogue_story(data, seconds: float) -> dict | None:
     return story
 
 
-async def write_dialogue_story(call, text: str, notes: str, seconds: float, rounds: int = 3) -> tuple[dict | None, list[str], int]:
-    """대사 영상 구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수)"""
+def dialogue_count_rules(seconds: float, exchange: bool) -> str:
+    """구성안 지시문 끝에 붙이는 줄 수·대화 규칙 (숫자로 적는다: 모델은 '약 8~12초마다' 만으로는 최소한만 쓴다)"""
+    need = dialogue_min_lines(seconds)
+    out = (f"\n- This film is about {int(seconds)} seconds long, so write at least {need} spoken lines in total (about one every 10 to 13 seconds). "
+           "A film with one or two lines and long silent shots is wrong.")
+    if exchange:
+        out += (f'\n- The request is a conversation: the characters speak to each other. At least two characters must speak and take turns '
+                f"(a line, an answer, a line...), never more than {DIALOGUE_RUN_MAX} lines in a row from the same character, "
+                'and every speaker gets at least one "talk" scene so the audience sees that face speak. '
+                "A listener answers in words, not only with a nod.")
+    return out
+
+
+async def write_dialogue_story(call, text: str, notes: str, seconds: float, rounds: int = 3,
+                               known: list | None = None) -> tuple[dict | None, list[str], int]:
+    """대사 영상 구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). known 은 요청에 이름이 나온 라이브러리 인물"""
     count, n_min, n_max = story_counts(seconds)
     n_max = max(n_max, math.ceil(float(seconds) / 5))      # 말하는 장면은 짧다: 장면이 더 많아도 된다
-    system = STORY_SYSTEM.format(seconds=int(seconds), keys=", ".join(MUSIC_KEYS), count=count, n_min=n_min, n_max=n_max,
-                                 tolerance=story_tolerance(seconds)) + DIALOGUE_EXTRA
-    user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "")
     said = f"{text or ''} {notes or ''}"
+    exchange = wants_exchange(said)
+    system = STORY_SYSTEM.format(seconds=int(seconds), keys=", ".join(MUSIC_KEYS), count=count, n_min=n_min, n_max=n_max,
+                                 tolerance=story_tolerance(seconds)) + DIALOGUE_EXTRA + dialogue_count_rules(seconds, exchange) \
+        + cast_lib.prompt_block(known)
+    user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "")
     person_ok = True if PERSON_REQ_RE.search(said) or STORY_PERSON_KO_RE.search(said) else bool(re.search(r"대화|대사|말하", said))
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     best, problems, rnd = None, ["no answer"], 0
@@ -1206,7 +1274,7 @@ async def write_dialogue_story(call, text: str, notes: str, seconds: float, roun
         except PromptxError as e:
             data, problems = None, [str(e)]
         else:
-            problems = [x for x in dialogue_problems(data, seconds, person_ok)
+            problems = [x for x in dialogue_problems(data, seconds, person_ok, exchange)
                         if not (x.startswith("Write ") and "scenes (you wrote" in x)]     # 장면 수는 대사 수를 따른다
         story = clean_dialogue_story(data, seconds) if data is not None else None
         if story is not None and (best is None or len(problems) < len(best[1])):
