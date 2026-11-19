@@ -2044,6 +2044,86 @@ def test_write_dialogue_story_uses_the_dialogue_schema_and_repairs():
     assert "line_ko" in video.DIALOGUE_SCHEMA["properties"]["scenes"]["items"]["required"]
 
 
+def _dlg_good():
+    import copy as _copy
+    g = _copy.deepcopy(DLG_OK)
+    g["scenes"][3]["continues"] = False          # 말하는 장면은 앞 장면을 잇지 않는다
+    return g
+
+
+def test_dialogue_wants_exchange_words():
+    # 인물끼리의 대화 말만 대화로 본다: 한 사람의 설명·따옴표 대사·풍경 요청은 아니다
+    for yes in ("니키와 푸토르가 숲속을 걸어가며 대화를 하는데", "두 사람이 서로 묻고 대답하는 영상", "친구들이 수다를 떤다",
+                "기자가 인터뷰를 한다", "두 사람이 토론한다", "이야기를 나누며 걷는다"):
+        assert video.wants_exchange(yes), yes
+    for no in ("푸토르가 \"안녕\" 이라고 말한다", "할아버지가 고통을 이기는 방법을 설명해 준다", "비 오는 거리 풍경 영상"):
+        assert not video.wants_exchange(no), no
+    assert [video.dialogue_min_lines(x) for x in (25, 30, 40, 60, 95, 180)] == [2, 2, 3, 4, 7, 13]
+
+
+def test_dialogue_rules_want_enough_lines_and_a_real_exchange():
+    import copy as _copy
+    # 대사 셋·두 인물·번갈아 말하고 둘 다 얼굴이 보이는 장면이 있는 구성안은 대화 요청에서도 통과한다
+    assert video.dialogue_problems(_dlg_good(), 48, True, exchange=True) == []
+    # 11-19 메인 첫 시험의 구성안: 푸토르 한 줄뿐, 니키는 말이 없다 → 줄이 모자라고 한 사람만 말한다
+    thin = _dlg_good()
+    for sc in thin["scenes"]:
+        sc.update(kind="shot", speaker="", line_ko="", emotion="")
+    thin["scenes"][1].update(kind="shot", speaker="B", line_ko="고통은 바람처럼 지나가.", emotion="calm and wise")
+    thin["scenes"][3].update(kind="talk", speaker="B", line_ko="숨을 고르고, 마음속 꽃을 바라봐.", emotion="warm")
+    left = video.dialogue_problems(thin, 48, True, exchange=True)
+    assert any("at least 3 spoken lines" in x and "you wrote 2" in x for x in left), left
+    assert any('only "B" speaks' in x and 'Let "A" speak too' in x for x in left), left
+    assert video.dialogue_problems(thin, 48, True) != [] and not any("only" in x and "speaks" in x for x in video.dialogue_problems(thin, 48, True))
+    # 대화 요청이 아니면 한 사람의 이야기도 된다 (줄 수는 여전히 본다)
+    one = _dlg_good()
+    one["scenes"][2].update(kind="talk", speaker="B", characters=["B"], line_ko="천천히 걸어 보거라.", emotion="calm")
+    assert video.dialogue_problems(one, 48, True) == []
+    assert any('only "B" speaks' in x for x in video.dialogue_problems(one, 48, True, exchange=True))
+    # 같은 사람이 세 줄 연속
+    run = _dlg_good()
+    run["scenes"][2].update(speaker="B", characters=["B"], line_ko="괜찮단다.", emotion="soft")
+    run["scenes"][4].update(kind="talk", speaker="A", characters=["A"], shot="close-up", line_ko="네, 할아버지.", emotion="quiet")
+    left = video.dialogue_problems(run, 48, True, exchange=True)
+    assert any('"B" speaks 3 lines in a row' in x for x in left), left
+    # 한 인물이 화면 밖 목소리로만 말한다 (얼굴이 보이는 말하기 장면이 없다)
+    voice_only = _dlg_good()
+    voice_only["scenes"][3].update(speaker="A", characters=["A"], line_ko="저도 해 볼게요.", emotion="hopeful")
+    left = video.dialogue_problems(voice_only, 48, True, exchange=True)
+    assert any('"B" speaks only as a voice-over' in x for x in left), left
+    # 긴 영화는 줄 수를 늘려야 한다 (90초면 6줄)
+    left = video.dialogue_problems(_dlg_good(), 90, True)
+    assert any("at least 6 spoken lines" in x for x in left), left
+    # 줄 수·대화 규칙은 다른 위반이 많아도 잘리지 않게 앞에 놓인다
+    messy = _copy.deepcopy(thin)
+    messy["scenes"][0]["shot"] = "wide"
+    left = video.dialogue_problems(messy, 48, True, exchange=True)
+    assert len(left) <= 16 and "spoken lines" in left[0]
+
+
+def test_dialogue_story_prompt_states_the_line_and_conversation_rules():
+    call = Call([_dlg_good()])
+    asyncio.run(video.write_dialogue_story(call, "니키와 푸토르가 숲속을 걸어가며 대화하는 40초 영상", "", 48))
+    system = call.calls[0]["messages"][0]["content"]
+    assert "at least 3 spoken lines in total" in system and "The request is a conversation" in system
+    assert "never more than 2 lines in a row" in system and "A listener answers in words" in system
+    # 대화가 아닌 요청은 줄 수만 말하고 번갈아 말하기는 요구하지 않는다
+    call = Call([_dlg_good()])
+    asyncio.run(video.write_dialogue_story(call, "할아버지가 \"고통은 지나간다\" 라고 말하는 영상", "", 48))
+    system = call.calls[0]["messages"][0]["content"]
+    assert "at least 3 spoken lines in total" in system and "The request is a conversation" not in system
+    # 한 사람만 말하는 구성안은 대화 요청에서 고쳐 쓰게 한다: 첫 답이 모자라면 다시 쓰라는 말이 규칙을 그대로 담는다
+    thin = _dlg_good()
+    for sc in thin["scenes"]:
+        sc.update(kind="shot", speaker="", line_ko="", emotion="")
+    thin["scenes"][3].update(kind="talk", speaker="B", line_ko="숨을 고르거라.", emotion="warm")
+    call = Call([thin, _dlg_good()])
+    story, left, rounds = asyncio.run(video.write_dialogue_story(call, "두 사람이 대화하는 영상", "", 48))
+    assert rounds == 2 and left == [] and len([x for x in story["scenes"] if x["line_ko"]]) == 3
+    repair = call.calls[1]["messages"][-1]["content"]
+    assert "at least 3 spoken lines" in repair and 'only "B" speaks' in repair
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

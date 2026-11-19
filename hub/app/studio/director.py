@@ -80,7 +80,8 @@ LONG_SCENE_KEYS = ("plan", "scene_prompt", "image_rel", "first_from", "prompt", 
 TALK_TAIL = 0.9            # 말하는 장면은 대사 끝 + 이만큼에서 자른다 (11-19 숲길: 대사가 끝난 뒤 IA2V 화면이 어두워짐)
 TALK_MIN_SHOT = 3.0
 TALK_PAD = 1.0             # 말하는 장면 길이 = 대사 길이 + 이만큼 (올림, 4~20초)
-DIALOGUE_PART_OVERHEAD = 30   # 녹음·기준 그림·편집마다 실행 말고 더 걸리는 시간(초) [추정]
+DIALOGUE_PART_OVERHEAD = 10   # 녹음·기준 그림·편집마다 실행 말고 더 걸리는 시간(초). 11-19 메인 시험: 편집 20초·기준 그림 7~14초·녹음 50~71초
+DIALOGUE_CAST_SECONDS = 15    # 인물 기준 그림 한 장(Z-Image 8스텝) 실행 시간(초). 11-19 메인 시험 7~14초
 # 고쳐 쓴 뒤에도 남으면 그 프롬프트로 영상을 만들지 않는 위반: 요청과 다른 장면(예시 베끼기)이다 (11-16 파일럿 요청)
 BLOCKING_RE = re.compile(r"copies the EXAMPLE|describes a different scene")
 PLAN_ACTIONS = [{"id": "approve", "label": "승인"}, {"id": "cancel", "label": "취소"}]
@@ -1000,7 +1001,7 @@ class Director:
             v = _video()
             tts = float(((self.recipe_for("voice_clone") or {}).get("estimate") or {}).get("gpu_seconds") or 120)
             parts = len(v.speakers_of(story)) + sum(1 for sc in story["scenes"] if sc.get("line_ko"))
-            total += parts * (tts + DIALOGUE_PART_OVERHEAD) + len(v.cast_ids(story)) * (25 + DIALOGUE_PART_OVERHEAD)
+            total += parts * (tts + DIALOGUE_PART_OVERHEAD) + len(v.cast_ids(story)) * (DIALOGUE_CAST_SECONDS + DIALOGUE_PART_OVERHEAD)
         try:
             med = await self.deps.medians() or {}
             q = await self.deps.queue()
