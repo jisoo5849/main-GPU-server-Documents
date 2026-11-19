@@ -33,15 +33,18 @@ CARD = {
     "edit": ("이미지 편집하는 중", ["prompt", "generate", "collect"]),
     "pipeline": ("영상 만드는 중", ["prompt", "scene", "motion", "generate", "collect"]),
     "long": ("긴 영상 만드는 중", ["story", "scenes", "music", "assemble"]),      # 여러 장면을 이어 붙이는 긴 영상
+    "dialogue": ("대사 영상 만드는 중", ["story", "voices", "scenes", "music", "assemble"]),   # 목소리를 먼저 녹음하는 대사 영상 (11-19)
 }
 CHIP_LABEL = {"frame": "첫 화면 읽기", "prompt": "프롬프트 작성", "fix": "다듬기", "generate": "생성", "collect": "마무리",
               "scene": "장면 준비", "motion": "움직임 설계", "story": "구성안", "scenes": "장면", "music": "음악",
-              "assemble": "합치기"}
+              "assemble": "합치기", "voices": "목소리"}
 
 
 def long_pct(done: int, n: int, phase: str, frac: float = 0.0) -> int | None:
     """긴 영상 전체 %: (끝난 장면 + 지금 장면의 진행) ÷ (장면 수 + 1). 남은 1 은 음악·합치기 몫이다. 구성안 단계는 % 없음"""
     n = max(1, int(n or 1))
+    if phase == "voices":          # 대사 녹음: 장면 하나 몫의 절반쯤으로 센다 (CPU 녹음이라 길지만 장면보다 짧다)
+        return min(99, int(100 * 0.5 * max(0.0, min(1.0, frac)) / (n + 1)))
     if phase == "scenes":
         return min(99, int(100 * (max(0, int(done or 0)) + max(0.0, min(1.0, frac))) / (n + 1)))
     if phase == "music":

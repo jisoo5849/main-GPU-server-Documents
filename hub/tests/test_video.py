@@ -1952,6 +1952,98 @@ def test_scene_sound_has_no_music_when_the_film_adds_one_track():
     assert result["sound"] == SOUND_NO_MUSIC["sound"] and result["sound_left"] == []     # 음악이 든 첫 답은 고쳐 쓴다
 
 
+# ── 대사 영상 구성안 (11-19) ──
+DLG_OK = {
+    "title_ko": "숲길 끝의 화원", "logline_ko": "니키와 푸토르가 숲길을 걸으며 아픔을 이야기한다.",
+    "bible": {"characters": [
+        {"id": "A", "look": "a twelve-year-old girl with two long black braids, wine-red hat and cape", "name_ko": "니키",
+         "voice": "A twelve-year-old Korean girl, clear and natural, gentle and a little shy.", "voice_ko": "맑은 열두 살 여자아이"},
+        {"id": "B", "look": "a short old dwarf herbalist with a long white beard, round glasses and a golden-ochre coat",
+         "name_ko": "푸토르", "voice": "A kind Korean grandpa around eighty, low warm gravelly voice, slow and gentle.",
+         "voice_ko": "굵고 따뜻한 할아버지"}],
+        "places": [{"id": "P1", "look": "a winding forest path with mossy trees"},
+                   {"id": "P2", "look": "a sunlit flower garden with an arch"}],
+        "time": "early morning, clear", "light": "soft golden sunbeams", "style": "semi-realistic painterly 2.5D fantasy film look"},
+    "music": {"tags": "gentle cinematic fantasy instrumental, piano, strings", "bpm": 70, "key": "D major", "ko": "잔잔한 피아노"},
+    "scenes": [
+        {"seconds": 8, "place": "P1", "characters": [], "continues": False, "shot": "wide shot, slow dolly forward",
+         "action": "Morning light falls on the empty winding path.", "sound": "birds and leaves", "ko": "아침 숲길",
+         "kind": "shot", "speaker": "", "line_ko": "", "emotion": ""},
+        {"seconds": 10, "place": "P1", "characters": ["A", "B"], "continues": False, "shot": "wide shot from behind, slow follow",
+         "action": "The girl and the old dwarf walk side by side along the path.", "sound": "footsteps on soft earth",
+         "ko": "둘이 함께 걷는다", "kind": "shot", "speaker": "B", "line_ko": "얘야, 굽은 길은 천천히 보게 해 준단다.",
+         "emotion": "calm and wise, slow"},
+        {"seconds": 6, "place": "P1", "characters": ["A"], "continues": False, "shot": "close-up",
+         "action": "She looks up with hesitant eyes.", "sound": "soft breeze", "ko": "니키가 묻는다", "kind": "talk",
+         "speaker": "A", "line_ko": "할아버지, 아픈 건 언제 없어져요?", "emotion": "hesitant and a little sad"},
+        {"seconds": 9, "place": "P1", "characters": ["B"], "continues": True, "shot": "medium close-up",
+         "action": "He smiles warmly and nods slowly.", "sound": "birds", "ko": "푸토르가 답한다", "kind": "talk", "speaker": "B",
+         "line_ko": "아픔은 없애는 게 아니란다. 함께 걸어가는 법을 배우는 게지.", "emotion": "warm and wise"},
+        {"seconds": 6, "place": "P1", "characters": ["A"], "continues": False, "shot": "close-up",
+         "action": "She listens quietly, eyes lowered.", "sound": "birds", "ko": "니키가 생각한다", "kind": "shot",
+         "speaker": "", "line_ko": "", "emotion": ""},
+        {"seconds": 9, "place": "P2", "characters": ["A", "B"], "continues": False, "shot": "wide shot from behind",
+         "action": "They stand at the end of the path before the bright garden.", "sound": "bees and wind", "ko": "화원이 펼쳐진다",
+         "kind": "shot", "speaker": "", "line_ko": "", "emotion": ""}]}
+
+
+def test_dialogue_story_rules_and_cleaning():
+    import copy as _copy
+    left = video.dialogue_problems(DLG_OK, 48, True)
+    assert any("Scene 4 is a talk scene, so it cannot continue" in x for x in left), left    # 말하는 장면은 잇지 않는다
+    s = video.clean_dialogue_story(DLG_OK, 48)
+    assert s["dialogue"] and [x["kind"] for x in s["scenes"]] == ["shot", "shot", "talk", "talk", "shot", "shot"]
+    assert not any(x["continues"] for x in s["scenes"]) and s["scenes"][2]["characters"] == ["A"]
+    assert s["scenes"][1]["speaker"] == "B" and s["scenes"][1]["line_ko"].startswith("얘야")      # 걷는 장면의 화면 밖 목소리
+    a, b = s["bible"]["characters"]
+    assert a["name_ko"] == "니키" and "girl" in a["voice"] and b["voice_ko"] == "굵고 따뜻한 할아버지"
+    # 말하는 사람·기준 그림·바라보는 쪽 (두 사람이 서로 마주 보게)
+    assert video.speakers_of(s) == ["B", "A"] and {video.speaker_side(s, "A"), video.speaker_side(s, "B")} == {"left", "right"}
+    assert [video.cast_scene(s, i) for i in range(6)] == [None, None, "A", "B", "A", None] and video.cast_ids(s) == ["A", "B"]
+    # 잘못된 구성안: 말하는 장면에 두 사람, 먼 샷, 실제 사람 목소리 흉내, 대사 없는 영화
+    bad = _copy.deepcopy(DLG_OK)
+    bad["scenes"][2].update(characters=["A", "B"], shot="wide shot")
+    bad["bible"]["characters"][0]["voice"] = "sounds like Taylor Swift"
+    left = video.dialogue_problems(bad, 48, True)
+    assert any('must be exactly ["A"]' in x for x in left) and any("close-up or a medium close-up" in x for x in left)
+    assert any("real or famous voice" in x for x in left)
+    none = _copy.deepcopy(DLG_OK)
+    for sc in none["scenes"]:
+        sc.update(kind="shot", speaker="", line_ko="", emotion="")
+    assert any("needs talk scenes" in x for x in video.dialogue_problems(none, 48, True))
+    assert video.clean_dialogue_story(none, 48) is None
+
+
+def test_dialogue_prompts_keep_one_person_and_the_look():
+    s = video.clean_dialogue_story(DLG_OK, 48)
+    talk = video.talk_prompt(s, 3)
+    assert "alone in the frame, no other people" in talk and "golden-ochre coat." in talk and "warm and wise" in talk
+    assert "Style: semi-realistic painterly" in talk and "lips and jaw move" in talk
+    edit = video.cast_edit_prompt(s, 2)
+    assert edit.startswith("Keep the same person from the image exactly") and "Only this one person" in edit
+    assert "winding forest path" in edit and "about to speak" in edit
+    assert "listening quietly" in video.cast_edit_prompt(s, 4)                 # 듣는 얼굴은 입을 다문다
+    cast = video.cast_prompt(s, "A")
+    assert "two long black braids" in cast and "Only this one person" in cast and "hands not visible" in cast
+    assert video.voice_instruct(s, "B").startswith("A kind Korean grandpa") and "Emotion:" in video.voice_instruct(s, "B")
+    assert video.line_tokens("예뻐요.") == 256 and video.line_tokens("가" * 40) == 512
+    assert video.line_max_seconds("가" * 20) == 13.0
+
+
+def test_write_dialogue_story_uses_the_dialogue_schema_and_repairs():
+    import copy as _copy
+    bad = _copy.deepcopy(DLG_OK)
+    bad["scenes"][2]["characters"] = ["A", "B"]
+    good = _copy.deepcopy(DLG_OK)
+    good["scenes"][3]["continues"] = False
+    call = Call([bad, good])
+    story, left, rounds = asyncio.run(video.write_dialogue_story(call, "니키와 푸토르가 숲속을 걸어가며 대화하는 영상", "", 48))
+    assert rounds == 2 and left == [] and story["dialogue"], left
+    system = call.calls[0]["messages"][0]["content"]
+    assert "spoken dialogue in Korean" in system and call.calls[0]["format"] is video.DIALOGUE_SCHEMA
+    assert "line_ko" in video.DIALOGUE_SCHEMA["properties"]["scenes"]["items"]["required"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

@@ -27,6 +27,7 @@ button { font:inherit; cursor:pointer; }
 .plan .ko { color:var(--sub); font-size:13px; margin-top:8px; white-space:pre-wrap; }
 .plan ol.scenes { margin:8px 0 0; padding-left:22px; font-size:13px; color:var(--sub); max-height:260px; overflow-y:auto; }
 .plan ol.scenes li { margin:2px 0; word-break:break-word; }
+.plan ol.scenes li .line { color:var(--ink); margin:1px 0 4px; }
 .plan .acts { margin-top:10px; display:flex; gap:8px; }
 .plan .acts button.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
 .plan .status { margin-top:10px; font-size:13px; color:var(--sub); }

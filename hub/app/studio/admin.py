@@ -58,6 +58,7 @@ async def editor_report(env: dict, r: dict) -> list[dict]:
                 "msg": "; ".join(errs + warns)})
     try:
         files.write_sample_png(env)
+        files.write_sample_wav(env)          # 목소리 복제·입 맞춤 레시피의 LoadAudio 표본 (11-19)
         prompt = recipes.build(r, recipes.sample_values(r))
         ok, error, node_errors = await jobs._validate_in_editor(env, prompt, str(uuid.uuid4()), None)
         if not ok:

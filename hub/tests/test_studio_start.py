@@ -33,12 +33,14 @@ api.state = _State()
 sys.modules["app.studio.api"] = api
 
 import app.studio as S  # noqa: E402
-from app import models_index  # noqa: E402
+from app import models_index, promptops  # noqa: E402
 from app.studio import recipes as R, store  # noqa: E402
 
 S.api = api
 
 RECS = R.load_all()
+# 모델 파일을 쓰는 레시피 (목소리 레시피는 모델을 파일 이름이 아닌 크기 '1.7B' 로 고르므로 V10 대상이 아니다, 11-19)
+WITH_MODELS = {rid for rid, r in RECS.items() if promptops.find_models(r["prompt"])}
 
 
 class FakeDirector:
@@ -100,8 +102,8 @@ async def t_empty_model_store_then_opens_on_a_later_check():
     d = FakeDirector()
     assert not await S.try_open(d, 0)
     assert not api.state.ready and "모델 저장소가 비어" in api.state.reason and "자동으로 다시 확인" in api.state.reason
-    assert d.disabled == set(RECS)                                   # 모델이 안 보이면 레시피가 전부 꺼진다 (V10)
-    assert len(w.saved) == len(RECS) and not any(ok for _, ok in w.saved)
+    assert d.disabled == WITH_MODELS                                 # 모델이 안 보이면 모델을 쓰는 레시피가 전부 꺼진다 (V10)
+    assert len(w.saved) == len(RECS) and not any(ok for rid, ok in w.saved if rid in WITH_MODELS)
     # 같은 결과로 다시 검사하면 DB 에 다시 쌓지 않는다
     assert not await S.try_open(d, 1)
     assert len(w.saved) == len(RECS)
@@ -112,7 +114,8 @@ async def t_empty_model_store_then_opens_on_a_later_check():
     await asyncio.sleep(0)                                            # 정리 작업은 뒤에서 시작된다
     assert api.state.ready and d.recovered == 1 and w.cleanups == 1 and not d.disabled
     assert await S.try_open(d, 3) and w.cleanups == 1                 # 정리 작업은 한 번만 띄운다
-    assert len(w.saved) == 2 * len(RECS) and all(ok for _, ok in w.saved[len(RECS):])   # 바뀐 결과만 새로 남긴다
+    n = len(WITH_MODELS)
+    assert len(w.saved) == len(RECS) + n and all(ok for _, ok in w.saved[len(RECS):])   # 바뀐 결과만 새로 남긴다
 
 
 async def t_missing_ollama_model_keeps_it_closed_with_a_reason():
