@@ -35,5 +35,11 @@ mgs:
   frame_interpolation: frame_interpolation
   geometry_estimation: geometry_estimation
   background_removal: background_removal
-  # 허브 연동 노드 (사용자 custom_nodes 와 별도, 읽기 전용)
+  # 2026-11-19 추가: 대사 음성(Qwen3-TTS) 모델. ComfyUI-QwenTTS 노드가 tts 키의 첫 경로 아래 Qwen3-TTS/<모델 이름>/ 에서 찾는다
+  tts: TTS
+
+# 허브 연동 노드 (사용자 custom_nodes 와 별도, 읽기 전용).
+# is_default 구역(위)에 두면 custom_nodes 의 첫 경로가 되어 ComfyUI-Manager 가 이 읽기 전용 폴더에 설치하려다 모두 실패한다
+# (2026-11-19 메인: "Read-only file system: '/opt/mgs/nodes/CNR_temp_….zip'"). 그래서 기본이 아닌 구역에 따로 둔다
+mgs_nodes:
   custom_nodes: /opt/mgs/nodes
