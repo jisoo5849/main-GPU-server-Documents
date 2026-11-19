@@ -6,6 +6,10 @@ GPU 를 쓰지 않는다. ComfyUI 노드로 합치면 모든 프레임을 메모
   거의 무음인 장면은 올리지 않는다 (잡음이 커지지 않게). 장면 경계에는 짧은 페이드로 딸깍 소리를 막는다.
 - 음악: 장면 소리보다 8dB 작게 깔고 처음·끝을 페이드. 다 섞은 뒤 다시 재서 -14 LUFS(유튜브 기준)로 맞춘다.
 명령을 만드는 함수(build_*)는 순수 함수라 ffmpeg 없이 시험한다 (hub/tests/test_studio_assemble.py).
+
+대사가 있는 단편(docs/short-film-dialogue-design.md)은 run_dialogue() 로 합친다: 샷 사이 디졸브(기본 0.5초), 대사 소리 파일을 샷 시작보다
+조금 늦게(기본 0.2초) 제자리에 놓고, 배경음악을 대사보다 작게(기본 -14dB) 깔고, 영상 안의 소리는 쓰지 않는다 (11-19 사용자 확인: 이 설정이 딱 좋다).
+JSON 로 정한 타임라인은 `python -m app.studio.assemble 타임라인.json 결과.mp4` 로 허브 컨테이너에서 합친다.
 """
 import json
 import math
@@ -309,3 +313,123 @@ def run(clips: list[str], music: str | None, out: str, sound: bool = True, trans
     os.replace(tmp_out, out)
     info.update(duration=round(got["duration"], 3), bytes=os.path.getsize(out))
     return info
+
+
+# ── 대사 있는 단편: 샷 영상 + 대사 소리 + 배경음악 (11-19) ──
+DIALOGUE_OVERLAP = 0.5     # 샷 사이 디졸브(초). 사용자가 11-19 미리보기에서 0.5초가 자연스럽다고 확인
+DIALOGUE_LEAD = 0.2        # 대사 소리가 샷 시작보다 늦게 나오는 만큼(초). 앞 샷의 끝과 겹쳐 컷이 소리로 이어진다
+DIALOGUE_MUSIC_DB = -14.0  # 배경음악이 대사보다 작은 만큼(dB). 미리보기의 0.2배(약 -14dB)
+MUSIC_EDGE_IN, MUSIC_EDGE_OUT = 1.5, 2.0
+
+
+def dialogue_starts(durations: list[float], overlap) -> tuple[list[float], float]:
+    """샷마다 시작 시각과 전체 길이: 다음 샷은 앞 샷이 끝나기 overlap 초 전에 시작한다.
+    overlap 은 숫자 하나(모든 이음새) 또는 이음새마다의 목록(fit_transitions 결과)"""
+    ov = list(overlap) if isinstance(overlap, (list, tuple)) else [overlap] * max(0, len(durations) - 1)
+    starts, t = [], 0.0
+    for i, d in enumerate(durations):
+        starts.append(round(t, 6))
+        t += d - (ov[i] if i < len(ov) else 0.0)
+    total = starts[-1] + durations[-1] if durations else 0.0
+    return starts, round(total, 6)
+
+
+def build_dialogue_audio_filter(n_clips: int, lines: list[dict], starts: list[float], lead: float, total: float,
+                                has_music: bool, music_db: float) -> str:
+    """대사 소리 파일(입력 n_clips..)을 샷 시작 + lead 에 놓고 음악(마지막 입력)을 섞는 filter_complex. 출력 라벨 [a].
+    lines 는 [{"shot": 샷 번호(0부터), "delay": 추가로 늦출 초(선택), "gain_db": 크기(선택)}], 입력 순서와 같다.
+    영상 클립의 소리는 쓰지 않는다. 마지막에 -14 LUFS 로 맞춘다 (한 번에, 짧은 영상이라 측정값 없이)"""
+    parts, labels = [], []
+    for j, ln in enumerate(lines):
+        idx = n_clips + j
+        at = starts[int(ln["shot"])] + lead + float(ln.get("delay") or 0.0)
+        ms = max(0, int(round(at * 1000)))
+        g = float(ln.get("gain_db") or 0.0)
+        parts.append(f"[{idx}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,adelay={ms}|{ms},volume={g:.2f}dB[l{j}]")
+        labels.append(f"[l{j}]")
+    if has_music:
+        mi = n_clips + len(lines)
+        fo = max(0.0, total - MUSIC_EDGE_OUT)
+        parts.append(f"[{mi}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad,atrim=0:{total:.3f},asetpts=PTS-STARTPTS,"
+                     f"volume={music_db:.2f}dB,afade=t=in:st=0:d={MUSIC_EDGE_IN},afade=t=out:st={fo:.3f}:d={MUSIC_EDGE_OUT}[mus]")
+        labels.append("[mus]")
+    parts.append("".join(labels) + f"amix=inputs={len(labels)}:duration=longest:dropout_transition=0:normalize=0,"
+                 f"atrim=0:{total:.3f},asetpts=PTS-STARTPTS,loudnorm=I={FINAL_LUFS}:TP={FINAL_TP}:LRA=11,aresample=48000[a]")
+    return ";".join(parts)
+
+
+def build_dialogue_cmd(clips: list[str], line_files: list[str], music: str | None, out: str, vfilter: str, afilter: str) -> list[str]:
+    cmd = ["ffmpeg", "-hide_banner", "-nostats", "-y"]
+    for c in clips:
+        cmd += ["-i", c]
+    for f in line_files:
+        cmd += ["-i", f]
+    if music:
+        cmd += ["-i", music]
+    cmd += ["-filter_complex", vfilter + ";" + afilter, "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-crf", "17", "-preset", "medium", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", out]
+    return cmd
+
+
+def run_dialogue(clips: list[str], lines: list[dict], music: str | None, out: str, overlap: float = DIALOGUE_OVERLAP,
+                 lead: float = DIALOGUE_LEAD, music_db: float = DIALOGUE_MUSIC_DB) -> dict:
+    """샷 영상(절대 경로, 순서대로)과 대사 소리 파일들, 배경음악을 합쳐 out 에 쓴다. 실패하면 AssembleError.
+    lines: [{"file": 경로, "shot": 샷 번호(0부터), "delay": 선택, "gain_db": 선택}]"""
+    if not available():
+        raise AssembleError("허브에 ffmpeg 가 없습니다 (hub/Dockerfile 에 넣은 판으로 업데이트해야 합니다)")
+    if not clips:
+        raise AssembleError("이어 붙일 샷이 없습니다")
+    for ln in lines:
+        if not 0 <= int(ln.get("shot", -1)) < len(clips):
+            raise AssembleError(f"대사 {ln.get('file')} 의 샷 번호가 범위 밖입니다: {ln.get('shot')}")
+        if not os.path.isfile(ln.get("file") or ""):
+            raise AssembleError(f"대사 소리 파일이 없습니다: {ln.get('file')}")
+    probes = [probe(c) for c in clips]
+    if not all(p["video"] and p["duration"] > 0 for p in probes):
+        raise AssembleError("영상이 없는 샷 파일이 있습니다")
+    if len({(p["width"], p["height"]) for p in probes}) > 1:
+        raise AssembleError("샷 크기가 서로 다릅니다")
+    durations = [p["duration"] for p in probes]
+    overlaps = fit_transitions(durations, [overlap] * (len(clips) - 1)) if len(clips) > 1 else []
+    starts, total = dialogue_starts(durations, overlaps)      # 겹침이 줄어든 이음새가 있으면 소리 시작도 그 기준(실제 영상 시각)을 따른다
+    vfilter = build_video_filter(durations, overlaps, _fps(probes[0]))
+    afilter = build_dialogue_audio_filter(len(clips), lines, starts, lead, total, bool(music), music_db)
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    tmp_out = out + ".part.mp4"
+    _run(build_dialogue_cmd(clips, [ln["file"] for ln in lines], music, tmp_out, vfilter, afilter))
+    got = probe(tmp_out)
+    if abs(got["duration"] - total) > DURATION_SLACK or not got["audio"]:
+        try:
+            os.remove(tmp_out)
+        except OSError:
+            pass
+        raise AssembleError(f"합친 영상의 길이({got['duration']:.2f}초)가 계산({total:.2f}초)과 다르거나 소리가 없습니다")
+    os.replace(tmp_out, out)
+    return {"shots": len(clips), "lines": len(lines), "seconds": round(got["duration"], 3), "expected": round(total, 3),
+            "overlaps": overlaps, "lead": lead, "music": bool(music), "bytes": os.path.getsize(out)}
+
+
+def main(argv: list[str] | None = None) -> int:
+    """python -m app.studio.assemble 타임라인.json 결과.mp4   (타임라인 자리에 - 를 쓰면 표준 입력에서 읽는다)
+    타임라인.json: {"clips": [경로…], "lines": [{"file": 경로, "shot": 0, "delay": 0, "gain_db": 0}…], "music": 경로 또는 null,
+                   "overlap": 0.5, "lead": 0.2, "music_db": -14}  (경로는 컨테이너 안에서 보이는 절대 경로)"""
+    import sys
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) != 2:
+        print(main.__doc__)
+        return 2
+    if args[0] == "-":
+        spec = json.load(sys.stdin)         # 컨테이너 밖 파일을 `exec -T … - 결과.mp4 < 타임라인.json` 으로 넘길 수 있다
+    else:
+        with open(args[0], encoding="utf-8") as f:
+            spec = json.load(f)
+    info = run_dialogue(spec["clips"], spec.get("lines") or [], spec.get("music"), args[1],
+                        float(spec.get("overlap", DIALOGUE_OVERLAP)), float(spec.get("lead", DIALOGUE_LEAD)),
+                        float(spec.get("music_db", DIALOGUE_MUSIC_DB)))
+    print(json.dumps(info, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -108,6 +108,77 @@ def t_xfade_command_reencodes_and_uses_mix_audio():
     assert "-an" in A.build_xfade_cmd(["a.mp4"], None, "/r/o.mp4", "VF", None)
 
 
+def t_dialogue_starts_overlap_each_cut():
+    starts, total = A.dialogue_starts([6.04, 5.04, 5.04], 0.5)
+    assert starts == [0.0, 5.54, 10.08] and abs(total - 15.12) < 1e-6
+    assert A.dialogue_starts([6.0, 5.0], [0.0]) == ([0.0, 6.0], 11.0)            # 이음새마다 겹침 목록도 받는다 (0 이면 컷)
+    assert A.dialogue_starts([4.0], 0.5) == ([0.0], 4.0) and A.dialogue_starts([], 0.5) == ([], 0.0)
+
+
+def t_dialogue_audio_filter_places_lines_and_ducks_music():
+    starts = [0.0, 5.54, 10.08]
+    lines = [{"shot": 0}, {"shot": 1, "delay": 0.1}, {"shot": 2, "gain_db": -3}]
+    f = A.build_dialogue_audio_filter(3, lines, starts, 0.2, 15.12, True, -14.0)
+    assert "[3:a]aresample=48000" in f and "adelay=200|200" in f                 # 첫 대사는 샷 시작 + 0.2초
+    assert "[4:a]" in f and "adelay=5840|5840" in f                              # 5.54 + 0.2 + 0.1
+    assert "[5:a]" in f and "volume=-3.00dB[l2]" in f and "adelay=10280|10280" in f
+    assert "[6:a]aresample=48000" in f and "volume=-14.00dB" in f and "atrim=0:15.120" in f   # 음악은 마지막 입력
+    assert "afade=t=in:st=0:d=1.5" in f and "afade=t=out:st=13.120:d=2.0" in f
+    assert "amix=inputs=4:duration=longest:dropout_transition=0:normalize=0" in f
+    assert "loudnorm=I=-14.0:TP=-1.5:LRA=11" in f and f.endswith("[a]")
+    nomusic = A.build_dialogue_audio_filter(2, [{"shot": 0}], [0.0, 5.0], 0.2, 9.5, False, -14.0)
+    assert "[mus]" not in nomusic and "amix=inputs=1" in nomusic and "[2:a]" in nomusic
+
+
+def t_dialogue_command_maps_video_and_mixed_audio():
+    cmd = A.build_dialogue_cmd(["a.mp4", "b.mp4"], ["l0.mp3", "l1.mp3"], "m.mp3", "/r/o.mp4", "VF", "AF")
+    assert cmd.count("-i") == 5 and cmd[cmd.index("-filter_complex") + 1] == "VF;AF"
+    assert cmd[cmd.index("-map") + 1] == "[v]" and "[a]" in cmd and "libx264" in cmd and cmd[-1] == "/r/o.mp4"
+    assert A.build_dialogue_cmd(["a.mp4"], [], None, "/r/o.mp4", "VF", "AF").count("-i") == 1
+
+
+def t_run_dialogue_refuses_bad_input():
+    if not A.available():
+        return
+    for lines, msg in (([{"file": "/nope.mp3", "shot": 0}], "없습니다"), ([{"file": __file__, "shot": 5}], "범위 밖")):
+        try:
+            A.run_dialogue(["x.mp4"], lines, None, "o.mp4")
+        except A.AssembleError as e:
+            assert msg in str(e), str(e)
+        else:
+            raise AssertionError("나쁜 입력으로 합치기가 돌았다")
+
+
+def t_real_dialogue_join_when_ffmpeg_is_present():
+    """ffmpeg 가 있는 곳에서 샷 3개(소리 없는 영상) + 대사 3개 + 음악을 실제로 합쳐 길이·소리를 본다"""
+    if not A.available():
+        print("  (ffmpeg 가 없어 실제 대사 합치기는 건너뜀)")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        def clip(name, sec, src):
+            path = os.path.join(tmp, name)
+            subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                            f"{src}=size=320x176:rate=24:duration={sec}", "-c:v", "libx264", "-pix_fmt", "yuv420p", path], check=True)
+            return path
+
+        def tone(name, sec, hz):
+            path = os.path.join(tmp, name)
+            subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                            f"sine=frequency={hz}:duration={sec}:sample_rate=48000", path], check=True)
+            return path
+        clips = [clip("a.mp4", 4, "testsrc"), clip("b.mp4", 3, "testsrc2"), clip("c.mp4", 3, "smptebars")]
+        lines = [{"file": tone("l0.mp3", 2.5, 440), "shot": 0}, {"file": tone("l1.mp3", 2.0, 330), "shot": 1},
+                 {"file": tone("l2.mp3", 2.0, 550), "shot": 2}]
+        music = tone("m.mp3", 12, 220)
+        out = os.path.join(tmp, "o", "dialogue.mp4")
+        info = A.run_dialogue(clips, lines, music, out)
+        got = A.probe(out)
+        assert abs(got["duration"] - 9.0) < 0.3 and got["audio"] and info["shots"] == 3 and info["lines"] == 3   # 10 - 2*0.5
+        assert info["overlaps"] == [0.5, 0.5] and not os.path.exists(out + ".part.mp4")
+        info2 = A.run_dialogue(clips, lines, None, os.path.join(tmp, "o", "nomusic.mp4"), overlap=0.0)
+        assert abs(A.probe(os.path.join(tmp, "o", "nomusic.mp4"))["duration"] - 10.0) < 0.3 and info2["music"] is False
+
+
 def t_same_video_needs_matching_streams():
     p = {"width": 1280, "height": 704, "vcodec": "h264", "fps": "24/1", "pix_fmt": "yuv420p"}
     assert A.same_video([p, dict(p)]) and not A.same_video([p, dict(p, fps="25/1")]) and not A.same_video([])
