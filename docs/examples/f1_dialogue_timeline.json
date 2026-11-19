@@ -1,0 +1,40 @@
+{
+  "clips": [
+    "/home/mgs/results/admin/main/2026-11-19/f0_dialogue/shot4_S1_hana_00001_.mp4",
+    "/home/mgs/results/admin/main/2026-11-19/f0_dialogue/shot4_S2_minjun_00001_.mp4",
+    "/home/mgs/results/admin/main/2026-11-19/f0_dialogue/shot4_S3_hana_00001_.mp4",
+    "/home/mgs/results/admin/main/2026-11-19/f0_dialogue/shot4_S4_minjun_00001_.mp4",
+    "/home/mgs/results/admin/main/2026-11-19/f0_dialogue/shot4_S5_hana_00001_.mp4",
+    "/home/mgs/results/admin/main/2026-11-19/f0_dialogue/shot4_S6_minjun_00001_.mp4"
+  ],
+  "lines": [
+    {
+      "file": "/home/mgs/results/admin/main/2026-11-19/f0_dialogue/emo_S1_take2_00001.mp3",
+      "shot": 0
+    },
+    {
+      "file": "/home/mgs/results/admin/main/2026-11-19/f0_dialogue/emo_S2_take2_00001.mp3",
+      "shot": 1
+    },
+    {
+      "file": "/home/mgs/results/admin/main/2026-11-19/f0_dialogue/emo_S3_take2_00001.mp3",
+      "shot": 2
+    },
+    {
+      "file": "/home/mgs/results/admin/main/2026-11-19/f0_dialogue/emo_S4_take1_00001.mp3",
+      "shot": 3
+    },
+    {
+      "file": "/home/mgs/results/admin/main/2026-11-19/f0_dialogue/emo_S5_take2_00001.mp3",
+      "shot": 4
+    },
+    {
+      "file": "/home/mgs/results/admin/main/2026-11-19/f0_dialogue/emo_S6_take2_00001.mp3",
+      "shot": 5
+    }
+  ],
+  "music": "/home/mgs/results/admin/main/2026-11-19/f0_dialogue/bgm_f1_00001.mp3",
+  "overlap": 0.5,
+  "lead": 0.2,
+  "music_db": -14
+}
