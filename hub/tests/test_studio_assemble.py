@@ -214,6 +214,9 @@ def t_voice_fx_chain_and_level_target():
     pos = [fx.index(k) for k in steps]
     assert pos == sorted(pos)                                                       # 재생 속도 → 저음 → 중저음 → 고음 → 포화 → 압축 → 끝 무음
     assert af("a", "b", fx="nope") == plain                                         # 모르는 이름은 후처리 없음
+    # 복제의 기준 목소리는 앞 몇 초만 (출력 옵션 -t, 출력 파일 바로 앞)
+    cut = A.build_voice_cmd("in.mp3", "out.wav", max_seconds=12)
+    assert cut[-3:] == ["-t", "12.00", "out.wav"] and "-t" not in A.build_voice_cmd("in.mp3", "out.wav")
     assert A.VOICE_LUFS == -18.0 and set(A.VOICE_FX) == {"bass"}
 
 

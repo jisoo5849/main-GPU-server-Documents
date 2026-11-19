@@ -320,7 +320,9 @@ def run(clips: list[str], music: str | None, out: str, sound: bool = True, trans
 # ── 대사 있는 단편: 샷 영상 + 대사 소리 + 배경음악 (11-19) ──
 DIALOGUE_OVERLAP = 0.5     # 샷 사이 디졸브(초). 사용자가 11-19 미리보기에서 0.5초가 자연스럽다고 확인
 DIALOGUE_LEAD = 0.2        # 대사 소리가 샷 시작보다 늦게 나오는 만큼(초). 앞 샷의 끝과 겹쳐 컷이 소리로 이어진다
-DIALOGUE_MUSIC_DB = -14.0  # 배경음악이 대사보다 작은 만큼(dB). 미리보기의 0.2배(약 -14dB)
+DIALOGUE_MUSIC_DB = -20.0  # 배경음악을 낮추는 만큼(dB, 음악 원본 기준). 11-19 미리보기는 -14dB(0.2배)였는데 그때 대사는 브라우저 압축기의 보정
+#                           이득으로 약 +11dB 더 컸다. 스튜디오는 대사를 -18 LUFS 로 맞추므로(VOICE_LUFS) 같은 간격이 되게 -20dB.
+#                           11-19 메인 시험(-14dB): 대사 구간이 음악 구간보다 3~8dB 높을 뿐이었다
 MUSIC_EDGE_IN, MUSIC_EDGE_OUT = 1.5, 2.0
 
 
@@ -461,23 +463,25 @@ VOICE_FX = {
 VOICE_LUFS = -18.0
 
 
-def build_voice_cmd(src: str, out: str, gate_db: float = VOICE_GATE_DB, pad: float = VOICE_PAD, fx: str | None = None) -> list[str]:
+def build_voice_cmd(src: str, out: str, gate_db: float = VOICE_GATE_DB, pad: float = VOICE_PAD, fx: str | None = None,
+                    max_seconds: float | None = None) -> list[str]:
     """TTS 결과의 앞뒤 무음(과 긴 숨·잡음 꼬리)을 자르고 끝에 짧은 무음을 붙인 WAV (48kHz 모노). 가운데의 쉼은 그대로 둔다.
     fx(VOICE_FX 의 이름)가 있으면 자른 뒤 그 후처리를 한다 (끝의 무음은 후처리 뒤에 붙인다)"""
     edge = f"silenceremove=start_periods=1:start_threshold={gate_db:.0f}dB:start_silence=0.05"
     post = (VOICE_FX[fx] + ",") if fx in VOICE_FX else ""
     af = f"{edge},areverse,{edge},areverse,{post}apad=pad_dur={pad:.2f}"
-    return ["ffmpeg", "-hide_banner", "-nostats", "-y", "-i", src, "-af", af, "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", out]
+    cut = ["-t", f"{float(max_seconds):.2f}"] if max_seconds else []        # 앞 몇 초만 (복제의 기준 목소리)
+    return ["ffmpeg", "-hide_banner", "-nostats", "-y", "-i", src, "-af", af, "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", *cut, out]
 
 
-def trim_voice(src: str, out: str, fx: str | None = None, lufs: float | None = None) -> float:
+def trim_voice(src: str, out: str, fx: str | None = None, lufs: float | None = None, max_seconds: float | None = None) -> float:
     """대사 소리를 다듬어 out(WAV)에 쓰고 길이(초)를 돌려준다. 소리가 남지 않으면 AssembleError.
     lufs 가 있으면 다듬은 소리의 크기를 재서 그 크기(LUFS)로 맞춘다 (고정 이득 + 피크 보호). 목소리 복제의 기준 소리는 크기를 맞추지 않는다"""
     if not available():
         raise AssembleError("허브에 ffmpeg 가 없습니다")
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     tmp = out + ".part.wav"
-    _run(build_voice_cmd(src, tmp, fx=fx))
+    _run(build_voice_cmd(src, tmp, fx=fx, max_seconds=max_seconds))
     got = probe(tmp)
     if not got["audio"] or got["duration"] <= VOICE_PAD + 0.05:
         try:

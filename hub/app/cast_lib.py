@@ -85,11 +85,12 @@ def prompt_block(entries: list[dict] | None) -> str:
     긴 목소리 글을 베끼게 하지 않고, 목소리는 구성안이 나온 뒤 라이브러리 값으로 바꾼다"""
     if not entries:
         return ""
+    # 말투(speech): 11-19 메인 시험에서 모델이 푸토르를 존댓말 "선생님" 말투로 써서, 손으로 만든 때의 할아버지 말투("얘야, ~란다")와 달랐다
     lines = ["\nKnown characters: these people already exist and must appear exactly as described. Put each in bible.characters "
              'with the given "name_ko" and copy its look word for word; never change their age, build, hair, clothing or colours. '
-             "The scenes must use only what the look lists."]
+             "The scenes must use only what the look lists. Write each one's spoken lines in the given speech manner."]
     for e in entries:
-        lines.append(f'- name_ko "{e["names"][0]}": {e["look"]}')
+        lines.append(f'- name_ko "{e["names"][0]}": {e["look"]}' + (f' Speech: {e["speech"]}.' if e.get("speech") else ""))
     style = next((e.get("style") for e in entries if e.get("style")), "")
     if style:
         lines.append(f'Visual style of the whole film (copy it into bible.style): {style}')
@@ -112,7 +113,8 @@ def apply_to_story(story: dict, entries: list[dict], text: str = "", keep_style:
         c["look"] = e["look"]
         c["name_ko"] = e["names"][0] if re.search(r"[가-힣]", e["names"][0]) else (c.get("name_ko") or e["names"][0])
         c["library"] = e["id"]
-        for k in ("voice", "voice_ko", "voice_fx", "ref"):
+        # voice_ref(+voice_ref_text): 승인된 기준 목소리 소리 파일과 그 글. 있으면 영상마다 목소리를 새로 설계하지 않고 이 소리를 복제한다
+        for k in ("voice", "voice_ko", "voice_fx", "ref", "voice_ref", "voice_ref_text"):
             if e.get(k):
                 c[k] = e[k]
         matched[str(c.get("id"))] = e["id"]

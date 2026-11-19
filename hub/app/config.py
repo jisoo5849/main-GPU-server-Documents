@@ -102,6 +102,8 @@ class Settings:
     # 대사 영상 (11-19): 대화가 있는 긴 영상을 '목소리 먼저 → 입 맞춤 → 편집' 으로. 채팅 작업공간에 TTS 노드를 넣은 뒤 켠다
     studio_dialogue = _bool("STUDIO_DIALOGUE", False)
     studio_cast_file = _env("STUDIO_CAST_FILE")          # 인물 라이브러리 파일 (비우면 app/cast_library.json)
+    # 대사 녹음의 복제 방식: icl = 기준 소리와 그 글을 함께 줘서 말투·나이·감정까지 따른다(맥락 복제), xvector = 목소리 특징만 복제
+    studio_voice_clone = (_env("STUDIO_VOICE_CLONE") or "icl").strip().lower()
     studio_inspect = _env("STUDIO_INSPECT", "idle")            # on | idle | off
     studio_auto_reroll = _int("STUDIO_AUTO_REROLL", 0)
     studio_progress_min_interval_ms = _int("STUDIO_PROGRESS_MIN_INTERVAL_MS", 500)

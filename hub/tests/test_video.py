@@ -1960,7 +1960,7 @@ DLG_OK = {
          "voice": "A twelve-year-old Korean girl, clear and natural, gentle and a little shy.", "voice_ko": "맑은 열두 살 여자아이"},
         {"id": "B", "look": "a short old dwarf herbalist with a long white beard, round glasses and a golden-ochre coat",
          "name_ko": "푸토르", "voice": "A kind Korean grandpa around eighty, low warm gravelly voice, slow and gentle.",
-         "voice_ko": "굵고 따뜻한 할아버지"}],
+         "voice_ko": "굵고 따뜻한 할아버지", "sample_ko": "허허, 얘야. 이 할아비가 옛날얘기 하나 해 줄까?"}],
         "places": [{"id": "P1", "look": "a winding forest path with mossy trees"},
                    {"id": "P2", "look": "a sunlit flower garden with an arch"}],
         "time": "early morning, clear", "light": "soft golden sunbeams", "style": "semi-realistic painterly 2.5D fantasy film look"},
@@ -2025,7 +2025,13 @@ def test_dialogue_prompts_keep_one_person_and_the_look():
     assert "listening quietly" in video.cast_edit_prompt(s, 4)                 # 듣는 얼굴은 입을 다문다
     cast = video.cast_prompt(s, "A")
     assert "two long black braids" in cast and "Only this one person" in cast and "hands not visible" in cast
-    assert video.voice_instruct(s, "B").startswith("A kind Korean grandpa") and "Emotion:" in video.voice_instruct(s, "B")
+    vi = video.voice_instruct(s, "B")
+    assert vi.startswith("A kind Korean grandpa") and vi.endswith(video.VOICE_REF_EMOTION + ".") and "Emotion:" in vi
+    # 11-19 메인 시험 2: 설명 끝의 "Natural Korean speech, clear pronunciation. Emotion: calm and friendly, relaxed." 가 80세 푸토르를
+    # 맑은 젊은 목소리로 눌렀다. 그 문구는 쓰지 않는다
+    assert "calm and friendly" not in vi and "clear pronunciation" not in vi and "relaxed" not in vi
+    # 기준 소리가 말할 글: 인물의 샘플 글(sample_ko), 없으면 기본 인사말
+    assert video.voice_sample(s, "B").startswith("허허, 얘야") and video.voice_sample(s, "A") == video.VOICE_REF_TEXT
     assert video.line_tokens("예뻐요.") == 256 and video.line_tokens("가" * 40) == 512
     assert video.line_max_seconds("가" * 20) == 13.0
 
@@ -2135,9 +2141,59 @@ def test_cast_library_file_is_valid_and_fits_the_story_checks():
         assert video.story_style({"bible": {"style": e["style"]}}), "라이브러리 그림체가 실사로 읽히면 안 된다"
         assert e["ref"].endswith(".png") and not e["ref"].startswith("/") and ".." not in e["ref"]
         assert e["voice_ko"] and video.HANGUL_RE.search(e["names"][0])
+        # 승인된 기준 소리: 영상마다 목소리를 새로 설계하지 않고 이 소리를 따라 대사를 녹음한다 (11-19 메인 시험 2: 새로 설계한
+        # 인사말 기준 소리에서 80세 푸토르가 젊은 목소리로 나왔다). 소리와 글이 맞아야 해서 글은 소리 파일이 말하는 그대로다
+        assert e["voice_ref"].endswith((".flac", ".mp3", ".wav")) and not e["voice_ref"].startswith("/") and ".." not in e["voice_ref"]
+        assert video.HANGUL_RE.search(e["voice_ref_text"]) and len(e["voice_ref_text"]) <= 120
     assert lib[1]["voice_fx"] == "bass" and "voice_fx" not in lib[0]
     # 외형 글에 쓰는 소품이 구성안 검사가 막는 소품 단어와 맞는다: 모자(니키)·수염·안경(푸토르)이 외형에 있다
     assert "hat" in lib[0]["look"] and "beard" in lib[1]["look"] and "glasses" in lib[1]["look"]
+
+
+def test_dialogue_stretch_fills_the_requested_length_with_silent_scenes():
+    import copy as _copy
+    story = video.clean_dialogue_story(DLG_OK, 48)
+    # 대사가 짧아 말하는 장면이 5초로 줄었다 (11-19 메인 시험: 1분 요청이 40초로 줄었다)
+    for i in (2, 3):
+        story["scenes"][i]["seconds"] = 5
+    before = [s["seconds"] for s in story["scenes"]]
+    assert before == [8, 10, 5, 5, 6, 9] and story["scenes"][2]["kind"] == story["scenes"][3]["kind"] == "talk"
+    assert video.stretch_scenes(story, 60.0) is True
+    after = [s["seconds"] for s in story["scenes"]]
+    assert after[2:4] == [5, 5]                                              # 말하는 장면은 늘리지 않는다 (끝이 어두워져 잘라 쓴다)
+    # 필요한 길이 = 60 + 디졸브 0.5 × 5 + 자르기 손실 0.5 × 2 - 43 = 20.5초 → 20초를 늘린다
+    assert sum(after) == 63 and story["seconds"] == 63
+    assert all(after[i] <= video.STRETCH_WIDE_MAX for i in (0, 1, 5)) and after[4] == video.STRETCH_CLOSE_MAX    # 듣는 얼굴은 상한 10초까지만
+    assert after[0] > before[0] and after[1] > before[1] and after[5] > before[5]    # 넓은 장면이 먼저, 고르게 늘어난다
+    # 이미 충분히 길면 그대로, 말 없는 장면이 없으면 그대로
+    long_enough = video.clean_dialogue_story(DLG_OK, 48)
+    assert video.stretch_scenes(long_enough, 40.0) is False
+    only_talk = _copy.deepcopy(story)
+    for sc in only_talk["scenes"]:
+        sc["kind"] = "talk"
+    assert video.stretch_scenes(only_talk, 120.0) is False
+    assert video.stretch_scenes(story, 0) is False and video.stretch_scenes({"scenes": []}, 60.0) is False
+
+
+def test_dialogue_reference_voice_is_in_character_short_and_capped():
+    assert len(video.VOICE_REF_TEXT) < 25 and video.VOICE_REF_TEXT.count(".") <= 2     # 기본 글은 짧은 두 문장 이하 (이전은 세 문장 31자)
+    assert video.VOICE_REF_TOKENS == 256
+    assert "6 Korean characters per second" in video.DIALOGUE_EXTRA
+    # 11-19 메인 시험 2: 인사말 기준 소리를 목소리 특징만 복제하니 늙은 인물이 젊은 목소리로, 책 읽는 투로 나왔다.
+    # 구성안이 인물마다 '그 인물이 할 법한 말'(sample_ko)과 '말하듯 감정이 드러나는 대사'를 쓰게 한다
+    assert '"sample_ko"' in video.DIALOGUE_EXTRA and "never read from a page" in video.DIALOGUE_EXTRA
+    assert "interjections" in video.DIALOGUE_EXTRA and '"..."' in video.DIALOGUE_EXTRA
+    assert "sample_ko" in video.DIALOGUE_SCHEMA["properties"]["bible"]["properties"]["characters"]["items"]["properties"]
+    # 샘플 글은 한글이고 짧을 때만 쓴다 (맥락 복제는 기준 소리를 자르지 못해서 늘어지면 안 된다)
+    import copy as _copy
+    raw = _copy.deepcopy(DLG_OK)
+    raw["bible"]["characters"][0]["sample_ko"] = "Hello there, I am Niki."                  # 한글이 아님 → 기본 글
+    raw["bible"]["characters"][1]["sample_ko"] = "허" * (video.SAMPLE_MAX + 1)               # 너무 김 → 기본 글
+    story = video.clean_dialogue_story(raw, 48)
+    assert [c["sample_ko"] for c in story["bible"]["characters"]] == ["", ""]
+    assert video.voice_sample(story, "A") == video.voice_sample(story, "B") == video.VOICE_REF_TEXT
+    # 기준 소리가 글 길이에 비해 늘어졌는지 보는 한도: 기본 글 약 15초, 긴 샘플 글은 그만큼 더 길다
+    assert 14 <= video.voice_ref_max_seconds(video.VOICE_REF_TEXT) <= 15 and video.voice_ref_max_seconds("가" * 40) == 24.0
 
 
 def test_cast_library_finds_names_in_the_request_and_matches_story_characters():
@@ -2153,6 +2209,10 @@ def test_cast_library_finds_names_in_the_request_and_matches_story_characters():
     block = cast_lib.prompt_block(lib)
     assert 'name_ko "니키"' in block and 'name_ko "푸토르"' in block and "golden-ochre coat" in block
     assert "copy it into bible.style" in block and "voice" not in block.lower().replace("visual style", "")
+    # 말투: 푸토르는 "얘야, ~란다" 할아버지 말투, 니키는 "할아버지"라고 부르는 수줍은 존댓말 (모델이 푸토르를 "선생님" 존댓말로 쓴 적이 있다)
+    assert "Speech: a warm old grandfather" in block and "-란다" in block and "얘야" in block
+    assert "Speech: shy and polite" in block and "할아버지" in block and "in the given speech manner" in block
+    assert "11-19" not in block and "메인 시험" not in block                          # 설명용 메모는 지시문에 들어가면 안 된다
     assert cast_lib.prompt_block([]) == "" and cast_lib.prompt_block(None) == ""
 
 

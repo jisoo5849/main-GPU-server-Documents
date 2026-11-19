@@ -13,14 +13,15 @@ import re
 
 RECIPE_DIR = os.path.join(os.path.dirname(__file__), "recipes")
 ACTIONS = {"image", "i2v", "t2v", "edit", "music",       # music: 긴 영상의 배경음악 (ACE-Step, docs/long-video-design.md 7절)
-           "voice", "voice_clone", "talk"}               # 대사 영상(11-19): 목소리 설계·목소리 복제(Qwen3-TTS), 대사 소리로 입 맞춤(LTX-2.3 IA2V)
+           "voice", "voice_clone", "talk",               # 대사 영상(11-19): 목소리 설계·목소리 복제(Qwen3-TTS), 대사 소리로 입 맞춤(LTX-2.3 IA2V)
+           "scene_image"}                                # 대사 영상의 장면 그림 (Qwen-Image 2512, 인물 라이브러리의 반실사 회화체와 같은 계열)
 # 대사 영상의 부품: 화질·엔진을 따지지 않고 action 마다 하나를 고른다 (음악과 같다)
-PART_ACTIONS = {"music", "voice", "voice_clone", "talk"}
+PART_ACTIONS = {"music", "voice", "voice_clone", "talk", "scene_image"}
 # 글이 영상·이미지 모델의 positive 로 가지 않는 레시피(목소리)는 부정 자리도 없다: negative_source "none"
 NO_NEGATIVE_ACTIONS = {"voice", "voice_clone"}
 SLOT_TYPES = {"string", "int", "float", "bool", "input_image", "input_audio", "prefix"}
 SLOT_NAMES = {"prompt", "first_frame", "edit_image", "seed", "frames", "seconds", "width", "height", "check_index", "save_prefix",
-              "duration", "bpm", "keyscale", "audio", "voice_instruct", "max_tokens"}
+              "duration", "bpm", "keyscale", "audio", "voice_instruct", "max_tokens", "ref_text", "x_vector"}
 ZERO_OUT = {"ConditioningZeroOut"}
 SAVE_NODES = {"SaveVideo", "SaveImage", "SaveWEBM", "SaveAnimatedWEBP", "SaveAnimatedPNG",
               "SaveAudio", "SaveAudioMP3", "SaveAudioOpus", "SaveAudioAdvanced"}
@@ -497,7 +498,7 @@ def sample_values(recipe: dict, frames: int | None = None) -> dict:
             "first_frame": SAMPLE_IMAGE, "edit_image": SAMPLE_IMAGE,
             "seconds": max(2, min(int(round(max(f - 1, 1) / int(d.get("fps") or 24))), 20)),
             "bpm": 90, "keyscale": "C major", "audio": SAMPLE_AUDIO, "voice_instruct": "A calm adult voice.",
-            "max_tokens": 512}
+            "max_tokens": 512, "ref_text": "안녕하세요.", "x_vector": False}
     vals["save_prefix"] = [f"_check/00000000/{s['suffix']}" for s in slots_of(recipe, "save_prefix")]
     if "duration" in inj:      # 음악 길이는 자리가 둘(빈 잠재·글 인코더)이라 자리마다 같은 값
         vals["duration"] = [float(d.get("duration") or 30)] * len(slots_of(recipe, "duration"))
