@@ -139,10 +139,12 @@ def timeline_total(durations: list[float], overlaps: list[float]) -> float:
     return sum(durations) - sum(overlaps)
 
 
-def build_video_filter(durations: list[float], overlaps: list[float], fps: float) -> str:
-    """장면 영상(입력 0..N-1)을 이음새마다 컷(concat) 또는 디졸브(xfade)로 잇는 filter_complex. 출력 라벨 [v]"""
+def build_video_filter(durations: list[float], overlaps: list[float], fps: float, trims: list | None = None) -> str:
+    """장면 영상(입력 0..N-1)을 이음새마다 컷(concat) 또는 디졸브(xfade)로 잇는 filter_complex. 출력 라벨 [v]
+    trims[i] 가 있으면 그 샷은 앞에서 그 길이(초)까지만 쓴다 (durations 도 이미 그 길이)"""
     n = len(durations)
-    parts = [f"[{i}:v]fps={fps:g},settb=AVTB,setsar=1,format=yuv420p[v{i}]" for i in range(n)]
+    cut = lambda i: (f"trim=0:{trims[i]:.3f},setpts=PTS-STARTPTS," if trims and i < len(trims) and trims[i] else "")
+    parts = [f"[{i}:v]{cut(i)}fps={fps:g},settb=AVTB,setsar=1,format=yuv420p[v{i}]" for i in range(n)]
     cur, cur_len = "[v0]", durations[0]
     for i in range(1, n):
         o = overlaps[i - 1]
@@ -358,7 +360,19 @@ def build_dialogue_audio_filter(n_clips: int, lines: list[dict], starts: list[fl
     return ";".join(parts)
 
 
-def build_dialogue_cmd(clips: list[str], line_files: list[str], music: str | None, out: str, vfilter: str, afilter: str) -> list[str]:
+def build_subtitle_filter(first_input: int, subs: list[tuple[float, float]], src: str = "v", out: str = "vs") -> str:
+    """미리 그려 둔 자막 PNG(입력 first_input..)를 [start, end] 초 동안 화면 아래에 덧씌운다 (글꼴 없이도 한글이 나온다). 출력 라벨 [out]"""
+    parts, cur = [], f"[{src}]"
+    for k, (a, b) in enumerate(subs):
+        nxt = f"[{out}]" if k == len(subs) - 1 else f"[sb{k}]"
+        parts.append(f"[{first_input + k}:v]format=rgba[sp{k}]")
+        parts.append(f"{cur}[sp{k}]overlay=0:0:enable='between(t,{a:.3f},{b:.3f})':eof_action=repeat{nxt}")
+        cur = nxt
+    return ";".join(parts)
+
+
+def build_dialogue_cmd(clips: list[str], line_files: list[str], music: str | None, out: str, vfilter: str, afilter: str,
+                       sub_files: list[str] | None = None, vlabel: str = "[v]") -> list[str]:
     cmd = ["ffmpeg", "-hide_banner", "-nostats", "-y"]
     for c in clips:
         cmd += ["-i", c]
@@ -366,14 +380,16 @@ def build_dialogue_cmd(clips: list[str], line_files: list[str], music: str | Non
         cmd += ["-i", f]
     if music:
         cmd += ["-i", music]
-    cmd += ["-filter_complex", vfilter + ";" + afilter, "-map", "[v]", "-map", "[a]",
+    for f in sub_files or []:
+        cmd += ["-i", f]
+    cmd += ["-filter_complex", vfilter + ";" + afilter, "-map", vlabel, "-map", "[a]",
             "-c:v", "libx264", "-crf", "17", "-preset", "medium", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", out]
     return cmd
 
 
 def run_dialogue(clips: list[str], lines: list[dict], music: str | None, out: str, overlap: float = DIALOGUE_OVERLAP,
-                 lead: float = DIALOGUE_LEAD, music_db: float = DIALOGUE_MUSIC_DB) -> dict:
+                 lead: float = DIALOGUE_LEAD, music_db: float = DIALOGUE_MUSIC_DB, trims: list | None = None) -> dict:
     """샷 영상(절대 경로, 순서대로)과 대사 소리 파일들, 배경음악을 합쳐 out 에 쓴다. 실패하면 AssembleError.
     lines: [{"file": 경로, "shot": 샷 번호(0부터), "delay": 선택, "gain_db": 선택}]"""
     if not available():
@@ -391,13 +407,28 @@ def run_dialogue(clips: list[str], lines: list[dict], music: str | None, out: st
     if len({(p["width"], p["height"]) for p in probes}) > 1:
         raise AssembleError("샷 크기가 서로 다릅니다")
     durations = [p["duration"] for p in probes]
+    trims = [(float(t) if t else None) for t in (trims or [])] + [None] * (len(clips) - len(trims or []))
+    durations = [min(d, t) if t else d for d, t in zip(durations, trims)]   # 끝이 어두워지는 샷 등은 앞쪽만 쓴다
     overlaps = fit_transitions(durations, [overlap] * (len(clips) - 1)) if len(clips) > 1 else []
     starts, total = dialogue_starts(durations, overlaps)      # 겹침이 줄어든 이음새가 있으면 소리 시작도 그 기준(실제 영상 시각)을 따른다
-    vfilter = build_video_filter(durations, overlaps, _fps(probes[0]))
+    vfilter = build_video_filter(durations, overlaps, _fps(probes[0]), trims)
     afilter = build_dialogue_audio_filter(len(clips), lines, starts, lead, total, bool(music), music_db)
+    # 자막: 대사에 "sub"(미리 그린 PNG, 영상과 같은 크기)가 있으면 그 대사가 나오는 동안 덧씌운다
+    sub_files, sub_times = [], []
+    for ln in lines:
+        if ln.get("sub"):
+            if not os.path.isfile(ln["sub"]):
+                raise AssembleError(f"자막 그림 파일이 없습니다: {ln['sub']}")
+            at = starts[int(ln["shot"])] + lead + float(ln.get("delay") or 0.0)
+            sub_files.append(ln["sub"])
+            sub_times.append((at, at + probe(ln["file"])["duration"] + 0.3))
+    vlabel = "[v]"
+    if sub_files:
+        vfilter += ";" + build_subtitle_filter(len(clips) + len(lines) + (1 if music else 0), sub_times)
+        vlabel = "[vs]"
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     tmp_out = out + ".part.mp4"
-    _run(build_dialogue_cmd(clips, [ln["file"] for ln in lines], music, tmp_out, vfilter, afilter))
+    _run(build_dialogue_cmd(clips, [ln["file"] for ln in lines], music, tmp_out, vfilter, afilter, sub_files, vlabel))
     got = probe(tmp_out)
     if abs(got["duration"] - total) > DURATION_SLACK or not got["audio"]:
         try:
@@ -407,13 +438,14 @@ def run_dialogue(clips: list[str], lines: list[dict], music: str | None, out: st
         raise AssembleError(f"합친 영상의 길이({got['duration']:.2f}초)가 계산({total:.2f}초)과 다르거나 소리가 없습니다")
     os.replace(tmp_out, out)
     return {"shots": len(clips), "lines": len(lines), "seconds": round(got["duration"], 3), "expected": round(total, 3),
-            "overlaps": overlaps, "lead": lead, "music": bool(music), "bytes": os.path.getsize(out)}
+            "overlaps": overlaps, "lead": lead, "music": bool(music), "subtitles": len(sub_files), "bytes": os.path.getsize(out)}
 
 
 def main(argv: list[str] | None = None) -> int:
     """python -m app.studio.assemble 타임라인.json 결과.mp4   (타임라인 자리에 - 를 쓰면 표준 입력에서 읽는다)
     타임라인.json: {"clips": [경로…], "lines": [{"file": 경로, "shot": 0, "delay": 0, "gain_db": 0}…], "music": 경로 또는 null,
-                   "overlap": 0.5, "lead": 0.2, "music_db": -14}  (경로는 컨테이너 안에서 보이는 절대 경로)"""
+                   "overlap": 0.5, "lead": 0.2, "music_db": -14, "trims": [null, 16.4, …]}
+                   lines 의 "sub" 는 자막 PNG 경로(선택), trims 는 샷마다 앞에서 쓸 길이(초, null 이면 전체)  (경로는 컨테이너 안에서 보이는 절대 경로)"""
     import sys
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 2:
@@ -426,7 +458,7 @@ def main(argv: list[str] | None = None) -> int:
             spec = json.load(f)
     info = run_dialogue(spec["clips"], spec.get("lines") or [], spec.get("music"), args[1],
                         float(spec.get("overlap", DIALOGUE_OVERLAP)), float(spec.get("lead", DIALOGUE_LEAD)),
-                        float(spec.get("music_db", DIALOGUE_MUSIC_DB)))
+                        float(spec.get("music_db", DIALOGUE_MUSIC_DB)), spec.get("trims"))
     print(json.dumps(info, ensure_ascii=False))
     return 0
 
