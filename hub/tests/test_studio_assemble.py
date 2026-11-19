@@ -137,6 +137,16 @@ def t_dialogue_command_maps_video_and_mixed_audio():
     assert A.build_dialogue_cmd(["a.mp4"], [], None, "/r/o.mp4", "VF", "AF").count("-i") == 1
 
 
+def t_trims_and_subtitle_filters():
+    f = A.build_video_filter([3.0, 5.0], [0.5], 24.0, [3.0, None])
+    assert "[0:v]trim=0:3.000,setpts=PTS-STARTPTS,fps=24" in f and "[1:v]fps=24" in f
+    sf = A.build_subtitle_filter(4, [(1.0, 2.5), (6.0, 8.0)])
+    assert "[4:v]format=rgba[sp0]" in sf and "enable='between(t,1.000,2.500)'" in sf and sf.endswith("[vs]")
+    assert "[5:v]format=rgba[sp1]" in sf and "[v][sp0]overlay" in sf and "[sb0][sp1]overlay" in sf
+    cmd = A.build_dialogue_cmd(["a.mp4"], ["l.mp3"], "m.mp3", "o.mp4", "VF", "AF", ["s.png"], "[vs]")
+    assert cmd.count("-i") == 4 and cmd[cmd.index("-map") + 1] == "[vs]"
+
+
 def t_run_dialogue_refuses_bad_input():
     if not A.available():
         return

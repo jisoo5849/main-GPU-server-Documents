@@ -1,0 +1,79 @@
+{
+ "clips": [
+  "/home/mgs/results/admin/main/2026-11-19/n2_story/shot_S1_00001_.mp4",
+  "/home/mgs/results/admin/main/2026-11-19/n2_story/shot_S2a_00001_.mp4",
+  "/home/mgs/results/admin/main/2026-11-19/n2_story/shot_S2b_00001_.mp4",
+  "/home/mgs/results/admin/main/2026-11-19/n2_story/shot_S32_niki_00001_.mp4",
+  "/home/mgs/results/admin/main/2026-11-19/n2_story/shot_S42_putor_00001_.mp4",
+  "/home/mgs/results/admin/main/2026-11-19/n2_story/shot_S5_00001_.mp4",
+  "/home/mgs/results/admin/main/2026-11-19/n2_story/shot_S62_putor_00001_.mp4",
+  "/home/mgs/results/admin/main/2026-11-19/n2_story/shot_S7_00001_.mp4",
+  "/home/mgs/results/admin/main/2026-11-19/n2_story/shot_S8_00001_.mp4",
+  "/home/mgs/results/admin/main/2026-11-19/n2_story/shot_S92_niki_00001_.mp4",
+  "/home/mgs/results/admin/main/2026-11-19/n2_story/shot_S102_putor_00001_.mp4",
+  "/home/mgs/results/admin/main/2026-11-19/n2_story/shot_S11b_00001_.mp4",
+  "/home/mgs/results/admin/main/2026-11-19/n2_story/shot_S122_niki_00001_.mp4"
+ ],
+ "lines": [
+  {
+   "file": "/home/mgs/results/admin/main/2026-11-19/n2_story/final2_L1_00001.mp3",
+   "shot": 1,
+   "sub": "/home/mgs/results/admin/main/2026-11-19/n2_story/sub_L1_00001_.png"
+  },
+  {
+   "file": "/home/mgs/results/admin/main/2026-11-19/n2_story/final2_L2_00001.mp3",
+   "shot": 3,
+   "sub": "/home/mgs/results/admin/main/2026-11-19/n2_story/sub_L2_00001_.png"
+  },
+  {
+   "file": "/home/mgs/results/admin/main/2026-11-19/n2_story/final2_L3_00001.mp3",
+   "shot": 4,
+   "sub": "/home/mgs/results/admin/main/2026-11-19/n2_story/sub_L3_00001_.png"
+  },
+  {
+   "file": "/home/mgs/results/admin/main/2026-11-19/n2_story/final2_L4_00001.mp3",
+   "shot": 6,
+   "sub": "/home/mgs/results/admin/main/2026-11-19/n2_story/sub_L4_00001_.png"
+  },
+  {
+   "file": "/home/mgs/results/admin/main/2026-11-19/n2_story/final2_L5_00001.mp3",
+   "shot": 7,
+   "sub": "/home/mgs/results/admin/main/2026-11-19/n2_story/sub_L5_00001_.png"
+  },
+  {
+   "file": "/home/mgs/results/admin/main/2026-11-19/n2_story/final2_L6_00001.mp3",
+   "shot": 9,
+   "sub": "/home/mgs/results/admin/main/2026-11-19/n2_story/sub_L6_00001_.png"
+  },
+  {
+   "file": "/home/mgs/results/admin/main/2026-11-19/n2_story/final2_L7_00001.mp3",
+   "shot": 10,
+   "sub": "/home/mgs/results/admin/main/2026-11-19/n2_story/sub_L7_00001_.png"
+  },
+  {
+   "file": "/home/mgs/results/admin/main/2026-11-19/n2_story/final2_L8_00001.mp3",
+   "shot": 12,
+   "sub": "/home/mgs/results/admin/main/2026-11-19/n2_story/sub_L8_00001_.png",
+   "delay": 1.2
+  }
+ ],
+ "music": "/home/mgs/results/admin/main/2026-11-19/n2_story/bgm_n2_00001.mp3",
+ "overlap": 0.5,
+ "lead": 0.2,
+ "music_db": -14,
+ "trims": [
+  null,
+  null,
+  null,
+  5.7,
+  10.0,
+  null,
+  11.8,
+  null,
+  null,
+  4.0,
+  9.2,
+  null,
+  null
+ ]
+}

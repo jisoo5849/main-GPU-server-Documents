@@ -1,0 +1,40 @@
+{
+  "clips": [
+    "/home/mgs/results/admin/main/2026-11-19/n1_pilot/shot_S1_putor_00001_.mp4",
+    "/home/mgs/results/admin/main/2026-11-19/n1_pilot/shot_S2_niki_00001_.mp4",
+    "/home/mgs/results/admin/main/2026-11-19/n1_pilot/shot_S3_putor_00001_.mp4",
+    "/home/mgs/results/admin/main/2026-11-19/n1_pilot/shot_S4_niki_00001_.mp4",
+    "/home/mgs/results/admin/main/2026-11-19/n1_pilot/shot_S5_putor_00001_.mp4",
+    "/home/mgs/results/admin/main/2026-11-19/n1_pilot/shot_S6_niki_00001_.mp4"
+  ],
+  "lines": [
+    {
+      "file": "/home/mgs/results/admin/main/2026-11-19/n1_pilot/line_putor_S1_bassC_00001.mp3",
+      "shot": 0
+    },
+    {
+      "file": "/home/mgs/results/admin/main/2026-11-19/n1_pilot/voice_N1_00001.mp3",
+      "shot": 1
+    },
+    {
+      "file": "/home/mgs/results/admin/main/2026-11-19/n1_pilot/line_putor_S3_bassC_00001.mp3",
+      "shot": 2
+    },
+    {
+      "file": "/home/mgs/results/admin/main/2026-11-19/n1_pilot/N1_S4_00001.mp3",
+      "shot": 3
+    },
+    {
+      "file": "/home/mgs/results/admin/main/2026-11-19/n1_pilot/line_putor_S5_bassC_00001.mp3",
+      "shot": 4
+    },
+    {
+      "file": "/home/mgs/results/admin/main/2026-11-19/n1_pilot/N1_S6_00001.mp3",
+      "shot": 5
+    }
+  ],
+  "music": "/home/mgs/results/admin/main/2026-11-19/n1_pilot/bgm_n1_00001.mp3",
+  "overlap": 0.5,
+  "lead": 0.2,
+  "music_db": -14
+}
