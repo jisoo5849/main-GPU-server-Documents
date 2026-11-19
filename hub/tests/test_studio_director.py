@@ -2078,14 +2078,17 @@ class DialogueDeps(LongDeps):
         super().__init__(fs, root, **kw)
         self.recs.update({VOICE["id"]: VOICE, CLONE["id"]: CLONE, TALK["id"]: TALK, EDITR["id"]: EDITR})
         self.line_secs = {}            # 입력 파일 이름 → 다듬은 길이 차례 (없으면 목소리 3.0초, 대사 2.6초)
+        self.trims = []                # (파일 이름, 후처리, 크기 맞추기) 부른 차례
+        self.story = None              # 구성안을 이것으로 돌려준다 (없으면 dialogue_story())
 
     async def storyboard(self, user, ip, env, **kw):
         self.calls.append(("storyboard", kw))
         await asyncio.sleep(0.01)
-        return {"story": dialogue_story(), "violations": [], "rounds": 1}
+        return {"story": copy.deepcopy(self.story) if self.story else dialogue_story(), "violations": [], "rounds": 1}
 
-    def trim_voice(self, src, out):
+    def trim_voice(self, src, out, fx=None, level=False):
         self.calls.append(("trim_voice", (src, out)))
+        self.trims.append((os.path.basename(out), fx, level))
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
             f.write(b"wav")
@@ -2132,6 +2135,7 @@ async def t_dialogue_video_records_voices_first_then_lip_syncs_the_talk_shots():
             assert [c[1].get("dialogue") for c in deps.calls if c[0] == "storyboard"] == [True]
             plan = plan_msgs(fs)[-1]["data"]["plan"]
             assert plan["dialogue"] and [v["name"] for v in plan["voices"]] == ["푸토르", "니키"]
+            assert plan["library"] == [] and "painterly" in plan["style"]            # 라이브러리 인물이 없으면 등록 인물 칸은 비어 있다
             assert plan["scenes"][0]["line"].startswith("푸토르: 얘야") and not plan["scenes"][0]["talk"] and plan["scenes"][1]["talk"]
             assert "line" not in plan["scenes"][3]
             assert not [c for c in deps.calls if c[0] == "submit"]
@@ -2182,6 +2186,9 @@ async def t_dialogue_video_records_voices_first_then_lip_syncs_the_talk_shots():
                 "story", "voices", "scenes", "music", "assemble"]
             assert "voices" in fs.stages
             assert kinds(fs).count("dialogue_line") == 3 and kinds(fs).count("dialogue_voice") == 2
+            # 기준 목소리는 그대로(복제의 바탕), 대사 줄만 크기를 맞춘다. 라이브러리 인물이 아니라 후처리는 없다
+            assert sorted(deps.trims) == [("line_0.wav", None, True), ("line_1.wav", None, True), ("line_2.wav", None, True),
+                                          ("voice_0.wav", None, False), ("voice_1.wav", None, False)]
         finally:
             settings.results_dir, settings.envs_dir = old
 
@@ -2214,6 +2221,99 @@ async def t_dialogue_line_that_runs_on_is_recorded_again_and_a_resume_keeps_the_
             assert t2["state"] == "done", (t2["state"], t2.get("error"))
             got = [recipe_of(c) for c in deps2.calls if c[0] == "submit"]
             assert VOICE["id"] not in got and CLONE["id"] not in got and got.count(IMG["id"]) == 0, got
+        finally:
+            settings.results_dir, settings.envs_dir = old
+
+
+# ── 인물 라이브러리: 정해진 인물은 기준 그림으로 얼굴을 고정하고 목소리 후처리·크기 맞추기를 건다 ──
+def library_story(root):
+    """dialogue_story() 의 두 인물을 라이브러리 인물로 만든다 (기준 그림 파일은 결과 폴더에 둔다)"""
+    story = dialogue_story()
+    chars = {c["id"]: c for c in story["bible"]["characters"]}
+    for cid, lib, fx in (("A", "niki", None), ("B", "putor", "bass")):
+        rel = f"studio/_cast/{lib}.png"
+        path = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(lib.encode())
+        chars[cid].update(library=lib, ref=rel, **({"voice_fx": fx} if fx else {}))
+    return story
+
+
+async def t_dialogue_library_characters_use_their_reference_pictures_and_voice_fx():
+    old = (settings.results_dir, settings.envs_dir)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = DialogueDeps(fs, settings.results_dir)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": library_story(settings.results_dir), "approved": True}
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            tid = str(t["id"])
+            tags = [c[1]["client_id"].split(f"studio-{tid}-")[1] for c in subs]
+            # 기준 그림 둘(C0·C1)은 새로 그리지 않는다: 장면 이미지(L0i)만 Z-Image 로 그린다
+            assert "C01" not in tags and "C11" not in tags and tags.count("L0i1") == 1, tags
+            assert [recipe_of(c) for c in subs].count(IMG["id"]) == 1
+            staged = [c[1] for c in deps.calls if c[0] == "stage_image"]
+            assert "studio/_cast/niki.png" in staged and "studio/_cast/putor.png" in staged
+            assert {c: t["work"]["casts"][c]["rel"] for c in ("A", "B")} == {"A": "studio/_cast/niki.png", "B": "studio/_cast/putor.png"}
+            assert all(t["work"]["casts"][c].get("library") for c in ("A", "B"))
+            assert [e[1]["library"] for e in fs.events if e[0] == "dialogue_cast"] == [True, True]
+            # 목소리: 기준 목소리는 후처리·크기 맞추기 없이, 대사 줄은 크기를 맞추고 푸토르(B)에만 저음 보강
+            voices = [x for x in deps.trims if x[0].startswith("voice_")]
+            lines = {x[0]: x for x in deps.trims if x[0].startswith("line_")}
+            assert voices and all(fx is None and not lv for _n, fx, lv in voices)
+            assert lines["line_1.wav"][1:] == (None, True)                  # 니키(A)의 대사
+            assert lines["line_2.wav"][1:] == ("bass", True)                # 푸토르(B)의 대사
+            assert lines["line_0.wav"][1:] == ("bass", True)                # 푸토르의 화면 밖 목소리
+            # 계획 카드가 아니라 이미 승인된 흐름이므로 카드는 없다. 합치기까지 끝났다
+            assert any(c[0] == "assemble_dialogue" for c in deps.calls)
+        finally:
+            settings.results_dir, settings.envs_dir = old
+
+
+async def t_dialogue_plan_card_shows_the_library_characters_and_the_style():
+    old = (settings.results_dir, settings.envs_dir)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = DialogueDeps(fs, settings.results_dir)
+            deps.story = library_story(settings.results_dir)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            await d.pump(); await settle(d, 10)
+            assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))
+            plan = plan_msgs(fs)[-1]["data"]["plan"]
+            assert plan["library"] == ["니키", "푸토르"] and plan["style"].startswith("semi-realistic painterly 2.5D")
+        finally:
+            settings.results_dir, settings.envs_dir = old
+
+
+async def t_dialogue_library_missing_reference_falls_back_to_a_drawn_portrait():
+    old = (settings.results_dir, settings.envs_dir)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = DialogueDeps(fs, settings.results_dir)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            story = library_story(settings.results_dir)
+            os.remove(os.path.join(settings.results_dir, "studio/_cast/putor.png"))      # 푸토르의 기준 그림이 없어졌다
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done", (t["state"], t.get("error"))
+            tid = str(t["id"])
+            tags = [c[1]["client_id"].split(f"studio-{tid}-")[1] for c in deps.calls if c[0] == "submit"]
+            assert "C11" in tags and "C01" not in tags            # 니키(A, 첫째 C0)는 기준 그림을 쓰고, 기준 그림이 없어진 푸토르(B, 둘째 C1)는 새로 그린다
+            miss = [e[1] for e in fs.events if e[0] == "dialogue_cast_ref_missing"]
+            assert miss and miss[0]["character"] == "B" and miss[0]["ref"] == "studio/_cast/putor.png"
+            assert [e[1]["library"] for e in fs.events if e[0] == "dialogue_cast"].count(True) == 1
         finally:
             settings.results_dir, settings.envs_dir = old
 

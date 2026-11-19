@@ -21,7 +21,7 @@ import random
 import re
 from functools import lru_cache
 
-from . import crew_lib, promptx
+from . import cast_lib, crew_lib, promptx
 from .config import settings
 from .crew import PERSON_NOTE_RE, PERSON_REQ_RE, TEXT_NOTE_RE, skip_reason
 from .promptx import (HAND_WORDS_RE, NEGATION_RE, PromptxError, clean_input, hides_hands, image_in,
@@ -1057,17 +1057,21 @@ async def storyboard(user, ip: str, username: str, slug: str, text: str, notes: 
     text = clean_input(text)
     notes = str(notes or "").strip()[:2000]
     sec = max(STORY_MIN_SECONDS, min(STORY_MAX_SECONDS, float(seconds or 60)))
-    writer = write_dialogue_story if dialogue else write_story
+    known = cast_lib.known_in(f"{text} {notes}") if dialogue else []      # 요청에 이름이 나온 정해진 인물 (니키·푸토르 등)
     try:
         async with llm.llm_turn(user, ip, settings.expand_model, "video_story") as call:
-            story, left, rounds = await writer(call, text, notes, sec)
+            if dialogue:
+                story, left, rounds = await write_dialogue_story(call, text, notes, sec, known=known)
+            else:
+                story, left, rounds = await write_story(call, text, notes, sec)
     except llm.HelperBusy as e:
         raise PromptxError(str(e), 503) from None
     except RuntimeError as e:
         raise PromptxError(str(e), 502) from None
     if story is None:
         raise PromptxError("구성안을 만들지 못했습니다: " + "; ".join(left[:3]), 502)
-    return {"story": story, "violations": left, "rounds": rounds, "model": settings.expand_model}
+    cast = cast_lib.apply_to_story(story, known, f"{text} {notes}", keep_style=bool(story_style(story))) if dialogue else {}
+    return {"story": story, "violations": left, "rounds": rounds, "model": settings.expand_model, **({"cast": cast} if dialogue else {})}
 
 
 # ── 대사 영상 구성안 (11-19, docs/short-film-dialogue-design.md 12절) ──
@@ -1248,14 +1252,16 @@ def dialogue_count_rules(seconds: float, exchange: bool) -> str:
     return out
 
 
-async def write_dialogue_story(call, text: str, notes: str, seconds: float, rounds: int = 3) -> tuple[dict | None, list[str], int]:
-    """대사 영상 구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수)"""
+async def write_dialogue_story(call, text: str, notes: str, seconds: float, rounds: int = 3,
+                               known: list | None = None) -> tuple[dict | None, list[str], int]:
+    """대사 영상 구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). known 은 요청에 이름이 나온 라이브러리 인물"""
     count, n_min, n_max = story_counts(seconds)
     n_max = max(n_max, math.ceil(float(seconds) / 5))      # 말하는 장면은 짧다: 장면이 더 많아도 된다
     said = f"{text or ''} {notes or ''}"
     exchange = wants_exchange(said)
     system = STORY_SYSTEM.format(seconds=int(seconds), keys=", ".join(MUSIC_KEYS), count=count, n_min=n_min, n_max=n_max,
-                                 tolerance=story_tolerance(seconds)) + DIALOGUE_EXTRA + dialogue_count_rules(seconds, exchange)
+                                 tolerance=story_tolerance(seconds)) + DIALOGUE_EXTRA + dialogue_count_rules(seconds, exchange) \
+        + cast_lib.prompt_block(known)
     user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "")
     person_ok = True if PERSON_REQ_RE.search(said) or STORY_PERSON_KO_RE.search(said) else bool(re.search(r"대화|대사|말하", said))
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]

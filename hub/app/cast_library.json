@@ -1,0 +1,25 @@
+{
+ "version": 1,
+ "note": "이야기에 이미 정해진 인물. 요청에 이름이 나오면 구성안의 설정집을 이 값으로 덮어쓰고, 기준 그림(ref)으로 말하는 얼굴을 고쳐 만든다. 11-19 숲길 단편(니키·푸토르)에서 승인된 모습. ref 는 결과 폴더 안의 상대 경로다.",
+ "characters": [
+  {
+   "id": "niki",
+   "names": ["니키", "Niki"],
+   "look": "a twelve-year-old girl with two long black braids and thin straight bangs, pale face, dark blue eyes, a wine-red round-brimmed hat, a wine-red cape with small embroidered flowers over a wine-red blouse with a big bow at the neck, long sleeves",
+   "style": "semi-realistic painterly 2.5D fantasy film look, softly painted textures, rich warm colours, consistent character design",
+   "voice": "A twelve-year-old Korean girl with a clear, natural, childlike speaking voice, light and bright but calm, steady and clean, no breathiness and no whispering, spoken at a normal conversational volume, gentle and a little shy but not sad or trembling, relaxed.",
+   "voice_ko": "맑고 자연스러운 열두 살 여자아이 목소리",
+   "ref": "admin/main/2026-11-19/cast/niki_00001_.png"
+  },
+  {
+   "id": "putor",
+   "names": ["푸토르", "Putor"],
+   "look": "a short stocky old dwarf herbalist with wild white hair, a long white beard, small round glasses, bushy white eyebrows, a round red nose, pointed ears, and a golden-ochre coat with a green herb badge on the chest",
+   "style": "semi-realistic painterly 2.5D fantasy film look, softly painted textures, rich warm colours, consistent character design",
+   "voice": "A kind old Korean grandpa, around eighty years old, a gravelly low voice that is warm and mellow with a full, thick, rounded body and chest resonance, noticeably breathy and airy with audible soft breaths and sighs between phrases, very slow and gentle speech with long relaxed pauses, a cheerful twinkle in the voice, like a beloved grandfather telling a bedtime story. Old and deep, never thin or reedy, not a young adult.",
+   "voice_ko": "낮고 굵고 느긋한 할아버지 목소리",
+   "voice_fx": "bass",
+   "ref": "admin/main/2026-11-19/cast/putor_00001_.png"
+  }
+ ]
+}

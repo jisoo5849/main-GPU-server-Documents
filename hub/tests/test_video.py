@@ -2124,6 +2124,117 @@ def test_dialogue_story_prompt_states_the_line_and_conversation_rules():
     assert "at least 3 spoken lines" in repair and 'only "B" speaks' in repair
 
 
+# ── 인물 라이브러리 (11-19): 니키·푸토르는 정해진 모습·목소리·기준 그림·그림체로 고정한다 ──
+def test_cast_library_file_is_valid_and_fits_the_story_checks():
+    from app import cast_lib
+    lib = cast_lib.library()
+    assert [e["id"] for e in lib] == ["niki", "putor"]
+    for e in lib:
+        assert len(e["look"].split()) <= 45, e["id"]                 # 구성안 검사는 외형 글이 60낱말을 넘으면 고치게 한다
+        assert not video.HANGUL_RE.search(e["look"] + e["voice"] + e["style"])
+        assert video.story_style({"bible": {"style": e["style"]}}), "라이브러리 그림체가 실사로 읽히면 안 된다"
+        assert e["ref"].endswith(".png") and not e["ref"].startswith("/") and ".." not in e["ref"]
+        assert e["voice_ko"] and video.HANGUL_RE.search(e["names"][0])
+    assert lib[1]["voice_fx"] == "bass" and "voice_fx" not in lib[0]
+    # 외형 글에 쓰는 소품이 구성안 검사가 막는 소품 단어와 맞는다: 모자(니키)·수염·안경(푸토르)이 외형에 있다
+    assert "hat" in lib[0]["look"] and "beard" in lib[1]["look"] and "glasses" in lib[1]["look"]
+
+
+def test_cast_library_finds_names_in_the_request_and_matches_story_characters():
+    from app import cast_lib
+    assert [e["id"] for e in cast_lib.known_in("니키와 푸토르가 숲속을 걸어가며 대화")] == ["niki", "putor"]
+    assert [e["id"] for e in cast_lib.known_in("푸토르 할아버지가 니키에게 설명한다")] == ["putor", "niki"]    # 글에 나온 차례
+    assert [e["id"] for e in cast_lib.known_in("NIKI 와 아이가 걷는다")] == ["niki"]
+    assert cast_lib.known_in("Nikita 가 걷는다") == [] and cast_lib.known_in("비 오는 거리") == [] and cast_lib.known_in("") == []
+    lib = cast_lib.library()
+    assert cast_lib.match_character({"id": "B", "name_ko": "푸토르 할아버지"}, lib)["id"] == "putor"
+    assert cast_lib.match_character({"id": "putor", "name_ko": ""}, lib)["id"] == "putor"
+    assert cast_lib.match_character({"id": "C", "name_ko": "이웃"}, lib) is None
+    block = cast_lib.prompt_block(lib)
+    assert 'name_ko "니키"' in block and 'name_ko "푸토르"' in block and "golden-ochre coat" in block
+    assert "copy it into bible.style" in block and "voice" not in block.lower().replace("visual style", "")
+    assert cast_lib.prompt_block([]) == "" and cast_lib.prompt_block(None) == ""
+
+
+def test_cast_library_overrides_the_story_bible_and_the_style():
+    import copy as _copy
+    from app import cast_lib
+    lib = cast_lib.library()
+    story = video.clean_dialogue_story(DLG_OK, 48)
+    chars = {c["name_ko"]: c for c in story["bible"]["characters"]}
+    assert chars["니키"]["look"] != lib[0]["look"]
+    matched = cast_lib.apply_to_story(story, lib, "니키와 푸토르가 대화", keep_style=video.story_style(story) != "")
+    assert matched == {"A": "niki", "B": "putor"}
+    a, b = story["bible"]["characters"]
+    assert a["look"] == lib[0]["look"] and b["look"] == lib[1]["look"] and a["library"] == "niki"
+    assert a["voice"] == lib[0]["voice"] and b["voice_fx"] == "bass" and "voice_fx" not in a
+    assert a["ref"] == lib[0]["ref"] and b["ref"] == lib[1]["ref"] and a["name_ko"] == "니키"
+    # 구성안의 그림체: 사용자가 말한 화풍(비사실)은 지킨다
+    assert story["bible"]["style"] == "semi-realistic painterly 2.5D fantasy film look"
+    # 모델이 실사로 정했거나 그림체를 안 정했으면 라이브러리 그림체로, 사용자가 실사를 말했으면 그대로 둔다
+    real = _copy.deepcopy(story)
+    real["bible"]["style"] = "photorealistic cinematic live action"
+    assert cast_lib.apply_to_story(real, lib, "니키와 푸토르가 대화", keep_style=False)
+    assert real["bible"]["style"] == lib[0]["style"]
+    real["bible"]["style"] = "photorealistic cinematic live action"
+    cast_lib.apply_to_story(real, lib, "니키와 푸토르가 실사 영화처럼 대화", keep_style=False)
+    assert real["bible"]["style"] == "photorealistic cinematic live action"
+    # 라이브러리에 없는 인물만 있으면 아무것도 바꾸지 않는다
+    other = _copy.deepcopy(story)
+    other["bible"]["characters"][0].update(name_ko="이웃", id="Z")
+    other["bible"]["characters"] = other["bible"]["characters"][:1]
+    before = _copy.deepcopy(other)
+    assert cast_lib.apply_to_story(other, lib, "이웃이 걷는다") == {} and other == before
+
+
+def test_dialogue_storyboard_tells_the_model_the_known_characters_and_then_applies_them():
+    from app import cast_lib
+    turns = []
+    fake = types.ModuleType("app.llm")
+
+    class HelperBusy(Exception):
+        pass
+
+    @contextlib.asynccontextmanager
+    async def llm_turn(user, ip, model, purpose, wait_seconds=None):
+        turns.append(purpose)
+
+        async def call(payload):
+            turns.append(payload["messages"][0]["content"])
+            story = json.loads(json.dumps(DLG_OK))
+            story["scenes"][3]["continues"] = False
+            story["bible"]["style"] = "photorealistic cinematic live action"      # 모델이 실사로 정했다
+            story["bible"]["characters"][0]["look"] = "a tall woman in a grey coat"      # 모델이 외형을 다르게 썼다
+            return {"message": {"content": json.dumps(story)}}
+        yield call
+
+    fake.HelperBusy, fake.llm_turn = HelperBusy, llm_turn
+    saved = sys.modules.get("app.llm")
+    sys.modules["app.llm"] = fake
+    try:
+        r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat",
+                                         "니키와 푸토르가 숲속을 걸어가며 대화하는 40초 영상", seconds=48, dialogue=True))
+        system = turns[1]
+        assert "Known characters" in system and 'name_ko "니키"' in system and "golden-ochre coat" in system
+        lib = cast_lib.library()
+        a, b = r["story"]["bible"]["characters"]
+        assert a["look"] == lib[0]["look"] and b["look"] == lib[1]["look"] and a["ref"] == lib[0]["ref"]
+        assert r["story"]["bible"]["style"] == lib[0]["style"] and r["cast"] == {"A": "niki", "B": "putor"}
+        # 이름이 없는 요청과 긴 영상(대사 없음)은 라이브러리를 건드리지 않는다
+        turns.clear()
+        r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat",
+                                         "두 사람이 숲속을 걸어가며 대화하는 40초 영상", seconds=48, dialogue=True))
+        assert "Known characters" not in turns[1] and r["cast"] == {}
+        turns.clear()
+        r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", "니키가 걷는 30초 영상", seconds=30))
+        assert "Known characters" not in turns[1] and "cast" not in r
+    finally:
+        if saved is None:
+            sys.modules.pop("app.llm", None)
+        else:
+            sys.modules["app.llm"] = saved
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
