@@ -661,7 +661,7 @@ async def t_all_shipped_recipes_pass_checks_and_build():
         assert recipes.recipe_ok(rep), (rid, [x for x in rep if not x["ok"]])
         p = recipes.build(r, recipes.sample_values(r))
         assert D.negative_problem(r, p) is None, (rid, D.negative_problem(r, p))
-    assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music", "voice", "voice_clone", "talk"}
+    assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music", "voice", "voice_clone", "talk", "scene_image"}
     # 4스텝 LoRA 는 레시피가 켠 채로 고정한다
     assert rs["wan22_t2v_14b_fast"]["prompt"]["128:129"]["inputs"]["value"] is True
     assert rs["qwen_image_edit"]["prompt"]["170:168"]["inputs"]["value"] is True
@@ -672,6 +672,7 @@ async def t_all_shipped_recipes_pass_checks_and_build():
     d = D.Director(FakeDeps(FakeStore()), rs)
     assert {a: d.recipe_for(a)["id"] for a in ("i2v", "t2v", "image", "edit")} == {
         "i2v": "wan22_i2v_14b_fast", "t2v": "wan22_t2v_14b_fast", "image": "zimage_turbo_t2i", "edit": "qwen_image_edit"}
+    assert d.recipe_for("scene_image")["id"] == "qwen_image_2512_scene"
 
 
 async def t_new_seed_with_new_seconds_rewrites_prompt():
@@ -1616,7 +1617,7 @@ class LongDeps(FakeDeps):
             self.n += 1
             main = rec["outputs"]["main"]["node"]
             ext = (rec["outputs"]["main"].get("ext") or [".mp4"])[0]
-            if rec["action"] in ("image", "edit"):
+            if rec["action"] in ("image", "edit", "scene_image"):
                 outs = [{"node_id": main, "rel_path": self._file(f"img_{self.n}{ext}"), "media": "images"}]
             elif rec["action"] in ("music", "voice", "voice_clone"):
                 outs = [{"node_id": main, "rel_path": self._file(f"{rec['action']}_{self.n}{ext}"), "media": "audio"}]
@@ -2039,6 +2040,7 @@ VOICE = recipes.load_all()["qwen3_tts_voice"]
 CLONE = recipes.load_all()["qwen3_tts_clone"]
 TALK = recipes.load_all()["ltx23_ia2v_talk"]
 EDITR = recipes.load_all()["qwen_image_edit"]
+SCENE = recipes.load_all()["qwen_image_2512_scene"]
 
 
 def dialogue_story():
@@ -2049,7 +2051,8 @@ def dialogue_story():
             {"id": "A", "look": "a twelve-year-old girl with two long black braids, wine-red hat and cape", "name_ko": "니키",
              "voice": "A twelve-year-old Korean girl, clear and natural.", "voice_ko": "맑은 여자아이"},
             {"id": "B", "look": "a short old dwarf herbalist with a long white beard", "name_ko": "푸토르",
-             "voice": "A kind Korean grandpa, low warm gravelly voice, slow.", "voice_ko": "굵은 할아버지"}],
+             "voice": "A kind Korean grandpa, low warm gravelly voice, slow.", "voice_ko": "굵은 할아버지",
+             "sample_ko": "허허, 얘야. 이 할아비가 옛날얘기 하나 해 줄까?"}],
             "places": [{"id": "P1", "look": "a winding forest path"}], "time": "morning", "light": "soft sunbeams",
             "style": "semi-realistic painterly 2.5D fantasy film look"},
         "music": {"tags": "gentle fantasy instrumental, piano", "bpm": 70, "key": "D major", "ko": "잔잔한 피아노"},
@@ -2076,9 +2079,10 @@ class DialogueDeps(LongDeps):
 
     def __init__(self, fs, root, **kw):
         super().__init__(fs, root, **kw)
-        self.recs.update({VOICE["id"]: VOICE, CLONE["id"]: CLONE, TALK["id"]: TALK, EDITR["id"]: EDITR})
+        self.recs.update({VOICE["id"]: VOICE, CLONE["id"]: CLONE, TALK["id"]: TALK, EDITR["id"]: EDITR, SCENE["id"]: SCENE})
         self.line_secs = {}            # 입력 파일 이름 → 다듬은 길이 차례 (없으면 목소리 3.0초, 대사 2.6초)
         self.trims = []                # (파일 이름, 후처리, 크기 맞추기) 부른 차례
+        self.max_secs = {}             # 파일 이름 → 앞 몇 초만 남기라고 한 값
         self.story = None              # 구성안을 이것으로 돌려준다 (없으면 dialogue_story())
 
     async def storyboard(self, user, ip, env, **kw):
@@ -2086,9 +2090,11 @@ class DialogueDeps(LongDeps):
         await asyncio.sleep(0.01)
         return {"story": copy.deepcopy(self.story) if self.story else dialogue_story(), "violations": [], "rounds": 1}
 
-    def trim_voice(self, src, out, fx=None, level=False):
+    def trim_voice(self, src, out, fx=None, level=False, max_seconds=None):
         self.calls.append(("trim_voice", (src, out)))
         self.trims.append((os.path.basename(out), fx, level))
+        if max_seconds:
+            self.max_secs[os.path.basename(out)] = max_seconds
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
             f.write(b"wav")
@@ -2153,19 +2159,37 @@ async def t_dialogue_video_records_voices_first_then_lip_syncs_the_talk_shots():
             work = t["work"]
             # 목소리: 인물마다 한 번 설계하고, 대사는 그 목소리(입력 폴더의 WAV)를 복제해 녹음한다
             v0 = subs[0][1]["prompt"]["1"]["inputs"]
-            assert v0["instruct"].startswith("A kind Korean grandpa") and v0["device"] == "cpu" and v0["text"] == D._video().VOICE_REF_TEXT
+            vid = D._video()
+            assert v0["instruct"].startswith("A kind Korean grandpa") and v0["device"] == "cpu"
+            # 기준 소리의 글: 푸토르(B)는 그 인물이 할 법한 말(sample_ko), 샘플 글이 없는 니키(A)는 기본 인사말
+            assert v0["text"] == "허허, 얘야. 이 할아비가 옛날얘기 하나 해 줄까?" and subs[1][1]["prompt"]["1"]["inputs"]["text"] == vid.VOICE_REF_TEXT
+            assert "calm and friendly" not in v0["instruct"] and "clear pronunciation" not in v0["instruct"]
+            # 맥락 복제는 기준 소리와 글이 짝이라 소리를 자르지 않는다 (이전에는 앞 12초만 남겼다)
+            assert v0["max_new_tokens"] == 256 and deps.max_secs == {}
             t0 = subs[2][1]["prompt"]
             assert t0["1"]["inputs"]["target_text"].startswith("얘야") and t0["3"]["inputs"]["audio"] == work["voices"]["B"]["in_rel"]
             assert t0["1"]["inputs"]["max_new_tokens"] == 256 and subs[3][1]["prompt"]["3"]["inputs"]["audio"] == work["voices"]["A"]["in_rel"]
+            # 11-19 메인 시험 2: 목소리 특징만 복제(x_vector_only)하면 말투·나이·감정이 평평해졌다 → 기준 소리의 글까지 주는 맥락 복제
+            assert t0["1"]["inputs"]["x_vector_only"] is False and t0["1"]["inputs"]["reference_text"] == work["voices"]["B"]["text"]
+            assert subs[3][1]["prompt"]["1"]["inputs"]["reference_text"] == vid.VOICE_REF_TEXT == work["voices"]["A"]["text"]
             assert work["voices"]["B"]["in_rel"].endswith(f"{tid[:8]}/voice_0.wav") and work["lines"]["1"]["in_rel"].endswith("line_1.wav")
             # 녹음 길이에 맞춰 장면 길이를 고친다: 말하는 장면은 대사 + 1초 (4초 이상), 화면 밖 목소리 장면은 줄이지 않는다
             secs = [s["seconds"] for s in work["story"]["scenes"]]
-            assert secs == [10, 4, 5, 6], secs
+            assert secs == [14, 4, 5, 9], secs                       # 녹음에 맞추면 25초 → 30초 요청(디졸브·자르기 손실 포함 7.5초 부족)에 맞춰 말 없는 두 장면을 늘린다
+            st = [e[1] for e in fs.events if e[0] == "dialogue_stretch"]
+            assert st and st[0]["before"] == [10, 4, 5, 6] and st[0]["after"] == [14, 4, 5, 9] and st[0]["target"] == 30.0
             # 기준 그림 → 편집한 첫 화면 → 입 맞춤 (대사 소리, 같은 크기, 녹음에 맞춘 길이, 혼자 나오는 글)
             talk = subs[10][1]["prompt"]
             assert talk["276"]["inputs"]["audio"] == work["lines"]["1"]["in_rel"] and talk["340:331"]["inputs"]["value"] == 4
             assert talk["340:330"]["inputs"]["value"] == 1280 and talk["340:324"]["inputs"]["value"] == 704
             assert "alone in the frame, no other people" in talk["340:319"]["inputs"]["value"]
+            # 11-20 사용자: 화풍은 대사가 나올 때나 안 나올 때나 같아야 한다 → 말하는 장면(LTX-2.3)과 말 없는 장면(LTX-2.5)의 영상 글이
+            # 같은 화풍 고정 문장으로 끝난다
+            lock = vid.style_lock(work["story"])
+            assert lock.startswith("Keep exactly the look of the first frame") and talk["340:319"]["inputs"]["value"].count(lock) == 1
+            slot = LTX["inject"]["prompt"]
+            wide = subs[8][1]["prompt"][slot["node"]]["inputs"][slot["input"]]
+            assert recipe_of(subs[8]) == LTX["id"] and wide.rstrip().endswith(lock) and wide.count(lock) == 1
             edit = subs[9][1]["prompt"]
             assert edit["170:151"]["inputs"]["prompt"].startswith("Keep the same person") and "41" in edit
             staged = [c[1] for c in deps.calls if c[0] == "stage_image"]
@@ -2226,9 +2250,12 @@ async def t_dialogue_line_that_runs_on_is_recorded_again_and_a_resume_keeps_the_
 
 
 # ── 인물 라이브러리: 정해진 인물은 기준 그림으로 얼굴을 고정하고 목소리 후처리·크기 맞추기를 건다 ──
-def library_story(root):
-    """dialogue_story() 의 두 인물을 라이브러리 인물로 만든다 (기준 그림 파일은 결과 폴더에 둔다)"""
+def library_story(root, voice_refs=False):
+    """dialogue_story() 의 두 인물을 라이브러리 인물로 만든다 (기준 그림 파일은 결과 폴더에 둔다).
+    voice_refs 면 승인된 기준 소리(voice_ref)와 그 글(voice_ref_text)도 둔다"""
+    from app import cast_lib
     story = dialogue_story()
+    story["bible"]["style"] = cast_lib.library()[0]["style"]          # 구성안 단계에서 라이브러리 그림체로 덮어쓴 모습 (cast_lib.apply_to_story)
     chars = {c["id"]: c for c in story["bible"]["characters"]}
     for cid, lib, fx in (("A", "niki", None), ("B", "putor", "bass")):
         rel = f"studio/_cast/{lib}.png"
@@ -2237,6 +2264,11 @@ def library_story(root):
         with open(path, "wb") as f:
             f.write(lib.encode())
         chars[cid].update(library=lib, ref=rel, **({"voice_fx": fx} if fx else {}))
+        if voice_refs:
+            vrel = f"studio/_cast/{lib}_voice.flac"
+            with open(os.path.join(root, vrel), "wb") as f:
+                f.write(b"voice " + lib.encode())
+            chars[cid].update(voice_ref=vrel, voice_ref_text=f"{lib} 기준 소리가 말한 글입니다.")
     return story
 
 
@@ -2255,9 +2287,22 @@ async def t_dialogue_library_characters_use_their_reference_pictures_and_voice_f
             subs = [c for c in deps.calls if c[0] == "submit"]
             tid = str(t["id"])
             tags = [c[1]["client_id"].split(f"studio-{tid}-")[1] for c in subs]
-            # 기준 그림 둘(C0·C1)은 새로 그리지 않는다: 장면 이미지(L0i)만 Z-Image 로 그린다
+            # 기준 그림 둘(C0·C1)은 새로 그리지 않는다: 장면 이미지(L0i)만 그린다. 라이브러리 인물이 나오므로 Z-Image 가 아니라
+            # Qwen-Image 2512 (11-19 시험: Z-Image 는 디즈니·픽사풍 3D 로 나와 말하는 장면과 화풍이 달랐다)
             assert "C01" not in tags and "C11" not in tags and tags.count("L0i1") == 1, tags
-            assert [recipe_of(c) for c in subs].count(IMG["id"]) == 1
+            rids = [recipe_of(c) for c in subs]
+            assert rids.count(IMG["id"]) == 0 and rids.count(SCENE["id"]) == 1, rids
+            scene = next(c for c in subs if recipe_of(c) == SCENE["id"])[1]["prompt"]["238:227"]["inputs"]["text"]
+            assert scene.startswith("Semi-realistic digital painting, 2.5D concept art") and "IMG " in scene      # 그림체 앞머리 + 장면 그림 글
+            assert scene.lower().count("semi-realistic digital painting") >= 2                  # 맨 앞머리 + 글 안의 Style 문장들 (앞머리는 항상 붙는다)
+            # 사용자가 Lightning(4스텝, 약 6초) 결과 b_new_light 를 화풍으로 골랐다: Lightning 스위치가 켜져 있고 단계·CFG 가 그쪽이다
+            sp = next(c for c in subs if recipe_of(c) == SCENE["id"])[1]["prompt"]
+            assert sp["238:229"]["inputs"]["value"] is True and SCENE["quality_label"] == "빠름" and SCENE["estimate"]["gpu_seconds"] < 20
+            assert sp["238:225"]["inputs"]["value"] == 4 and sp["238:218"]["inputs"]["value"] == 1          # Lightning 4스텝·CFG 1 (스위치가 이 값을 고른다)
+            assert D.Director._scene_image_prompt(SCENE, {"bible": {"style": "x y z"}}, "IMG text").startswith("X y z. IMG")
+            head = scene.split(". IMG")[0] + ". "
+            assert D.Director._scene_image_prompt(SCENE, {"bible": {"style": head[:-2]}}, head + "IMG text") == head + "IMG text"   # 이미 그 문장으로 시작하면 그대로
+            assert D.Director._scene_image_prompt(IMG, {"bible": {"style": "x y z"}}, "IMG text") == "IMG text"                    # Z-Image 글은 그대로
             staged = [c[1] for c in deps.calls if c[0] == "stage_image"]
             assert "studio/_cast/niki.png" in staged and "studio/_cast/putor.png" in staged
             assert {c: t["work"]["casts"][c]["rel"] for c in ("A", "B")} == {"A": "studio/_cast/niki.png", "B": "studio/_cast/putor.png"}
@@ -2276,6 +2321,151 @@ async def t_dialogue_library_characters_use_their_reference_pictures_and_voice_f
             settings.results_dir, settings.envs_dir = old
 
 
+async def t_dialogue_library_voice_reference_is_used_instead_of_designing_a_voice():
+    """11-19 메인 시험 2: 인사말로 새로 설계한 기준 소리에서 80세 푸토르가 젊은 남자 목소리로 나왔다.
+    승인된 기준 소리(voice_ref)가 있는 라이브러리 인물은 영상마다 목소리를 설계하지 않고 그 소리와 글을 맥락 복제의 기준으로 쓴다"""
+    old = (settings.results_dir, settings.envs_dir)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = DialogueDeps(fs, settings.results_dir)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": library_story(settings.results_dir, voice_refs=True), "approved": True}
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            rids = [recipe_of(c) for c in subs]
+            assert rids.count(VOICE["id"]) == 0 and rids.count(CLONE["id"]) == 3, rids       # 목소리 설계 없이 대사 셋만 녹음
+            work = t["work"]
+            assert work["voices"]["B"]["library"] and work["voices"]["A"]["library"]
+            assert work["voices"]["B"]["text"] == "putor 기준 소리가 말한 글입니다." and work["voices"]["B"]["rel"] == "studio/_cast/putor_voice.flac"
+            assert work["voices"]["B"]["in_rel"].endswith("voice_0.wav") and work["voices"]["A"]["in_rel"].endswith("voice_1.wav")
+            # 대사는 라이브러리 기준 소리의 글까지 주는 맥락 복제로 녹음한다 (푸토르 B → 니키 A 차례)
+            clones = [c[1]["prompt"]["1"]["inputs"] for c in subs if recipe_of(c) == CLONE["id"]]
+            assert [c["reference_text"] for c in clones] == ["putor 기준 소리가 말한 글입니다.", "niki 기준 소리가 말한 글입니다.",
+                                                         "putor 기준 소리가 말한 글입니다."], clones
+            assert all(c["x_vector_only"] is False for c in clones)
+            # 기준 소리는 입력 폴더로 옮기기만 한다: 후처리·크기 맞추기·자르기 없음 (맥락 복제는 소리와 글이 짝이다)
+            voices = [x for x in deps.trims if x[0].startswith("voice_")]
+            assert sorted(voices) == [("voice_0.wav", None, False), ("voice_1.wav", None, False)] and deps.max_secs == {}
+            assert [e[1].get("library") for e in fs.events if e[0] == "dialogue_voice"] == [True, True]
+            assert "dialogue_voice_ref_missing" not in kinds(fs)
+        finally:
+            settings.results_dir, settings.envs_dir = old
+
+
+async def t_dialogue_voice_clone_mode_can_be_switched_to_x_vector():
+    """STUDIO_VOICE_CLONE=xvector 이면 목소리 특징만 복제한다 (듣고 마음에 드는 쪽으로 바꿀 수 있게 설정으로 둔다)"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_voice_clone)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        try:
+            assert old[2] == "icl"                                        # 기본은 맥락 복제
+            settings.studio_voice_clone = "xvector"
+            fs = FakeStore(); fs.patch()
+            deps = DialogueDeps(fs, settings.results_dir)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": library_story(settings.results_dir, voice_refs=True), "approved": True}
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            clones = [c[1]["prompt"]["1"]["inputs"] for c in deps.calls if c[0] == "submit" and recipe_of(c) == CLONE["id"]]
+            assert len(clones) == 3 and all(c["x_vector_only"] is True and c["reference_text"] for c in clones)
+        finally:
+            settings.results_dir, settings.envs_dir, settings.studio_voice_clone = old
+
+
+async def t_dialogue_library_voice_reference_missing_falls_back_to_a_designed_voice():
+    old = (settings.results_dir, settings.envs_dir)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = DialogueDeps(fs, settings.results_dir)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            story = library_story(settings.results_dir, voice_refs=True)
+            os.remove(os.path.join(settings.results_dir, "studio/_cast/putor_voice.flac"))      # 푸토르의 기준 소리 파일이 지워졌다
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            rids = [recipe_of(c) for c in deps.calls if c[0] == "submit"]
+            assert rids.count(VOICE["id"]) == 1 and rids.count(CLONE["id"]) == 3, rids        # 푸토르만 새로 설계한다
+            work = t["work"]
+            assert not work["voices"]["B"].get("library") and work["voices"]["A"]["library"]
+            assert work["voices"]["B"]["text"] == "허허, 얘야. 이 할아비가 옛날얘기 하나 해 줄까?"       # 설계한 기준 소리의 글은 인물의 샘플 글
+            miss = [e[1] for e in fs.events if e[0] == "dialogue_voice_ref_missing"]
+            assert miss and miss[0]["speaker"] == "B" and miss[0]["ref"] == "studio/_cast/putor_voice.flac"
+        finally:
+            settings.results_dir, settings.envs_dir = old
+
+
+async def t_dialogue_reference_voice_that_runs_on_is_designed_again():
+    """맥락 복제는 기준 소리를 잘라 쓰지 못한다 (글과 어긋난다): 글에 비해 너무 늘어졌으면 시드를 바꿔 한 번 더 설계한다"""
+    old = (settings.results_dir, settings.envs_dir)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = DialogueDeps(fs, settings.results_dir)
+            deps.line_secs = {"voice_0.wav": [40.0, 3.0]}              # 푸토르(첫 말하는 사람)의 기준 소리가 40초로 늘어졌다
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": dialogue_story(), "approved": True}
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            designs = [c for c in deps.calls if c[0] == "submit" and recipe_of(c) == VOICE["id"]]
+            assert len(designs) == 3, len(designs)                      # 푸토르 두 번(다시 설계), 니키 한 번
+            retry = [e[1] for e in fs.events if e[0] == "dialogue_voice_retry"]
+            assert retry and retry[0]["speaker"] == "B" and retry[0]["seconds"] == 40.0
+            assert t["work"]["voices"]["B"]["seconds"] == 3.0 and deps.max_secs == {}
+            # 시드가 바뀐다 (같은 글·같은 시드로는 같은 소리가 나온다)
+            assert designs[0][1]["prompt"]["1"]["inputs"]["seed"] != designs[1][1]["prompt"]["1"]["inputs"]["seed"]
+        finally:
+            settings.results_dir, settings.envs_dir = old
+
+
+async def t_long_video_without_dialogue_draws_library_characters_with_the_same_scene_recipe():
+    """11-20 사용자: 화풍은 대사가 나올 때나 안 나올 때나 항상 같아야 한다. 라이브러리 인물이 나오는 대사 없는 긴 영상도
+    장면 그림은 Qwen-Image 2512(그림체 앞머리 포함), 영상 글은 화풍 고정 문장으로 끝난다"""
+    from app import cast_lib
+    old = (settings.results_dir, settings.envs_dir)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = DialogueDeps(fs, settings.results_dir)
+            story = copy.deepcopy(LONG_STORY)
+            story["bible"]["style"] = cast_lib.library()[0]["style"]
+            story["bible"]["characters"][0].update(library="niki")          # 구성안 단계에서 라이브러리로 덮어쓴 모습 (cast_lib.apply_to_story)
+            deps.story = story
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            await d.pump(); await settle(d, 10)
+            assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))
+            assert await d.approve(t) == "ok"
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            rids = [recipe_of(c) for c in subs]
+            assert rids.count(SCENE["id"]) == 2 and rids.count(IMG["id"]) == 0, rids        # 이어지는 장면은 그림을 새로 안 그린다
+            scenes = [c[1]["prompt"]["238:227"]["inputs"]["text"] for c in subs if recipe_of(c) == SCENE["id"]]
+            assert all(x.startswith("Semi-realistic digital painting, 2.5D concept art") for x in scenes)
+            lock = D._video().style_lock(story)
+            slot = LTX["inject"]["prompt"]
+            vids = [c[1]["prompt"][slot["node"]]["inputs"][slot["input"]] for c in subs if recipe_of(c) == LTX["id"]]
+            assert len(vids) == 3 and all(v.rstrip().endswith(lock) for v in vids)
+            # 사진 화풍이면 영상 글을 그대로 둔다 (고정 문장 없음)
+            assert D._video().style_lock({"bible": {"style": "photorealistic cinematic live action"}}) == ""
+            assert D._video().style_lock({"bible": {"style": ""}}) == ""
+            # 라이브러리 인물이 없으면 지금까지처럼 Z-Image
+            assert D.Director(deps, dict(deps.recs))._scene_image_recipe(copy.deepcopy(LONG_STORY))["id"] == IMG["id"]
+        finally:
+            settings.results_dir, settings.envs_dir = old
+
+
 async def t_dialogue_plan_card_shows_the_library_characters_and_the_style():
     old = (settings.results_dir, settings.envs_dir)
     with tempfile.TemporaryDirectory() as root:
@@ -2289,7 +2479,7 @@ async def t_dialogue_plan_card_shows_the_library_characters_and_the_style():
             await d.pump(); await settle(d, 10)
             assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))
             plan = plan_msgs(fs)[-1]["data"]["plan"]
-            assert plan["library"] == ["니키", "푸토르"] and plan["style"].startswith("semi-realistic painterly 2.5D")
+            assert plan["library"] == ["니키", "푸토르"] and plan["style"].startswith("semi-realistic digital painting, 2.5D concept art")
         finally:
             settings.results_dir, settings.envs_dir = old
 
@@ -2311,6 +2501,10 @@ async def t_dialogue_library_missing_reference_falls_back_to_a_drawn_portrait():
             tid = str(t["id"])
             tags = [c[1]["client_id"].split(f"studio-{tid}-")[1] for c in deps.calls if c[0] == "submit"]
             assert "C11" in tags and "C01" not in tags            # 니키(A, 첫째 C0)는 기준 그림을 쓰고, 기준 그림이 없어진 푸토르(B, 둘째 C1)는 새로 그린다
+            # 새로 그리는 기준 그림도 장면 그림과 같은 Qwen-Image 2512 로, 같은 그림체 앞머리와 함께 (11-20: 화풍이 갈리지 않게)
+            portrait = next(c for c in deps.calls if c[0] == "submit" and c[1]["client_id"].endswith("C11"))
+            assert recipe_of(portrait) == SCENE["id"]
+            assert portrait[1]["prompt"]["238:227"]["inputs"]["text"].startswith("Semi-realistic digital painting, 2.5D concept art")
             miss = [e[1] for e in fs.events if e[0] == "dialogue_cast_ref_missing"]
             assert miss and miss[0]["character"] == "B" and miss[0]["ref"] == "studio/_cast/putor.png"
             assert [e[1]["library"] for e in fs.events if e[0] == "dialogue_cast"].count(True) == 1

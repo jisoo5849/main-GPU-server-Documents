@@ -8,6 +8,7 @@
 
 순수 함수만 둔다(파일 읽기 외에 DB·네트워크 없음). 라이브러리 파일은 `cast_library.json` (STUDIO_CAST_FILE 로 바꿀 수 있다).
 """
+import difflib
 import json
 import logging
 import os
@@ -69,27 +70,43 @@ def known_in(text: str) -> list[dict]:
     return [e for _, e in sorted(hits, key=lambda h: h[0])]
 
 
+def _norm(text) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
 def match_character(char: dict, entries: list[dict]) -> dict | None:
-    """설정집 인물 하나와 같은 라이브러리 인물: 한글 이름(name_ko)이나 id 가 라이브러리 이름과 같거나 이름을 포함한다"""
+    """설정집 인물 하나와 같은 라이브러리 인물: 한글 이름(name_ko)이나 id 가 라이브러리 이름과 같거나 이름을 포함한다.
+    이름도 id 도 안 맞으면(대사 없는 영상의 구성안은 name_ko 칸이 없고 모델이 id 를 'A' 로 쓸 수 있다) 외형 글이 라이브러리 외형을
+    그대로 옮긴 것(거의 같은 글)인지 본다"""
     name = str(char.get("name_ko") or "").strip()
     cid = str(char.get("id") or "").strip()
     for e in entries:
         for n in e["names"]:
             if (name and _name_re(n).search(name)) or (cid and cid.lower() == n.lower()):
                 return e
+    look = _norm(char.get("look"))
+    if look:
+        for e in entries:
+            if difflib.SequenceMatcher(None, look, _norm(e["look"])).ratio() >= 0.9:
+                return e
     return None
 
 
-def prompt_block(entries: list[dict] | None) -> str:
+def prompt_block(entries: list[dict] | None, speech: bool = True, by_id: bool = False) -> str:
     """구성안 지시문 끝에 붙이는 '이미 정해진 인물' 글 (영어). 목소리는 넣지 않는다: 구성안 검사가 모델이 쓴 목소리 글을 보므로
-    긴 목소리 글을 베끼게 하지 않고, 목소리는 구성안이 나온 뒤 라이브러리 값으로 바꾼다"""
+    긴 목소리 글을 베끼게 하지 않고, 목소리는 구성안이 나온 뒤 라이브러리 값으로 바꾼다.
+    speech 가 거짓이면 말투를 빼고(대사 없는 영상), by_id 가 참이면 이름 칸(name_ko) 대신 라이브러리 id 를 인물 id 로 쓰게 한다
+    (대사 없는 영상의 구성안에는 name_ko 칸이 없다)"""
     if not entries:
         return ""
+    # 말투(speech): 11-19 메인 시험에서 모델이 푸토르를 존댓말 "선생님" 말투로 써서, 손으로 만든 때의 할아버지 말투("얘야, ~란다")와 달랐다
+    given = 'with the given "id" (shown first)' if by_id else 'with the given "name_ko"'
     lines = ["\nKnown characters: these people already exist and must appear exactly as described. Put each in bible.characters "
-             'with the given "name_ko" and copy its look word for word; never change their age, build, hair, clothing or colours. '
-             "The scenes must use only what the look lists."]
+             f'{given} and copy its look word for word; never change their age, build, hair, clothing or colours. '
+             "The scenes must use only what the look lists." + (" Write each one's spoken lines in the given speech manner." if speech else "")]
     for e in entries:
-        lines.append(f'- name_ko "{e["names"][0]}": {e["look"]}')
+        tag = f'- id "{e["id"]}" ({e["names"][0]})' if by_id else f'- name_ko "{e["names"][0]}"'
+        lines.append(f'{tag}: {e["look"]}' + (f' Speech: {e["speech"]}.' if speech and e.get("speech") else ""))
     style = next((e.get("style") for e in entries if e.get("style")), "")
     if style:
         lines.append(f'Visual style of the whole film (copy it into bible.style): {style}')
@@ -112,7 +129,8 @@ def apply_to_story(story: dict, entries: list[dict], text: str = "", keep_style:
         c["look"] = e["look"]
         c["name_ko"] = e["names"][0] if re.search(r"[가-힣]", e["names"][0]) else (c.get("name_ko") or e["names"][0])
         c["library"] = e["id"]
-        for k in ("voice", "voice_ko", "voice_fx", "ref"):
+        # voice_ref(+voice_ref_text): 승인된 기준 목소리 소리 파일과 그 글. 있으면 영상마다 목소리를 새로 설계하지 않고 이 소리를 복제한다
+        for k in ("voice", "voice_ko", "voice_fx", "ref", "voice_ref", "voice_ref_text"):
             if e.get(k):
                 c[k] = e[k]
         matched[str(c.get("id"))] = e["id"]

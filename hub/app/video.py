@@ -1019,11 +1019,13 @@ def scene_image_text(story: dict, i: int, plan: dict | None = None, limit: int =
     return text if len(text) <= limit else base[:limit]
 
 
-async def write_story(call, text: str, notes: str, seconds: float, rounds: int = 3) -> tuple[dict | None, list[str], int]:
-    """구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). 위반이 남아도 다듬어 쓸 수 있으면 돌려준다"""
+async def write_story(call, text: str, notes: str, seconds: float, rounds: int = 3,
+                      known: list | None = None) -> tuple[dict | None, list[str], int]:
+    """구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). 위반이 남아도 다듬어 쓸 수 있으면 돌려준다.
+    known 은 요청에 이름이 나온 라이브러리 인물: 대사가 없는 영상도 같은 모습·그림체로 쓰게 한다 (11-20, 말투는 뺀다)"""
     count, n_min, n_max = story_counts(seconds)
     system = STORY_SYSTEM.format(seconds=int(seconds), keys=", ".join(MUSIC_KEYS), count=count, n_min=n_min, n_max=n_max,
-                                 tolerance=story_tolerance(seconds))
+                                 tolerance=story_tolerance(seconds)) + cast_lib.prompt_block(known, speech=False, by_id=True)
     user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "")
     said = f"{text or ''} {notes or ''}"
     person_ok = bool(PERSON_REQ_RE.search(said)) or bool(STORY_PERSON_KO_RE.search(said))
@@ -1057,21 +1059,22 @@ async def storyboard(user, ip: str, username: str, slug: str, text: str, notes: 
     text = clean_input(text)
     notes = str(notes or "").strip()[:2000]
     sec = max(STORY_MIN_SECONDS, min(STORY_MAX_SECONDS, float(seconds or 60)))
-    known = cast_lib.known_in(f"{text} {notes}") if dialogue else []      # 요청에 이름이 나온 정해진 인물 (니키·푸토르 등)
+    # 요청에 이름이 나온 정해진 인물 (니키·푸토르 등). 11-20: 대사가 있든 없든 같은 모습·그림체여야 해서 대사 없는 긴 영상에도 쓴다
+    known = cast_lib.known_in(f"{text} {notes}")
     try:
         async with llm.llm_turn(user, ip, settings.expand_model, "video_story") as call:
             if dialogue:
                 story, left, rounds = await write_dialogue_story(call, text, notes, sec, known=known)
             else:
-                story, left, rounds = await write_story(call, text, notes, sec)
+                story, left, rounds = await write_story(call, text, notes, sec, known=known)
     except llm.HelperBusy as e:
         raise PromptxError(str(e), 503) from None
     except RuntimeError as e:
         raise PromptxError(str(e), 502) from None
     if story is None:
         raise PromptxError("구성안을 만들지 못했습니다: " + "; ".join(left[:3]), 502)
-    cast = cast_lib.apply_to_story(story, known, f"{text} {notes}", keep_style=bool(story_style(story))) if dialogue else {}
-    return {"story": story, "violations": left, "rounds": rounds, "model": settings.expand_model, **({"cast": cast} if dialogue else {})}
+    cast = cast_lib.apply_to_story(story, known, f"{text} {notes}", keep_style=bool(story_style(story)))
+    return {"story": story, "violations": left, "rounds": rounds, "model": settings.expand_model, "cast": cast}
 
 
 # ── 대사 영상 구성안 (11-19, docs/short-film-dialogue-design.md 12절) ──
@@ -1079,14 +1082,14 @@ async def storyboard(user, ip: str, username: str, slug: str, text: str, notes: 
 # 대사 소리로 입을 맞추고(LTX-2.3 IA2V), 나머지 장면은 긴 영상과 같이 만든 뒤 디졸브·대사·자막·음악으로 합친다.
 DIALOGUE_EXTRA = """
 This film has spoken dialogue in Korean. The voices are recorded first, one fixed voice per character, and each speaking shot is lip-synced to its recorded line. Follow these extra rules:
-- Every character who speaks also has "name_ko" (the Korean name or role word, for example "니키" or "할아버지"), "voice" (an English description for a voice designer: age, gender, pitch, timbre, pace and manner, at most 40 words; never name a real person, actor or famous voice) and "voice_ko" (a short Korean description of the voice).
+- Every character who speaks also has "name_ko" (the Korean name or role word, for example "니키" or "할아버지"), "voice" (an English description for a voice designer: age, gender, pitch, timbre, pace and manner, at most 40 words; never name a real person, actor or famous voice), "voice_ko" (a short Korean description of the voice) and "sample_ko" (two short Korean sentences, 20 to 40 characters in all, that this character would really say, in the character's own manner of speaking and age; it is recorded once to fix the voice).
 - Each scene also has "kind", "speaker", "line_ko" and "emotion":
   - "talk": one character speaks one line to someone off-screen. "characters" is exactly that one character and "speaker" is its id. The shot is a close-up or medium close-up of the speaker alone in the frame, the face in three-quarter view toward the listener, with a still or very slowly pushing camera. "action" describes the face, the eyes and small head movements while speaking. Never two people in a talk scene.
   - "shot": every other scene (the place, walking together, a listening face, an insert, a reveal). It may carry a voice-over line, heard while the speaker is far away, seen from behind or off-screen: then "speaker" is that character and "line_ko" is the line; otherwise both are "".
-  - "line_ko": natural spoken Korean, one or two short sentences, at most 60 Korean characters. Never put the speaker's name in front of the line.
+  - "line_ko": natural spoken Korean, one or two short sentences, at most 60 Korean characters. Never put the speaker's name in front of the line. Lines are spoken aloud, never read from a page: use the character's own manner of speaking, and let feeling show in the words, with interjections (허허, 어머, 아, 글쎄), a pause written as "...", a question mark or an exclamation mark where a person would use one. Vary the sentence length and the feeling from line to line; do not write every line in the same calm, explanatory tone.
   - "emotion": how the line is said, in English (for example "calm and wise, slow"); "" when the scene has no line.
 - Write about one line for every 8 to 12 seconds of film, in the order of the conversation. Let the speakers take turns naturally, and now and then cut to the listener's face (a "shot" close-up with no line).
-- The "seconds" of a talk scene is your guess of how long the line takes (about 1 second per 4 Korean characters plus 1); the film follows the recorded voice later.
+- The "seconds" of a talk scene is your guess of how long the line takes (the voices speak about 6 Korean characters per second, so about 1 second per 6 characters plus 1); the film follows the recorded voice later.
 - A talk scene never continues the previous scene and is never continued: "continues" is false for a talk scene and for the scene right after it."""
 DIALOGUE_LINE_MAX = 80          # 대사 한 줄의 글자 수 상한 (규칙은 60, 넘어도 80 까지는 쓴다)
 # 대사 줄 수와 대화 (11-19 메인 첫 시험: "니키와 푸토르가 대화" 40초 요청의 구성안에 대사가 푸토르 한 줄뿐, 니키는 한마디도 없었다.
@@ -1106,7 +1109,7 @@ def wants_exchange(text: str) -> bool:
     return bool(CONVERSATION_RE.search(text or ""))
 DIALOGUE_SCHEMA = json.loads(json.dumps(STORY_SCHEMA))
 DIALOGUE_SCHEMA["properties"]["bible"]["properties"]["characters"]["items"]["properties"].update(
-    {"name_ko": {"type": "string"}, "voice": {"type": "string"}, "voice_ko": {"type": "string"}})
+    {"name_ko": {"type": "string"}, "voice": {"type": "string"}, "voice_ko": {"type": "string"}, "sample_ko": {"type": "string"}})
 DIALOGUE_SCHEMA["properties"]["scenes"]["items"]["required"] += ["kind", "speaker", "line_ko", "emotion"]
 DIALOGUE_SCHEMA["properties"]["scenes"]["items"]["properties"].update(
     {"kind": {"type": "string", "enum": ["talk", "shot"]}, "speaker": {"type": "string"}, "line_ko": {"type": "string"},
@@ -1217,6 +1220,8 @@ def clean_dialogue_story(data, seconds: float) -> dict | None:
         c["name_ko"] = _s(rc.get("name_ko"))[:20] or c["id"]
         c["voice"] = "" if HANGUL_RE.search(voice) else voice[:400]
         c["voice_ko"] = _s(rc.get("voice_ko"))[:80]
+        sample = _s(rc.get("sample_ko"))        # 기준 소리가 말할 글: 한글이고 짧을 때만 쓴다 (아니면 voice_sample 이 기본 글을 쓴다)
+        c["sample_ko"] = sample if HANGUL_RE.search(sample) and len(sample) <= SAMPLE_MAX else ""
     lines = 0
     for i, (sc, rs) in enumerate(zip(story["scenes"], raw)):
         who, line = _s(rs.get("speaker")), _s(rs.get("line_ko"))[:DIALOGUE_LINE_MAX]
@@ -1287,6 +1292,38 @@ async def write_dialogue_story(call, text: str, notes: str, seconds: float, roun
     return best[0], best[1], rnd
 
 
+STRETCH_WIDE_MAX = 16     # 말 없는 넓은 장면(풍경·함께 걷기)을 늘릴 수 있는 상한(초)
+STRETCH_CLOSE_MAX = 10    # 말 없는 가까운 장면(듣는 얼굴)의 상한(초): 얼굴만 오래 잡으면 움직임이 흐트러진다
+
+
+def stretch_scenes(story: dict, target: float, overlap: float = 0.5, talk_loss: float = 0.5) -> bool:
+    """대사 길이에 맞춰 말하는 장면이 줄어 영화가 요청 길이보다 짧아지면, 말하지 않는 장면을 1초씩 돌려 가며 늘려 요청 길이에 가깝게 맞춘다.
+    11-19 메인 시험: 1분 요청이 대사 4줄 × 5초로 줄어 약 40초가 됐다. 넓은 장면부터 늘리고, 말하는 장면은 늘려도 소리가 없어 쓸모없다
+    (끝이 어두워져 잘라 쓴다). 장면 사이 디졸브(overlap)로 줄어드는 만큼과, 말하는 장면을 대사 끝 + 0.9초에서 자를 때 잃는 만큼(talk_loss,
+    장면마다 평균 0.5초)도 더한다. 바뀌었으면 True"""
+    scenes = story.get("scenes") or []
+    if not scenes or not target:
+        return False
+    talks = sum(1 for s in scenes if s.get("kind") == "talk")
+    need = float(target) + overlap * max(0, len(scenes) - 1) + talk_loss * talks - sum(int(s["seconds"]) for s in scenes)
+    free = [i for i, s in enumerate(scenes) if s.get("kind") != "talk"]
+    free.sort(key=lambda i: (cast_scene(story, i) is not None, i))      # 넓은 장면 먼저
+    changed = False
+    while need >= 1 and free:
+        moved = False
+        for i in free:
+            cap = STRETCH_CLOSE_MAX if cast_scene(story, i) is not None else STRETCH_WIDE_MAX
+            if need >= 1 and int(scenes[i]["seconds"]) < cap:
+                scenes[i]["seconds"] = int(scenes[i]["seconds"]) + 1
+                need -= 1
+                moved = changed = True
+        if not moved:
+            break
+    if changed:
+        story["seconds"] = sum(int(s["seconds"]) for s in scenes)
+    return changed
+
+
 def speakers_of(story: dict) -> list[str]:
     """대사가 있는 인물 id (처음 말하는 차례대로)"""
     out = []
@@ -1335,14 +1372,43 @@ def _style_line(story: dict) -> str:
     return f" Style: {st}" if st else " Photorealistic cinematic look."
 
 
-VOICE_REF_TEXT = "안녕하세요. 오늘은 바람이 참 좋네요. 천천히 함께 걸어 볼까요?"
+def style_lock(story: dict) -> str:
+    """영상 글 끝에 붙이는 화풍 고정 문장. 말하는 장면(LTX-2.3)과 말 없는 장면(LTX-2.5)의 영상 글이 같은 말로 첫 화면의 화풍을 지키게 한다
+    (11-20 사용자: 화풍은 대사가 나올 때나 안 나올 때나 항상 같아야 한다). 사실적이지 않은 화풍일 때만 (사진 화풍은 영상 글을 그대로 둔다)"""
+    if not story_style(story):
+        return ""
+    return "Keep exactly the look of the first frame in every frame: the same art style, the same colours and textures, never restyled."
+
+
+# 기준 목소리: 대사는 이 소리의 나이·말투·감정을 따라 하며(맥락 복제) 녹음되므로 기준 소리가 모든 대사의 연기를 정한다.
+# 11-19 메인 시험 2: 인사말로 설계한 기준 소리의 '목소리 특징만' 복제했더니 80세 푸토르가 젊은 남자 목소리로, 감정 없이 책 읽는 투로 나왔다.
+# 설계 지시문 끝에 붙인 "Natural Korean speech, clear pronunciation. Emotion: calm and friendly, relaxed." 와 인사말이 늙은 설명을 눌렀다.
+# 손으로 승인받은 방식(숲길 단편)은 '목소리 설명 + Emotion: …' 한 줄과 인물다운 말이었다.
+VOICE_REF_TEXT = "안녕하세요. 오늘은 바람이 참 좋네요."     # 인물의 샘플 글(sample_ko)이 없을 때만 쓰는 기본 글
+VOICE_REF_TOKENS = 256         # 약 20초 상한: 푸토르 설명의 '아주 느린 말'이 세 문장 기준 문장을 38.96초·5분으로 늘린 적이 있다 (11-19)
+VOICE_REF_EMOTION = ("warm and expressive, speaking naturally to someone close, with natural rises and falls in pitch "
+                     "and real feeling in the words")
+SAMPLE_MAX = 70                # 인물의 샘플 글 상한 (글자 수): 길면 기준 소리가 늘어진다
 
 
 def voice_instruct(story: dict, cid: str) -> str:
     """목소리 설계 지시문 (인물마다 한 번, 이 목소리를 모든 대사에 복제해 쓴다)"""
     c = next((c for c in story["bible"]["characters"] if c["id"] == cid), {})
     voice = c.get("voice") or "A natural, clear Korean speaking voice."
-    return f"{voice.rstrip('.')}. Natural Korean speech, clear pronunciation. Emotion: calm and friendly, relaxed."
+    return f"{voice.rstrip('.')}. Emotion: {VOICE_REF_EMOTION}."
+
+
+def voice_sample(story: dict, cid: str) -> str:
+    """기준 소리가 말할 글: 이 인물이 실제로 할 법한 말(sample_ko). 없거나 한글이 아니면 기본 글. 맥락 복제는 이 글을 기준 소리의 글로 쓴다"""
+    c = next((c for c in story["bible"]["characters"] if c["id"] == cid), {})
+    s = _s(c.get("sample_ko"))
+    return s if s and HANGUL_RE.search(s) and len(s) <= SAMPLE_MAX else VOICE_REF_TEXT
+
+
+def voice_ref_max_seconds(text: str) -> float:
+    """기준 소리가 이보다 길면 늘어진 것으로 보고 시드를 바꿔 한 번 더 설계한다. 맥락 복제는 기준 소리와 글이 맞아야 해서
+    소리를 잘라 쓰지 못한다 (한국어 느린 말투 약 초당 2.5~4글자 + 여유)"""
+    return 4.0 + len(text or "") * 0.5
 
 
 def cast_prompt(story: dict, cid: str) -> str:
@@ -1380,7 +1446,8 @@ def talk_prompt(story: dict, i: int) -> str:
             f"The person speaks to someone off-screen to the {speaker_side(story, cid)}, {sc.get('emotion') or 'natural'}; "
             "the lips and jaw move clearly with the words, natural blinking, small head movements and calm breathing. "
             f"Behind, softly out of focus: {place} Time: {b['time']} Light: {b['light']}"
-            + _style_line(story) + " The camera stays still with a very slow push in.")[:3000]
+            + _style_line(story) + (" " + style_lock(story) if style_lock(story) else "")
+            + " The camera stays still with a very slow push in.")[:3000]
 
 
 def line_tokens(line: str) -> int:

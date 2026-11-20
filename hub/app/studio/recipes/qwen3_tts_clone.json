@@ -40,8 +40,8 @@
      "3",
      0
     ],
-    "reference_text": "",
-    "x_vector_only": true
+    "reference_text": "안녕하세요.",
+    "x_vector_only": false
    }
   },
   "2": {
@@ -91,6 +91,17 @@
    "node": "3",
    "input": "audio",
    "type": "input_audio"
+  },
+  "ref_text": {
+   "node": "1",
+   "input": "reference_text",
+   "type": "string",
+   "max_len": 600
+  },
+  "x_vector": {
+   "node": "1",
+   "input": "x_vector_only",
+   "type": "bool"
   }
  },
  "fixed": {

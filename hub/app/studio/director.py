@@ -291,10 +291,10 @@ class RealDeps:
         """장면 클립 + 음악 합치기 (ffmpeg, 스레드에서 부른다)"""
         return assemble.run(clips, music, out, sound, transitions)
 
-    def trim_voice(self, src, out, fx=None, level=False):
+    def trim_voice(self, src, out, fx=None, level=False, max_seconds=None):
         """녹음한 대사의 앞뒤 무음을 잘라 입력 폴더에 WAV 로 (ffmpeg, 스레드에서). fx 는 목소리 후처리 이름, level 이면 소리 크기를
-        목표(assemble.VOICE_LUFS)로 맞춘다. 길이(초)"""
-        return assemble.trim_voice(src, out, fx, assemble.VOICE_LUFS if level else None)
+        목표(assemble.VOICE_LUFS)로 맞추고, max_seconds 는 앞 몇 초만 남긴다(기준 목소리). 길이(초)"""
+        return assemble.trim_voice(src, out, fx, assemble.VOICE_LUFS if level else None, max_seconds)
 
     def render_subtitle(self, text, size, out):
         """투명 PNG 자막 (Pillow, 스레드에서). 글꼴이 없으면 None"""
@@ -1166,14 +1166,36 @@ class Director:
         await store.event(turn["id"], "long_scene_done", {"index": i, "clip": st["clip_rel"], "first_from": st.get("first_from")})
         return st
 
+    def _scene_image_recipe(self, story: dict) -> dict | None:
+        """장면 그림 레시피. 인물 라이브러리의 인물이 나오는 영상은 대사가 있든 없든 Qwen-Image 2512 로 그린다: 라이브러리의 그림체(반실사 회화)와
+        기준 그림이 그 모델 계열이다. 11-19 메인 시험에서 Z-Image 는 같은 그림체 글에도 광택 있는 디즈니·픽사풍 3D 로 나와, 말하는 장면(기준
+        그림 편집)과 한 영상 안에서 화풍이 바뀌었다. 11-20 사용자: 화풍은 대사가 나올 때나 안 나올 때나 항상 같아야 한다 → 대사 없는 긴 영상도
+        같은 레시피. 레시피가 꺼져 있으면 지금까지처럼 Z-Image"""
+        if any(c.get("library") for c in story["bible"]["characters"]):
+            r = self.recipe_for("scene_image")
+            if r is not None:
+                return r
+        return self.recipe_for("image")
+
+    @staticmethod
+    def _scene_image_prompt(recipe: dict, story: dict, prompt: str) -> str:
+        """Qwen 장면 그림 글 맨 앞에 이야기의 그림체를 붙인다 (손으로 만들 때 쓴 \"Semi-realistic digital painting, 2.5D concept art…\" 앞머리와
+        같다). Qwen 은 앞쪽의 그림체 표현에 크게 좌우되므로 글 끝에 같은 문장이 이미 있어도 붙인다. 글이 이미 그 문장으로 시작하면 그대로.
+        Z-Image 글은 그대로"""
+        style = _video().story_style(story)
+        if recipe.get("action") != "scene_image" or not style:
+            return prompt
+        head = f"{style[:1].upper()}{style[1:].rstrip('.')}. "
+        return prompt if prompt.lower().startswith(head.lower()[:40]) else head + prompt
+
     async def _long_image(self, ctx: Ctx, work: dict, i: int, st: dict) -> dict | None:
-        img_recipe = self.recipe_for("image")
+        img_recipe = self._scene_image_recipe(work["story"])
         if img_recipe is None:
             raise StepError("prepare_down")
         vsz = work["long_size"]
         ssz = list(recipes.default_size(img_recipe, photo=(vsz[0], vsz[1])))
         pend = f"L{i}i_pending"
-        swork = {"prompt": st["scene_prompt"], "size": ssz, pend: work.get(pend)}
+        swork = {"prompt": self._scene_image_prompt(img_recipe, work["story"], st["scene_prompt"]), "size": ssz, pend: work.get(pend)}
         ctx.text = "장면 준비 중"
         for attempt in (1, 2):          # 장면 이미지도 실패하면 시드를 바꿔 한 번 더 (한 번의 메모리 부족으로 요청 전체를 잃지 않게)
             sub = self._sub_ctx(ctx, img_recipe, f"L{i}i", "scene", pend, "장면 준비", scene_phase=True)
@@ -1235,6 +1257,9 @@ class Director:
         final = f["prompt"] if f and f.get("changed") else r["prompt"]
         if r.get("sound") and r["sound"] not in final:
             final = f"{final}\n\n{r['sound']}"
+        lock = _video().style_lock(story)         # 말하는 장면의 영상 글과 같은 화풍 고정 문장 (11-20)
+        if lock and lock not in final:
+            final = f"{final}\n\n{lock}"
         await store.event(turn["id"], "render", {"index": i, "profile": r.get("profile"), "violations": r.get("violations"),
                                                  "rounds": r.get("rounds"), "fixed": bool(f), "left": left,
                                                  "frame_read": self.deps.frame_known(r.get("frame"))})
@@ -1387,7 +1412,7 @@ class Director:
         return bool(rec and rec.get("in_rel") and files.input_path(ctx.env, rec["in_rel"]))
 
     async def _dlg_stage_audio(self, ctx: Ctx, result_rel: str, name: str, fx: str | None = None,
-                               level: bool = False) -> tuple[str, float]:
+                               level: bool = False, max_seconds: float | None = None) -> tuple[str, float]:
         """녹음 결과(결과 폴더 mp3)의 앞뒤 무음을 잘라 입력 폴더에 WAV 로 둔다 (입 맞춤의 LoadAudio·목소리 복제의 기준·합치기가 쓴다).
         fx 는 인물 라이브러리의 목소리 후처리(저음 보강 등), level 은 소리 크기 맞추기: 둘 다 대사 줄에만 쓰고 복제의 기준 목소리에는
         쓰지 않는다 (기준 목소리가 이미 처리돼 있으면 줄마다 두 번 걸린다)"""
@@ -1397,7 +1422,7 @@ class Director:
         in_rel = files.turn_input_rel(ctx.user["username"], ctx.user["id"], ctx.turn["id"], name)
         dst = files.input_write_path(ctx.env, in_rel)
         try:
-            extra = ({"fx": fx} if fx else {}) | ({"level": True} if level else {})
+            extra = ({"fx": fx} if fx else {}) | ({"level": True} if level else {}) | ({"max_seconds": max_seconds} if max_seconds else {})
             sec = await asyncio.to_thread(lambda: self.deps.trim_voice(src, dst, **extra))
         except assemble.AssembleError as e:
             raise StepError("run_error", f"녹음 다듬기 실패: {e}") from None
@@ -1405,16 +1430,20 @@ class Director:
         return in_rel, float(sec)
 
     async def _dlg_voices(self, ctx: Ctx, work: dict) -> bool:
-        """인물마다 목소리를 한 번 설계하고, 그 목소리를 복제해 대사를 한 줄씩 녹음한다. 녹음 길이에 맞춰 장면 길이를 고친다.
+        """인물마다 기준 목소리 하나를 정하고, 대사는 그 소리의 나이·말투·감정을 따라(맥락 복제) 한 줄씩 녹음한다. 녹음 길이에 맞춰 장면 길이를 고친다.
         11-19 숲길 단편: 줄마다 목소리를 설계하면 컷마다 목소리가 바뀌었다 → 기준 목소리 하나를 복제해 고정. 여러 줄을 한 작업에
-        넣으면 한 줄이 늘어져 전체가 멈췄다 → 한 줄에 한 작업, 토큰 상한, 너무 길면 시드를 바꿔 한 번 더. 취소면 False"""
+        넣으면 한 줄이 늘어져 전체가 멈췄다 → 한 줄에 한 작업, 토큰 상한, 너무 길면 시드를 바꿔 한 번 더.
+        11-19 메인 시험 2: 인사말로 새로 설계한 기준 소리의 '목소리 특징만' 복제했더니 80세 푸토르가 젊은 남자 목소리로, 감정 없이
+        책 읽는 투로 나왔다 → ① 인물 라이브러리에 승인된 기준 소리(voice_ref)가 있으면 영상마다 설계하지 않고 그 소리를 쓰고,
+        ② 없으면 그 인물이 할 법한 말(sample_ko)로 설계하고, ③ 복제는 기준 소리와 그 글을 함께 주는 맥락 복제로 한다. 취소면 False"""
         turn, story = ctx.turn, work["story"]
         v = _video()
         vrec, crec = self.recipe_for("voice"), self.recipe_for("voice_clone")
-        if vrec is None or crec is None:
+        if crec is None:
             raise StepError("unavailable", "대사 녹음 레시피가 꺼져 있습니다")
         speakers = v.speakers_of(story)
-        fx_of = {c["id"]: c.get("voice_fx") for c in story["bible"]["characters"]}
+        chars = {c["id"]: c for c in story["bible"]["characters"]}
+        fx_of = {cid: c.get("voice_fx") for cid, c in chars.items()}
         idx = [i for i, sc in enumerate(story["scenes"]) if sc.get("line_ko")]
         voices, lines = dict(work.get("voices") or {}), dict(work.get("lines") or {})
         L = ctx.long
@@ -1427,16 +1456,37 @@ class Director:
             if self._dlg_has(ctx, voices.get(cid)):
                 continue
             L["vdone"] = done()
+            c = chars.get(cid) or {}
+            ref_rel, ref_text = c.get("voice_ref"), str(c.get("voice_ref_text") or "").strip()
+            if ref_rel and ref_text and files.result_path(ref_rel):
+                # 인물 라이브러리의 승인된 기준 소리: 영상마다 설계하지 않고 그대로 쓴다 (같은 목소리가 영상마다 같다)
+                in_rel, sec = await self._dlg_stage_audio(ctx, ref_rel, f"voice_{k}.wav")
+                voices[cid] = {"rel": ref_rel, "in_rel": in_rel, "seconds": sec, "text": ref_text, "library": True}
+                work["voices"] = voices
+                await store.merge_work(turn["id"], {"voices": voices})
+                await store.event(turn["id"], "dialogue_voice", {"speaker": cid, "seconds": sec, "library": True})
+                continue
+            if ref_rel:
+                await store.event(turn["id"], "dialogue_voice_ref_missing", {"speaker": cid, "ref": ref_rel})
+            if vrec is None:
+                raise StepError("unavailable", "대사 녹음 레시피가 꺼져 있습니다")
             ctx.text = "목소리 만드는 중"
             await self.emit(ctx, True)
             pend = f"V{k}_pending"
-            swork = {"prompt": v.VOICE_REF_TEXT, "instruct": v.voice_instruct(story, cid), "max_tokens": 512, pend: work.get(pend)}
-            main = await self._dlg_job(ctx, vrec, f"V{k}", pend, "목소리", swork, "voice")
-            if main is None:
-                return False
-            work[pend] = swork.get(pend)
-            in_rel, sec = await self._dlg_stage_audio(ctx, main["rel_path"], f"voice_{k}.wav")
-            voices[cid] = {"rel": main["rel_path"], "in_rel": in_rel, "seconds": sec}
+            sample = v.voice_sample(story, cid)
+            for attempt in (1, 2):
+                swork = {"prompt": sample, "instruct": v.voice_instruct(story, cid), "max_tokens": v.VOICE_REF_TOKENS,
+                         pend: work.get(pend)}
+                main = await self._dlg_job(ctx, vrec, f"V{k}", pend, "목소리", swork, "voice", fresh=attempt > 1)
+                if main is None:
+                    return False
+                work[pend] = swork.get(pend)
+                in_rel, sec = await self._dlg_stage_audio(ctx, main["rel_path"], f"voice_{k}.wav")
+                # 맥락 복제는 기준 소리와 글이 맞아야 해서 소리를 잘라 쓰지 못한다: 너무 늘어졌으면 시드를 바꿔 한 번 더 설계한다
+                if sec <= v.voice_ref_max_seconds(sample) or attempt == 2:
+                    break
+                await store.event(turn["id"], "dialogue_voice_retry", {"speaker": cid, "seconds": sec, "reason": "too_long"})
+            voices[cid] = {"rel": main["rel_path"], "in_rel": in_rel, "seconds": sec, "text": sample}
             work["voices"] = voices
             await store.merge_work(turn["id"], {"voices": voices})
             await store.event(turn["id"], "dialogue_voice", {"speaker": cid, "seconds": sec})
@@ -1449,8 +1499,10 @@ class Director:
                 await self.emit(ctx, True)
                 pend = f"T{i}_pending"
                 got = None
+                ref = voices[sc["speaker"]]
                 for attempt in (1, 2):
-                    swork = {"prompt": sc["line_ko"], "audio_in": voices[sc["speaker"]]["in_rel"],
+                    swork = {"prompt": sc["line_ko"], "audio_in": ref["in_rel"], "ref_text": ref.get("text") or v.VOICE_REF_TEXT,
+                             "x_vector": settings.studio_voice_clone == "xvector",
                              "max_tokens": v.line_tokens(sc["line_ko"]), pend: work.get(pend)}
                     main = await self._dlg_job(ctx, crec, f"T{i}", pend, "대사 녹음", swork, "voice", fresh=attempt > 1)
                     if main is None:
@@ -1479,6 +1531,11 @@ class Director:
             if want != sc["seconds"]:
                 sc["seconds"] = want
                 changed = True
+        before = [s["seconds"] for s in story["scenes"]]
+        if v.stretch_scenes(story, float((ctx.spec or {}).get("seconds") or 0)):         # 대사가 짧아 요청 길이보다 짧아졌다
+            changed = True
+            await store.event(turn["id"], "dialogue_stretch", {"before": before, "after": [s["seconds"] for s in story["scenes"]],
+                                                              "target": (ctx.spec or {}).get("seconds")})
         if changed:
             story["seconds"] = sum(int(s["seconds"]) for s in story["scenes"])
             work["story"] = story
@@ -1495,7 +1552,8 @@ class Director:
         need = v.cast_ids(story)
         if not need:
             return True
-        img = self.recipe_for("image")
+        # 기준 그림을 새로 그릴 때(라이브러리의 기준 그림 파일이 없을 때)도 장면 그림과 같은 모델 계열로 그려 화풍이 갈리지 않게 한다
+        img = self._scene_image_recipe(story)
         if img is None:
             raise StepError("prepare_down")
         casts = dict(work.get("casts") or {})
@@ -1516,7 +1574,7 @@ class Director:
                 ctx.text = "인물 준비 중"
                 await self.emit(ctx, True)
                 pend = f"C{k}_pending"
-                swork = {"prompt": v.cast_prompt(story, cid), "size": ssz, pend: work.get(pend)}
+                swork = {"prompt": self._scene_image_prompt(img, story, v.cast_prompt(story, cid)), "size": ssz, pend: work.get(pend)}
                 main = await self._dlg_job(ctx, img, f"C{k}", pend, "인물 준비", swork, "scene", scene_phase=True)
                 if main is None:
                     return False
@@ -2032,6 +2090,12 @@ class Director:
             values["voice_instruct"] = str(work.get("instruct") or "A natural, clear Korean speaking voice.")
         if "max_tokens" in inject:
             values["max_tokens"] = int(work.get("max_tokens") or 512)
+        if "ref_text" in inject:       # 맥락 복제: 기준 소리가 말하는 글 (소리와 다르면 어긋나므로 반드시 있어야 한다)
+            if not str(work.get("ref_text") or "").strip():
+                raise StepError("gone", "기준 소리의 글이 없습니다")
+            values["ref_text"] = str(work["ref_text"])
+        if "x_vector" in inject:       # True 면 기준 소리의 목소리 특징만 복제하고(글 불필요), False 면 기준 소리의 말투까지 따르는 맥락 복제
+            values["x_vector"] = bool(work.get("x_vector"))
         if size:
             values["width"], values["height"] = size[0], size[1]
         if img is not None:
