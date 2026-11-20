@@ -50,7 +50,27 @@ def library() -> list[dict]:
     out = [e for e in (data.get("characters") or []) if _valid(e)]
     if len(out) != len(data.get("characters") or []):
         log.warning("인물 라이브러리에 형식이 틀린 항목이 있어 건너뜁니다 (%s)", path)
+    out = _resolve_variants(out, path)
     _cache[path] = (mtime, out)
+    return out
+
+
+# 같은 사람의 다른 모습 (11-20: 제임스는 무언가에 집중할 때만 안경을 쓴다). 변형 항목은 variant_of 에 기본 인물 id 를, variant_when 에
+# 그 모습을 쓸 때(영어 글)를 적고, 목소리·말투·그림체는 기본 인물 것을 이어받는다. 이름으로는 찾지 않고 기본 인물이 나오면 따라 나온다
+INHERIT = ("style", "speech", "voice", "voice_ko", "voice_fx", "voice_ref", "voice_ref_text")
+
+
+def _resolve_variants(entries: list[dict], path: str = "") -> list[dict]:
+    by_id = {e["id"]: e for e in entries if not e.get("variant_of")}
+    out = []
+    for e in entries:
+        base = by_id.get(e.get("variant_of")) if e.get("variant_of") else None
+        if e.get("variant_of") and base is None:
+            log.warning("인물 라이브러리 변형 %s 의 기본 인물 %s 가 없어 건너뜁니다 (%s)", e["id"], e.get("variant_of"), path)
+            continue
+        if base is not None:
+            e = {**{k: base[k] for k in INHERIT if base.get(k)}, **e}
+        out.append(e)
     return out
 
 
@@ -63,11 +83,22 @@ def _name_re(name: str):
 def known_in(text: str) -> list[dict]:
     """글에 이름이 나오는 라이브러리 인물 (글에 처음 나오는 차례)"""
     hits = []
-    for e in library():
+    lib = library()
+    for e in lib:
+        if e.get("variant_of"):
+            continue
         pos = [m.start() for n in e["names"] for m in [_name_re(n).search(text or "")] if m]
         if pos:
             hits.append((min(pos), e))
-    return [e for _, e in sorted(hits, key=lambda h: h[0])]
+    out = []
+    for _, e in sorted(hits, key=lambda h: h[0]):
+        out.append(e)
+        out += [v for v in lib if v.get("variant_of") == e["id"]]       # 같은 사람의 다른 모습은 기본 인물을 따라 알려 준다
+    return out
+
+
+def _squash(text) -> str:
+    return re.sub(r"[\s()（）\[\]·.,'’\-]+", "", str(text or "").lower())
 
 
 def _norm(text) -> str:
@@ -80,10 +111,19 @@ def match_character(char: dict, entries: list[dict]) -> dict | None:
     그대로 옮긴 것(거의 같은 글)인지 본다"""
     name = str(char.get("name_ko") or "").strip()
     cid = str(char.get("id") or "").strip()
+    for e in entries:                                   # 1) 라이브러리 id 가 그대로, 또는 이름이 (띄어쓰기·괄호 빼고) 똑같다
+        if cid and cid.lower() == e["id"].lower():
+            return e
+    for e in entries:
+        if any((name and _squash(name) == _squash(n)) or (cid and _squash(cid) == _squash(n)) for n in e["names"]):
+            return e
+    best, best_len = None, 0                            # 2) 이름을 포함한다: 가장 긴 이름이 맞는 쪽 (변형 이름은 기본 인물 이름을 품는다)
     for e in entries:
         for n in e["names"]:
-            if (name and _name_re(n).search(name)) or (cid and cid.lower() == n.lower()):
-                return e
+            if ((name and _name_re(n).search(name)) or (cid and cid.lower() == n.lower())) and len(n) > best_len:
+                best, best_len = e, len(n)
+    if best is not None:
+        return best
     look = _norm(char.get("look"))
     if look:
         for e in entries:
@@ -106,7 +146,13 @@ def prompt_block(entries: list[dict] | None, speech: bool = True, by_id: bool = 
              "The scenes must use only what the look lists." + (" Write each one's spoken lines in the given speech manner." if speech else "")]
     for e in entries:
         tag = f'- id "{e["id"]}" ({e["names"][0]})' if by_id else f'- name_ko "{e["names"][0]}"'
-        lines.append(f'{tag}: {e["look"]}' + (f' Speech: {e["speech"]}.' if speech and e.get("speech") else ""))
+        extra = ""
+        if e.get("variant_of"):
+            base = next((b for b in entries if b["id"] == e["variant_of"]), None)
+            base_tag = "the same person" if base is None else (f'id "{base["id"]}"' if by_id else f'name_ko "{base["names"][0]}"')
+            extra = (f' This is the same person as {base_tag} in a different look: use this entry only in a scene where '
+                     f'{e.get("variant_when") or "the situation fits"}, never put both entries in one scene, and use the other entry in every other scene.')
+        lines.append(f'{tag}: {e["look"]}' + (f' Speech: {e["speech"]}.' if speech and e.get("speech") else "") + extra)
     style = next((e.get("style") for e in entries if e.get("style")), "")
     if style:
         lines.append(f'Visual style of the whole film (copy it into bible.style): {style}')

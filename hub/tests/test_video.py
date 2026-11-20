@@ -2139,7 +2139,7 @@ def test_dialogue_story_prompt_states_the_line_and_conversation_rules():
 def test_cast_library_file_is_valid_and_fits_the_story_checks():
     from app import cast_lib
     lib = cast_lib.library()
-    assert [e["id"] for e in lib] == ["niki", "putor"]
+    assert [e["id"] for e in lib] == ["niki", "putor", "beth", "james", "james_glasses"]
     for e in lib:
         assert len(e["look"].split()) <= 45, e["id"]                 # 구성안 검사는 외형 글이 60낱말을 넘으면 고치게 한다
         assert not video.HANGUL_RE.search(e["look"] + e["voice"] + e["style"])
@@ -2153,6 +2153,39 @@ def test_cast_library_file_is_valid_and_fits_the_story_checks():
     assert lib[1]["voice_fx"] == "bass" and "voice_fx" not in lib[0]
     # 외형 글에 쓰는 소품이 구성안 검사가 막는 소품 단어와 맞는다: 모자(니키)·수염·안경(푸토르)이 외형에 있다
     assert "hat" in lib[0]["look"] and "beard" in lib[1]["look"] and "glasses" in lib[1]["look"]
+    # 니키의 부모 베스·제임스 그린 (11-20 사용자): 확정한 반실사 컨셉아트(니키_반실사화_수정본)의 외형 — 베스는 호박 브로치·앞치마, 제임스는 파란 카디건
+    assert "brooch" in lib[2]["look"] and "apron" in lib[2]["look"] and "cardigan" in lib[3]["look"]
+    assert [e["id"] for e in cast_lib.known_in("제임스 그린과 베스 그린, 니키가 아침을 먹는다")] == ["james", "james_glasses", "beth", "niki"]
+    assert [e["id"] for e in cast_lib.known_in("엄마(베스)와 아빠(제임스)")] == ["beth", "james", "james_glasses"]
+
+
+def test_cast_library_variant_is_the_same_person_in_another_look():
+    """제임스는 무언가에 집중할 때만 안경을 쓴다 (11-20): 변형 항목은 기본 인물을 따라 나오고, 목소리·말투는 이어받고, 이름이 겹쳐도 바르게 맞는다"""
+    from app import cast_lib
+    lib = {e["id"]: e for e in cast_lib.library()}
+    j, g = lib["james"], lib["james_glasses"]
+    assert g["variant_of"] == "james" and "glasses" in g["look"] and "glasses" not in j["look"]
+    assert all(g[k] == j[k] for k in ("voice", "voice_ko", "voice_ref", "voice_ref_text", "speech", "style")), "목소리·말투·그림체는 기본 인물 것"
+    assert g["ref"] != j["ref"] and g["look"] != j["look"]
+    # 변형은 이름으로 찾지 않고 기본 인물이 나오면 바로 뒤에 따라 나온다. 기본 인물이 없으면 나오지 않는다
+    assert [e["id"] for e in cast_lib.known_in("제임스가 책을 읽는다")] == ["james", "james_glasses"]
+    assert [e["id"] for e in cast_lib.known_in("안경 쓴 니키")] == ["niki"]
+    # 설정집 인물 맞추기: id 가 그대로면 그 항목, 이름이 같으면 그 항목, 부분 일치는 가장 긴 이름 (변형 이름은 기본 인물 이름을 품는다)
+    entries = cast_lib.known_in("제임스")
+    m = lambda c: cast_lib.match_character(c, entries)["id"]
+    assert m({"id": "james_glasses", "name_ko": ""}) == "james_glasses"
+    assert m({"id": "A", "name_ko": "제임스 그린(안경)"}) == "james_glasses"
+    assert m({"id": "B", "name_ko": "제임스 그린 (안경)"}) == "james_glasses"
+    assert m({"id": "C", "name_ko": "제임스"}) == "james" and m({"id": "D", "name_ko": "아빠 제임스"}) == "james"
+    # 구성안 지시문: 변형은 '집중할 때만, 한 장면에 둘이 함께는 안 된다'를 알린다. 기본 인물 줄에는 그 말이 없다
+    block = cast_lib.prompt_block(entries)
+    assert block.count("same person") == 1 and "concentrating on something" in block and "never put both entries in one scene" in block
+    story = {"bible": {"characters": [{"id": "A", "name_ko": "제임스 그린(안경)", "look": "x"}, {"id": "B", "name_ko": "제임스", "look": "y"}], "style": ""},
+             "scenes": []}
+    got = cast_lib.apply_to_story(story, entries, "")
+    chars = {c["id"]: c for c in story["bible"]["characters"]}
+    assert got == {"A": "james_glasses", "B": "james"} and chars["A"]["ref"] == g["ref"] and chars["B"]["ref"] == j["ref"]
+    assert chars["A"]["voice_ref"] == chars["B"]["voice_ref"]
 
 
 def test_dialogue_stretch_fills_the_requested_length_with_silent_scenes():
