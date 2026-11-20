@@ -2241,10 +2241,71 @@ def test_cast_library_overrides_the_story_bible_and_the_style():
     assert real["bible"]["style"] == "photorealistic cinematic live action"
     # 라이브러리에 없는 인물만 있으면 아무것도 바꾸지 않는다
     other = _copy.deepcopy(story)
-    other["bible"]["characters"][0].update(name_ko="이웃", id="Z")
+    other["bible"]["characters"][0].update(name_ko="이웃", id="Z", look="a tall man in a grey coat and a black scarf")
     other["bible"]["characters"] = other["bible"]["characters"][:1]
     before = _copy.deepcopy(other)
     assert cast_lib.apply_to_story(other, lib, "이웃이 걷는다") == {} and other == before
+    # 이름도 id 도 다르지만 외형 글이 라이브러리 외형을 그대로 옮긴 인물은 같은 인물이다 (대사 없는 영상의 구성안에는 name_ko 칸이 없고
+    # 모델이 id 를 'A' 로 쓸 수 있다). 외형이 다르면 같은 인물이 아니다
+    same = {"id": "A", "look": lib[1]["look"].replace("wild white hair", "wild  white hair,")}
+    assert cast_lib.match_character(same, lib)["id"] == "putor"
+    assert cast_lib.match_character({"id": "A", "look": "an old man with a white beard and a brown hat"}, lib) is None
+    assert cast_lib.match_character({"id": "putor", "look": "anything"}, lib)["id"] == "putor"           # id 가 라이브러리 id 와 같다
+
+
+def test_known_characters_are_used_in_films_without_dialogue_too():
+    """11-20 사용자: 화풍은 대사가 나올 때나 안 나올 때나 항상 같아야 한다. 대사 없는 긴 영상도 요청에 니키·푸토르가 있으면 같은 모습·그림체로"""
+    from app import cast_lib
+    lib = cast_lib.library()
+    silent = cast_lib.prompt_block(lib, speech=False, by_id=True)
+    assert 'with the given "id" (shown first)' in silent and '- id "niki" (니키): a twelve-year-old girl' in silent
+    assert '- id "putor" (푸토르): a short stocky old dwarf' in silent
+    assert "Speech:" not in silent and "spoken lines" not in silent and "name_ko" not in silent      # 대사 없는 영상에는 말투도 이름 칸도 없다
+    assert "copy it into bible.style" in silent and "golden-ochre coat" in silent
+    # 대사 영상의 글은 그대로다 (name_ko 칸, 말투)
+    talk = cast_lib.prompt_block(lib)
+    assert 'name_ko "니키"' in talk and "Speech: a warm old grandfather" in talk and "in the given speech manner" in talk
+    turns = []
+    fake = types.ModuleType("app.llm")
+
+    class HelperBusy(Exception):
+        pass
+
+    @contextlib.asynccontextmanager
+    async def llm_turn(user, ip, model, purpose, wait_seconds=None):
+        async def call(payload):
+            turns.append(payload["messages"][0]["content"])
+            story = {"title_ko": "숲길", "logline_ko": "두 사람이 숲길을 걷는다.",
+                     "bible": {"characters": [{"id": "A", "look": "a tall woman in a grey coat"}, {"id": "putor", "look": "an old man"}],
+                               "places": [{"id": "P1", "look": "a winding forest path"}], "time": "morning", "light": "soft",
+                               "style": "photorealistic cinematic live action"},
+                     "music": {"tags": "calm piano", "bpm": 70, "key": "D major", "ko": "잔잔한 피아노"},
+                     "scenes": [{"seconds": 14, "place": "P1", "characters": ["A", "putor"], "continues": False, "shot": "wide shot",
+                                 "action": "They walk along the path.", "sound": "footsteps", "ko": "걷는다"},
+                                {"seconds": 14, "place": "P1", "characters": ["putor"], "continues": False, "shot": "medium shot",
+                                 "action": "He stops and looks ahead.", "sound": "birds", "ko": "멈춘다"}]}
+            return {"message": {"content": json.dumps(story)}}
+        yield call
+
+    fake.llm_turn, fake.HelperBusy = llm_turn, HelperBusy
+    saved = sys.modules.get("app.llm")
+    sys.modules["app.llm"] = fake
+    try:
+        out = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", "니키와 푸토르가 숲길을 걸어가는 영상", seconds=28))
+    finally:
+        if saved is None:
+            sys.modules.pop("app.llm", None)
+        else:
+            sys.modules["app.llm"] = saved
+    system = turns[0]
+    assert 'with the given "id"' in system and '- id "niki"' in system and '- id "putor"' in system and "spoken lines" not in system
+    story = out["story"]
+    # 모델이 id 를 'A' 로 쓰고 외형을 다르게 써도 이름·id 가 아니라 외형이 같은 'putor' 는 id 로 맞고, 'A' 는 아무것도 안 맞아 그대로다
+    chars = {c["id"]: c for c in story["bible"]["characters"]}
+    assert chars["putor"]["library"] == "putor" and chars["putor"]["look"] == cast_lib.library()[1]["look"]
+    assert "library" not in chars["A"] and out["cast"] == {"putor": "putor"}
+    assert story["bible"]["style"] == cast_lib.library()[0]["style"]            # 실사로 정한 그림체는 라이브러리 그림체로
+    assert not story.get("dialogue")                                           # 대사 영상이 아니다
 
 
 def test_dialogue_storyboard_tells_the_model_the_known_characters_and_then_applies_them():
@@ -2280,14 +2341,18 @@ def test_dialogue_storyboard_tells_the_model_the_known_characters_and_then_appli
         a, b = r["story"]["bible"]["characters"]
         assert a["look"] == lib[0]["look"] and b["look"] == lib[1]["look"] and a["ref"] == lib[0]["ref"]
         assert r["story"]["bible"]["style"] == lib[0]["style"] and r["cast"] == {"A": "niki", "B": "putor"}
-        # 이름이 없는 요청과 긴 영상(대사 없음)은 라이브러리를 건드리지 않는다
+        # 이름이 없는 요청은 라이브러리를 건드리지 않는다
         turns.clear()
         r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat",
                                          "두 사람이 숲속을 걸어가며 대화하는 40초 영상", seconds=48, dialogue=True))
         assert "Known characters" not in turns[1] and r["cast"] == {}
         turns.clear()
+        r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", "두 사람이 걷는 30초 영상", seconds=30))
+        assert "Known characters" not in turns[1] and r["cast"] == {}
+        # 대사 없는 긴 영상도 이름이 나오면 라이브러리를 쓴다 (11-20: 화풍은 대사가 나올 때나 안 나올 때나 같아야 한다). 말투는 뺀다
+        turns.clear()
         r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", "니키가 걷는 30초 영상", seconds=30))
-        assert "Known characters" not in turns[1] and "cast" not in r
+        assert "Known characters" in turns[1] and '- id "niki" (니키)' in turns[1] and "Speech:" not in turns[1] and "cast" in r
     finally:
         if saved is None:
             sys.modules.pop("app.llm", None)

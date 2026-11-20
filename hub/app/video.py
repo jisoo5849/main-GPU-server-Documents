@@ -1019,11 +1019,13 @@ def scene_image_text(story: dict, i: int, plan: dict | None = None, limit: int =
     return text if len(text) <= limit else base[:limit]
 
 
-async def write_story(call, text: str, notes: str, seconds: float, rounds: int = 3) -> tuple[dict | None, list[str], int]:
-    """구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). 위반이 남아도 다듬어 쓸 수 있으면 돌려준다"""
+async def write_story(call, text: str, notes: str, seconds: float, rounds: int = 3,
+                      known: list | None = None) -> tuple[dict | None, list[str], int]:
+    """구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). 위반이 남아도 다듬어 쓸 수 있으면 돌려준다.
+    known 은 요청에 이름이 나온 라이브러리 인물: 대사가 없는 영상도 같은 모습·그림체로 쓰게 한다 (11-20, 말투는 뺀다)"""
     count, n_min, n_max = story_counts(seconds)
     system = STORY_SYSTEM.format(seconds=int(seconds), keys=", ".join(MUSIC_KEYS), count=count, n_min=n_min, n_max=n_max,
-                                 tolerance=story_tolerance(seconds))
+                                 tolerance=story_tolerance(seconds)) + cast_lib.prompt_block(known, speech=False, by_id=True)
     user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "")
     said = f"{text or ''} {notes or ''}"
     person_ok = bool(PERSON_REQ_RE.search(said)) or bool(STORY_PERSON_KO_RE.search(said))
@@ -1057,21 +1059,22 @@ async def storyboard(user, ip: str, username: str, slug: str, text: str, notes: 
     text = clean_input(text)
     notes = str(notes or "").strip()[:2000]
     sec = max(STORY_MIN_SECONDS, min(STORY_MAX_SECONDS, float(seconds or 60)))
-    known = cast_lib.known_in(f"{text} {notes}") if dialogue else []      # 요청에 이름이 나온 정해진 인물 (니키·푸토르 등)
+    # 요청에 이름이 나온 정해진 인물 (니키·푸토르 등). 11-20: 대사가 있든 없든 같은 모습·그림체여야 해서 대사 없는 긴 영상에도 쓴다
+    known = cast_lib.known_in(f"{text} {notes}")
     try:
         async with llm.llm_turn(user, ip, settings.expand_model, "video_story") as call:
             if dialogue:
                 story, left, rounds = await write_dialogue_story(call, text, notes, sec, known=known)
             else:
-                story, left, rounds = await write_story(call, text, notes, sec)
+                story, left, rounds = await write_story(call, text, notes, sec, known=known)
     except llm.HelperBusy as e:
         raise PromptxError(str(e), 503) from None
     except RuntimeError as e:
         raise PromptxError(str(e), 502) from None
     if story is None:
         raise PromptxError("구성안을 만들지 못했습니다: " + "; ".join(left[:3]), 502)
-    cast = cast_lib.apply_to_story(story, known, f"{text} {notes}", keep_style=bool(story_style(story))) if dialogue else {}
-    return {"story": story, "violations": left, "rounds": rounds, "model": settings.expand_model, **({"cast": cast} if dialogue else {})}
+    cast = cast_lib.apply_to_story(story, known, f"{text} {notes}", keep_style=bool(story_style(story)))
+    return {"story": story, "violations": left, "rounds": rounds, "model": settings.expand_model, "cast": cast}
 
 
 # ── 대사 영상 구성안 (11-19, docs/short-film-dialogue-design.md 12절) ──
@@ -1369,6 +1372,14 @@ def _style_line(story: dict) -> str:
     return f" Style: {st}" if st else " Photorealistic cinematic look."
 
 
+def style_lock(story: dict) -> str:
+    """영상 글 끝에 붙이는 화풍 고정 문장. 말하는 장면(LTX-2.3)과 말 없는 장면(LTX-2.5)의 영상 글이 같은 말로 첫 화면의 화풍을 지키게 한다
+    (11-20 사용자: 화풍은 대사가 나올 때나 안 나올 때나 항상 같아야 한다). 사실적이지 않은 화풍일 때만 (사진 화풍은 영상 글을 그대로 둔다)"""
+    if not story_style(story):
+        return ""
+    return "Keep exactly the look of the first frame in every frame: the same art style, the same colours and textures, never restyled."
+
+
 # 기준 목소리: 대사는 이 소리의 나이·말투·감정을 따라 하며(맥락 복제) 녹음되므로 기준 소리가 모든 대사의 연기를 정한다.
 # 11-19 메인 시험 2: 인사말로 설계한 기준 소리의 '목소리 특징만' 복제했더니 80세 푸토르가 젊은 남자 목소리로, 감정 없이 책 읽는 투로 나왔다.
 # 설계 지시문 끝에 붙인 "Natural Korean speech, clear pronunciation. Emotion: calm and friendly, relaxed." 와 인사말이 늙은 설명을 눌렀다.
@@ -1435,7 +1446,8 @@ def talk_prompt(story: dict, i: int) -> str:
             f"The person speaks to someone off-screen to the {speaker_side(story, cid)}, {sc.get('emotion') or 'natural'}; "
             "the lips and jaw move clearly with the words, natural blinking, small head movements and calm breathing. "
             f"Behind, softly out of focus: {place} Time: {b['time']} Light: {b['light']}"
-            + _style_line(story) + " The camera stays still with a very slow push in.")[:3000]
+            + _style_line(story) + (" " + style_lock(story) if style_lock(story) else "")
+            + " The camera stays still with a very slow push in.")[:3000]
 
 
 def line_tokens(line: str) -> int:

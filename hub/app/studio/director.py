@@ -1167,10 +1167,11 @@ class Director:
         return st
 
     def _scene_image_recipe(self, story: dict) -> dict | None:
-        """장면 그림 레시피. 인물 라이브러리의 인물이 나오는 대사 영상은 Qwen-Image 2512 로 그린다: 라이브러리의 그림체(반실사 회화)와 기준 그림이
-        그 모델 계열이다. 11-19 메인 시험에서 Z-Image 는 같은 그림체 글에도 광택 있는 디즈니·픽사풍 3D 로 나와, 말하는 장면(기준 그림 편집)과
-        한 영상 안에서 화풍이 바뀌었다. 레시피가 꺼져 있으면 지금까지처럼 Z-Image"""
-        if story.get("dialogue") and any(c.get("library") for c in story["bible"]["characters"]):
+        """장면 그림 레시피. 인물 라이브러리의 인물이 나오는 영상은 대사가 있든 없든 Qwen-Image 2512 로 그린다: 라이브러리의 그림체(반실사 회화)와
+        기준 그림이 그 모델 계열이다. 11-19 메인 시험에서 Z-Image 는 같은 그림체 글에도 광택 있는 디즈니·픽사풍 3D 로 나와, 말하는 장면(기준
+        그림 편집)과 한 영상 안에서 화풍이 바뀌었다. 11-20 사용자: 화풍은 대사가 나올 때나 안 나올 때나 항상 같아야 한다 → 대사 없는 긴 영상도
+        같은 레시피. 레시피가 꺼져 있으면 지금까지처럼 Z-Image"""
+        if any(c.get("library") for c in story["bible"]["characters"]):
             r = self.recipe_for("scene_image")
             if r is not None:
                 return r
@@ -1256,6 +1257,9 @@ class Director:
         final = f["prompt"] if f and f.get("changed") else r["prompt"]
         if r.get("sound") and r["sound"] not in final:
             final = f"{final}\n\n{r['sound']}"
+        lock = _video().style_lock(story)         # 말하는 장면의 영상 글과 같은 화풍 고정 문장 (11-20)
+        if lock and lock not in final:
+            final = f"{final}\n\n{lock}"
         await store.event(turn["id"], "render", {"index": i, "profile": r.get("profile"), "violations": r.get("violations"),
                                                  "rounds": r.get("rounds"), "fixed": bool(f), "left": left,
                                                  "frame_read": self.deps.frame_known(r.get("frame"))})
@@ -1548,7 +1552,8 @@ class Director:
         need = v.cast_ids(story)
         if not need:
             return True
-        img = self.recipe_for("image")
+        # 기준 그림을 새로 그릴 때(라이브러리의 기준 그림 파일이 없을 때)도 장면 그림과 같은 모델 계열로 그려 화풍이 갈리지 않게 한다
+        img = self._scene_image_recipe(story)
         if img is None:
             raise StepError("prepare_down")
         casts = dict(work.get("casts") or {})
@@ -1569,7 +1574,7 @@ class Director:
                 ctx.text = "인물 준비 중"
                 await self.emit(ctx, True)
                 pend = f"C{k}_pending"
-                swork = {"prompt": v.cast_prompt(story, cid), "size": ssz, pend: work.get(pend)}
+                swork = {"prompt": self._scene_image_prompt(img, story, v.cast_prompt(story, cid)), "size": ssz, pend: work.get(pend)}
                 main = await self._dlg_job(ctx, img, f"C{k}", pend, "인물 준비", swork, "scene", scene_phase=True)
                 if main is None:
                     return False

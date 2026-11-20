@@ -2183,6 +2183,13 @@ async def t_dialogue_video_records_voices_first_then_lip_syncs_the_talk_shots():
             assert talk["276"]["inputs"]["audio"] == work["lines"]["1"]["in_rel"] and talk["340:331"]["inputs"]["value"] == 4
             assert talk["340:330"]["inputs"]["value"] == 1280 and talk["340:324"]["inputs"]["value"] == 704
             assert "alone in the frame, no other people" in talk["340:319"]["inputs"]["value"]
+            # 11-20 사용자: 화풍은 대사가 나올 때나 안 나올 때나 같아야 한다 → 말하는 장면(LTX-2.3)과 말 없는 장면(LTX-2.5)의 영상 글이
+            # 같은 화풍 고정 문장으로 끝난다
+            lock = vid.style_lock(work["story"])
+            assert lock.startswith("Keep exactly the look of the first frame") and talk["340:319"]["inputs"]["value"].count(lock) == 1
+            slot = LTX["inject"]["prompt"]
+            wide = subs[8][1]["prompt"][slot["node"]]["inputs"][slot["input"]]
+            assert recipe_of(subs[8]) == LTX["id"] and wide.rstrip().endswith(lock) and wide.count(lock) == 1
             edit = subs[9][1]["prompt"]
             assert edit["170:151"]["inputs"]["prompt"].startswith("Keep the same person") and "41" in edit
             staged = [c[1] for c in deps.calls if c[0] == "stage_image"]
@@ -2420,6 +2427,45 @@ async def t_dialogue_reference_voice_that_runs_on_is_designed_again():
             settings.results_dir, settings.envs_dir = old
 
 
+async def t_long_video_without_dialogue_draws_library_characters_with_the_same_scene_recipe():
+    """11-20 사용자: 화풍은 대사가 나올 때나 안 나올 때나 항상 같아야 한다. 라이브러리 인물이 나오는 대사 없는 긴 영상도
+    장면 그림은 Qwen-Image 2512(그림체 앞머리 포함), 영상 글은 화풍 고정 문장으로 끝난다"""
+    from app import cast_lib
+    old = (settings.results_dir, settings.envs_dir)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = DialogueDeps(fs, settings.results_dir)
+            story = copy.deepcopy(LONG_STORY)
+            story["bible"]["style"] = cast_lib.library()[0]["style"]
+            story["bible"]["characters"][0].update(library="niki")          # 구성안 단계에서 라이브러리로 덮어쓴 모습 (cast_lib.apply_to_story)
+            deps.story = story
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            await d.pump(); await settle(d, 10)
+            assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))
+            assert await d.approve(t) == "ok"
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            rids = [recipe_of(c) for c in subs]
+            assert rids.count(SCENE["id"]) == 2 and rids.count(IMG["id"]) == 0, rids        # 이어지는 장면은 그림을 새로 안 그린다
+            scenes = [c[1]["prompt"]["238:227"]["inputs"]["text"] for c in subs if recipe_of(c) == SCENE["id"]]
+            assert all(x.startswith("Semi-realistic digital painting, 2.5D concept art") for x in scenes)
+            lock = D._video().style_lock(story)
+            slot = LTX["inject"]["prompt"]
+            vids = [c[1]["prompt"][slot["node"]]["inputs"][slot["input"]] for c in subs if recipe_of(c) == LTX["id"]]
+            assert len(vids) == 3 and all(v.rstrip().endswith(lock) for v in vids)
+            # 사진 화풍이면 영상 글을 그대로 둔다 (고정 문장 없음)
+            assert D._video().style_lock({"bible": {"style": "photorealistic cinematic live action"}}) == ""
+            assert D._video().style_lock({"bible": {"style": ""}}) == ""
+            # 라이브러리 인물이 없으면 지금까지처럼 Z-Image
+            assert D.Director(deps, dict(deps.recs))._scene_image_recipe(copy.deepcopy(LONG_STORY))["id"] == IMG["id"]
+        finally:
+            settings.results_dir, settings.envs_dir = old
+
+
 async def t_dialogue_plan_card_shows_the_library_characters_and_the_style():
     old = (settings.results_dir, settings.envs_dir)
     with tempfile.TemporaryDirectory() as root:
@@ -2455,6 +2501,10 @@ async def t_dialogue_library_missing_reference_falls_back_to_a_drawn_portrait():
             tid = str(t["id"])
             tags = [c[1]["client_id"].split(f"studio-{tid}-")[1] for c in deps.calls if c[0] == "submit"]
             assert "C11" in tags and "C01" not in tags            # 니키(A, 첫째 C0)는 기준 그림을 쓰고, 기준 그림이 없어진 푸토르(B, 둘째 C1)는 새로 그린다
+            # 새로 그리는 기준 그림도 장면 그림과 같은 Qwen-Image 2512 로, 같은 그림체 앞머리와 함께 (11-20: 화풍이 갈리지 않게)
+            portrait = next(c for c in deps.calls if c[0] == "submit" and c[1]["client_id"].endswith("C11"))
+            assert recipe_of(portrait) == SCENE["id"]
+            assert portrait[1]["prompt"]["238:227"]["inputs"]["text"].startswith("Semi-realistic digital painting, 2.5D concept art")
             miss = [e[1] for e in fs.events if e[0] == "dialogue_cast_ref_missing"]
             assert miss and miss[0]["character"] == "B" and miss[0]["ref"] == "studio/_cast/putor.png"
             assert [e[1]["library"] for e in fs.events if e[0] == "dialogue_cast"].count(True) == 1
