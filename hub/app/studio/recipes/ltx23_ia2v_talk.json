@@ -1,7 +1,7 @@
 {
  "schema": "studio-recipe-1",
  "id": "ltx23_ia2v_talk",
- "version": 1,
+ "version": 2,
  "title": "대사 소리로 입 맞춤 · LTX-2.3 IA2V (증류 LoRA)",
  "quality_label": "빠름",
  "action": "talk",
@@ -10,7 +10,7 @@
  "source": {
   "template": "video_ltx2_3_ia2v",
   "exported": "2026-11-19 메인 ComfyUI(8101) graphToPrompt",
-  "changes": "프롬프트 다듬기 노드(345 LoRA·346 TextGenerateLTX2Prompt·347 PreviewAny·348 스위치·349 켜기)를 빼고 306 글 인코더에 319 글을 바로 이음. 부정 글을 화풍과 상관없는 결함으로 바꿈. 높이 720→704(결과와 같게)",
+  "changes": "프롬프트 다듬기 노드(345 LoRA·346 TextGenerateLTX2Prompt·347 PreviewAny·348 스위치·349 켜기)를 빼고 306 글 인코더에 319 글을 바로 이음. 부정 글을 화풍과 상관없는 결함으로 바꿈. 높이 720→704(결과와 같게). 11-20: 검사 프레임(900 ImageFromBatch·901 SaveImage, 클립 가운데 한 장) 추가",
   "measured": "2026-11-19 NIKI 시범·숲길 단편: 대사 6초 샷 약 40~60초, 12초 약 90초, 17초 약 190초 (1280×704)"
  },
  "prompt": {
@@ -603,6 +603,27 @@
      0
     ]
    }
+  },
+  "900": {
+   "class_type": "ImageFromBatch",
+   "inputs": {
+    "image": [
+     "340:316",
+     0
+    ],
+    "batch_index": 60,
+    "length": 1
+   }
+  },
+  "901": {
+   "class_type": "SaveImage",
+   "inputs": {
+    "filename_prefix": "check_frame",
+    "images": [
+     "900",
+     0
+    ]
+   }
   }
  },
  "inject": {
@@ -659,8 +680,21 @@
     "input": "filename_prefix",
     "type": "prefix",
     "suffix": "talk"
+   },
+   {
+    "node": "901",
+    "input": "filename_prefix",
+    "type": "prefix",
+    "suffix": "check_frame"
    }
-  ]
+  ],
+  "check_index": {
+   "node": "900",
+   "input": "batch_index",
+   "type": "int",
+   "min": 0,
+   "max": 480
+  }
  },
  "fixed": {
   "negative": {
@@ -683,6 +717,13 @@
    "ext": [
     ".mp4",
     ".webm"
+   ]
+  },
+  "check": {
+   "node": "901",
+   "kind": "image",
+   "ext": [
+    ".png"
    ]
   }
  },
@@ -774,7 +815,9 @@
      "340:311",
      "340:312",
      "340:316",
-     "341"
+     "341",
+     "900",
+     "901"
     ]
    }
   ]

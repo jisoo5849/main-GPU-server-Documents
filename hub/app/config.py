@@ -104,6 +104,9 @@ class Settings:
     studio_cast_file = _env("STUDIO_CAST_FILE")          # 인물 라이브러리 파일 (비우면 app/cast_library.json)
     # 대사 녹음의 복제 방식: icl = 기준 소리와 그 글을 함께 줘서 말투·나이·감정까지 따른다(맥락 복제), xvector = 목소리 특징만 복제
     studio_voice_clone = (_env("STUDIO_VOICE_CLONE") or "icl").strip().lower()
+    # 긴 영상·대사 영상의 그림·클립 자동 검사 (11-20): 장면 그림·편집 그림·클립의 검사 프레임을 시각 모델로 보고 사람 수·몸의 이상·화풍이
+    # 틀리면 씨앗을 바꿔 다시 만든다 (studio/checks.py). 한 장 약 15초
+    studio_picture_check = _bool("STUDIO_PICTURE_CHECK", True)
     studio_inspect = _env("STUDIO_INSPECT", "idle")            # on | idle | off
     studio_auto_reroll = _int("STUDIO_AUTO_REROLL", 0)
     studio_progress_min_interval_ms = _int("STUDIO_PROGRESS_MIN_INTERVAL_MS", 500)

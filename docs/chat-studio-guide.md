@@ -68,6 +68,8 @@
 | `STUDIO_T2V_VIA_IMAGE` | true | 글→영상을 장면 이미지 → 영상 두 단계로 (사용자에게는 한 작업). false 면 글만으로 영상 |
 | `STUDIO_PLAN_TTL_HOURS` | 24 | 승인 없이 지나면 자동 취소 |
 | `STUDIO_INSPECT` | idle | 결과 검사: on / idle(대기열에 다른 ComfyUI 작업이 없을 때만) / off |
+| `STUDIO_PICTURE_CHECK` | true | 긴 영상·대사 영상의 그림·클립 자동 검사 (11-20): 장면 그림·편집 그림·클립 가운데 프레임을 시각 모델로 보고 사람 수·몸의 이상·화풍이 틀리면 씨앗을 바꿔 다시 만든다 (그림 최대 두 번, 클립 한 번). 한 장 약 15초 |
+| `STUDIO_VOICE_CLONE` | icl | 대사 녹음의 복제 방식: icl(기준 소리와 그 글로 말투까지 따른다) / xvector(목소리 특징만) |
 | `STUDIO_MAX_ACTIVE_PER_USER`·`STUDIO_MAX_OPEN_PER_USER` | 2 / 5 | 사용자당 동시 실행·열린 요청 |
 | `STUDIO_LLM_WAIT_SECONDS` | 3600 | LLM 차례를 이만큼 못 받으면 실패 (점검·정지 시간은 세지 않음) |
 | `TZ` | (없음) | 결과 폴더 날짜의 시간대. 한국 날짜로 하려면 `TZ=KST-9` (설계 D20, 메인에서 확인 뒤) |
