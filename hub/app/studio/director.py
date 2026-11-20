@@ -551,7 +551,9 @@ class Director:
             elif actions == RETRY_FULL and LONG_KEEP not in text and "그 장면부터" not in text:
                 text += LONG_KEEP
         if await self.finish_state(turn, "failed", error={"code": code, "detail": detail}):
-            await store.event(turn["id"], "notice", {"code": code, "text": text})
+            # 오류 문장이 로그와 기록에 남아야 원인을 찾을 수 있다 (11-20: llm_error 두 번이 문장 없이 끝나 원인을 못 찾음)
+            log.warning("스튜디오 요청 실패 %s: %s %s", str(turn.get("id"))[:8], code, str(detail or "")[:300])
+            await store.event(turn["id"], "notice", {"code": code, "text": text, "detail": str(detail or "")[:300]})
             await self.message(turn, "assistant", "notice", text, {"level": "error", "actions": actions})
 
     # ── 대기열 돌리기 (같은 대화는 한 번에 하나, 사용자당 동시 한도) ──

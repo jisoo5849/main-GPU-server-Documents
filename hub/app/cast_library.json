@@ -1,6 +1,6 @@
 {
  "version": 1,
- "note": "이야기에 이미 정해진 인물. 요청에 이름이 나오면 구성안의 설정집을 이 값으로 덮어쓰고, 기준 그림(ref)으로 말하는 얼굴을 고쳐 만들고, 승인된 기준 소리(voice_ref + 그 글 voice_ref_text)를 따라 대사를 녹음한다. 11-19 숲길 단편(니키·푸토르)에서 승인된 모습·목소리. ref·voice_ref 는 결과 폴더 안의 상대 경로다. voice_ref_text 는 소리 파일이 말하는 글과 같아야 한다(맥락 복제).",
+ "note": "이야기에 이미 정해진 인물. 요청에 이름이 나오면 구성안의 설정집을 이 값으로 덮어쓰고, 기준 그림(ref)으로 말하는 얼굴을 고쳐 만들고, 승인된 기준 소리(voice_ref + 그 글 voice_ref_text)를 따라 대사를 녹음한다. 11-19 숲길 단편(니키·푸토르)에서 승인된 모습·목소리. ref·voice_ref 는 결과 폴더 안의 상대 경로다. voice_ref_text 는 소리 파일이 말하는 글과 같아야 한다(맥락 복제). 같은 사람의 다른 모습은 variant_of(기본 인물 id)와 variant_when(그 모습을 쓸 때, 영어)을 적고, 목소리·말투·그림체는 기본 인물 것을 이어받는다(제임스: 무언가에 집중할 때만 안경).",
  "characters": [
   {
    "id": "niki",
@@ -32,6 +32,54 @@
    "voice_ref": "admin/main/2026-11-19/cast/putor_voice_00001.flac",
    "voice_ref_text": "얘야, 이 숲길이 왜 이렇게 구불구불한지 아느냐? 곧은 길은 빨리 가게 하지만, 굽은 길은 천천히 보게 해 준단다.",
    "ref": "admin/main/2026-11-19/cast/putor_00001_.png"
+  },
+  {
+   "id": "beth",
+   "names": [
+    "베스 그린",
+    "베스그린",
+    "베스",
+    "Beth Green",
+    "Beth"
+   ],
+   "look": "a calm neat woman around forty with long straight black hair parted in the middle, brown eyes, a cream blouse with a stand-up collar, a beige linen apron with a chest pocket and an amber brooch, a long dark green skirt and brown flat shoes",
+   "style": "semi-realistic digital painting, 2.5D concept art for a fantasy feature film, softly painted textures, rich warm colours",
+   "speech": "calm, warm and gentle: short soft sentences in affectionate Korean with endings like -렴, -란다, -구나, -니?, calls Niki 니키, reassures rather than lectures",
+   "voice": "A calm, gentle Korean woman in her early forties, a warm, soft, clear mid-pitched voice, steady and composed, kind and a little reserved, speaking slowly and affectionately to her child at a normal conversational volume with natural intonation and a faint smile, never breathy and never whispering.",
+   "voice_ko": "차분하고 따뜻한 엄마 목소리",
+   "ref": "admin/main/2026-11-20/cast/beth_s1_00001_.png",
+   "voice_ref": "admin/main/2026-11-20/cast/beth_voice_a_00001.flac",
+   "voice_ref_text": "니키, 오늘 아침도 잘 잤니? 따뜻한 차가 식기 전에 어서 마시렴. 엄마는 언제나 네 편이란다."
+  },
+  {
+   "id": "james",
+   "names": [
+    "제임스 그린",
+    "제임스그린",
+    "제임스",
+    "James Green",
+    "James"
+   ],
+   "look": "a tall lean man in his early forties with messy tousled brown hair, light grey-green eyes and a warm smile, a worn blue knit cardigan with metal buttons over a cream open-collar shirt, a thin silver chain, muddy brown trousers and rubber boots",
+   "style": "semi-realistic digital painting, 2.5D concept art for a fantasy feature film, softly painted textures, rich warm colours",
+   "speech": "playful, warm and a little clumsy: relaxed casual Korean to Niki with endings like -야, -지, -잖아, -볼래?, calls Niki 니키, jokes and teases lightly, laughs 하하",
+   "voice": "A warm, cheerful Korean man in his early forties, a relaxed friendly baritone with a slightly husky edge, playful and affectionate, speaking at a natural conversational pace with a smile in the voice and a little teasing humour, a bit clumsy and boyish, never shouting.",
+   "voice_ko": "다정하고 장난기 있는 아빠 목소리",
+   "ref": "admin/main/2026-11-20/cast/james_s2_00001_.png",
+   "voice_ref": "admin/main/2026-11-20/cast/james_voice_b_00001.flac",
+   "voice_ref_text": "니키, 아빠가 달걀을 구웠는데 껍데기가 조금 들어갔지 뭐야. 그래도 맛은 최고야, 한번 먹어 볼래?"
+  },
+  {
+   "id": "james_glasses",
+   "variant_of": "james",
+   "variant_when": "he is concentrating on something (reading, writing notes, studying a plant or a tool)",
+   "names": [
+    "제임스 그린(안경)",
+    "제임스 안경",
+    "James Green (glasses)"
+   ],
+   "look": "a tall lean man in his early forties with messy tousled brown hair, light grey-green eyes, round wire-rimmed glasses and a warm smile, a blue knit cardigan with metal buttons over a cream open-collar shirt, a thin silver chain, muddy brown trousers and rubber boots",
+   "ref": "admin/main/2026-11-20/cast/jamesg_s1_00001.png"
   }
  ]
 }

@@ -2586,7 +2586,7 @@ async def t_long_video_picture_check_keeps_the_best_and_tells_the_user():
             fs = FakeStore(); fs.patch()
             deps = LongDeps(fs, root)
             bad = {"people": 1, "issues": [{"type": "merged_bodies"}], "traits": []}
-            deps.inspect_seq = [bad, dict(bad), dict(bad), PASS, PASS, PASS, PASS]
+            deps.inspect_seq = [bad, dict(bad), dict(bad), PASS, PASS, dict(PASS, people=1), PASS]
             d = D.Director(deps, dict(deps.recs))
             t = long_turn(fs)
             t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
@@ -2601,11 +2601,13 @@ async def t_long_video_picture_check_keeps_the_best_and_tells_the_user():
             # 장면0 그림 셋(몸 겹침), 장면0 클립, 이어지는 장면1 클립(그림 없음), 장면2 그림·클립
             assert [(c["what"], c["index"]) for c in seen] == [("scene_image", 0)] * 3 + [("clip", 0), ("clip", 1), ("scene_image", 2), ("clip", 2)]
             # 사람 수 기준: 장면0 넓은 장면은 세지 않고, 장면2 가까운 장면(close shot)은 정확히 1명.
-            # 클립은 첫 화면 그림에서 센 수가 기준(장면0 그림은 1명으로 셌다), 이어지는 장면1·센 수를 모르는 장면2는 세지 않는다
+            # 클립의 사람 수 상한은 그림을 정확히 센 장면(가까운 장면 2)에서만 쓴다: 넓은 장면 0 은 그림에서 1명으로 읽혀도 세지 않고
+            # (행인이 한 명 지나가도 클립을 다시 만들지 않는다), 이어지는 장면 1 은 그림이 없어 세지 않는다 (11-20 재검토)
             assert [c["want"] for c in seen if c["what"] == "scene_image"] == [None, None, None, 1]
-            assert [c["want"] for c in seen if c["what"] == "clip"] == [1, None, None]
+            assert [c["want"] for c in seen if c["what"] == "clip"] == [None, None, 1]
             assert all(c["fewer_ok"] and not c["more_ok"] for c in seen if c["what"] == "clip" and c["want"] is not None)
-            assert t["work"]["scenes"][0]["first_people"] == 1 and "first_people" not in t["work"]["scenes"][1]
+            sc = t["work"]["scenes"]
+            assert sc[0].get("first_people") is None and "first_people" not in sc[1] and sc[2]["first_people"] == 1
             work = t["work"]
             assert work["check_left"] == {"0:image": ["body:merged_bodies"]}
             first = [c["file"] for c in seen if c["what"] == "scene_image" and c["index"] == 0][0]
