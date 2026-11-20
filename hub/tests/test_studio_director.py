@@ -31,6 +31,8 @@ D.POLL = 0.01
 D.LLM_POLL = 0.01
 settings.studio_progress_min_interval_ms = 0
 settings.studio_inspect = "idle"
+# 그림·클립 자동 검사(11-20)는 따로 시험한다: 켜 두면 가짜 검사 결과(사람 0명)로 모든 긴 영상 시험에서 다시 만들기가 돈다
+settings.studio_picture_check = False
 
 REC = recipes.load_all()["wan22_i2v_14b_fast"]
 LTX = recipes.load_all()["ltx25_i2v_sound"]
@@ -196,6 +198,12 @@ class FakeDeps:
 
     async def inspect(self, user, ip, username, filename, subfolder, expect):
         self.calls.append(("inspect", (username, subfolder, filename, expect)))
+        seq = getattr(self, "inspect_seq", None)
+        if seq:                       # 차례대로 돌려줄 검사 결과 (예외면 검사 실패)
+            r = seq.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
         return self.inspect_result
 
     def frame_known(self, frame): return bool(frame)
@@ -1623,6 +1631,9 @@ class LongDeps(FakeDeps):
                 outs = [{"node_id": main, "rel_path": self._file(f"{rec['action']}_{self.n}{ext}"), "media": "audio"}]
             elif rec["action"] == "talk":
                 outs = [{"node_id": main, "rel_path": self._file(f"talk_{self.n}.mp4"), "media": "videos"}]
+                chk = (rec.get("outputs") or {}).get("check")
+                if chk:              # 입 맞춤 클립의 검사 프레임 (11-20)
+                    outs.append({"node_id": chk["node"], "rel_path": self._file(f"talkcheck_{self.n}.png"), "media": "images"})
             else:
                 outs = [{"node_id": main, "rel_path": self._file(f"video_{self.n}.mp4"), "media": "videos"},
                         {"node_id": "901", "rel_path": self._file(f"check_{self.n}.png"), "media": "images"},
@@ -2464,6 +2475,246 @@ async def t_long_video_without_dialogue_draws_library_characters_with_the_same_s
             assert D.Director(deps, dict(deps.recs))._scene_image_recipe(copy.deepcopy(LONG_STORY))["id"] == IMG["id"]
         finally:
             settings.results_dir, settings.envs_dir = old
+
+
+# ── 그림·클립 자동 검사 (11-20): 사람 수·몸의 이상·화풍이 틀리면 씨앗을 바꿔 다시 만든다 ──
+PASS = {"ok": True, "anatomy_ok": True, "issues": [], "traits": [], "people": None}
+
+
+async def t_picture_check_rules():
+    from app import video
+    from app.studio import checks
+    style = "semi-realistic digital painting, 2.5D concept art"
+    assert checks.style_trait(style + ".") == "The whole picture is in this art style: " + style and checks.style_trait("") == ""
+    # 11-20 메인 실측: 푸토르가 둘로 나온 편집 그림은 사람 2명, 한 명짜리는 1명 → 한 사람 그림은 정확히 1명
+    assert checks.problems({"people": 2, "issues": [], "traits": []}, checks.ONE) == ["people:2/1"]
+    assert checks.problems({"people": 0}, checks.ONE) == ["people:0/1"] and checks.problems({"people": 1}, checks.ONE) == []
+    assert checks.problems({"people": 2}, 1) == ["people:2/1"]                # 숫자만 주면 정확히 그 수
+    body = {"people": 1, "issues": [{"type": "merged_bodies"}, {"type": "extra_fingers"}, {"type": "face"}]}
+    assert checks.problems(body, checks.ONE) == ["body:face,merged_bodies"]   # 손가락은 숨긴 손 때문에 잘못 잡히기 쉬워 보지 않는다
+    # 화풍: 검사 모델이 이유를 붙여 '아니다'라고 답했을 때만 (답을 빠뜨리면 실패로 보지 않는다), 화풍을 주지 않았으면 안 본다
+    no = {"people": 1, "traits": [{"trait": "x", "present": False, "note": "it looks like a photograph"}]}
+    assert checks.problems(no, checks.ONE, style) == ["style"] and checks.problems(no, checks.ONE, "") == []
+    assert checks.problems({"people": 1, "traits": [{"trait": "x", "present": False, "note": ""}]}, checks.ONE, style) == []
+    assert checks.problems({"people": None}, 2) == [] and checks.problems(None, 1) == [] and checks.problems({"people": True}, 1) == []
+    assert checks.problems({"people": 0}, None) == []                       # 셀 수를 모르면 사람 수는 보지 않는다
+    assert checks.describe(["people:2/1", "body:face", "style"]) == "사람 수·몸 모양·화풍" and checks.describe([]) == ""
+    assert checks.better(None, ["a"]) and checks.better(["a", "b"], ["a"]) and not checks.better(["a"], ["b"])
+    # 장면 그림 (11-20 검토): 설정집 인물만 알아서 행인·상인을 셀 수 없다. 가까운 장면만 정확히, 미디엄은 빠진·겹친 사람만, 넓은 장면은 세지 않는다
+    close, medium, wide = video.shot_rank("close-up"), video.shot_rank("medium shot"), video.shot_rank("wide shot")
+    assert (close, medium, wide) == (0, 2, 4)
+    r = checks.scene_rule(1, 0, close, False)
+    assert checks.problems({"people": 2}, r) == ["people:2/1"] and checks.problems({"people": 0}, r) == ["people:0/1"]
+    assert checks.problems({"people": 2}, checks.scene_rule(1, 0, close, True)) == []          # 장면 글에 상인·행인 말이 있으면 더 많아도 된다
+    r = checks.scene_rule(2, 0, medium, False)
+    assert checks.problems({"people": 5}, r) == [] and checks.problems({"people": 1}, r) == ["people:1/2"]
+    assert checks.problems({"people": 6}, checks.scene_rule(1, 0, wide, False)) == []           # 넓은 장면은 세지 않는다
+    assert checks.problems({"people": 0}, checks.scene_rule(1, 0, None, False)) == []           # 샷 크기를 모르면 세지 않는다
+    # 동물 인물: 사람 수와 팔다리 수는 보지 않는다 (다리 넷이 '팔다리 더함'으로 잡힌다). 겹친 몸은 본다
+    r = checks.scene_rule(1, 1, close, False)
+    dog = {"people": 2, "issues": [{"type": "extra_limb"}, {"type": "floating_limb"}, {"type": "missing_head"}]}
+    assert checks.problems(dog, r) == [] and checks.problems({"people": 1, "issues": [{"type": "merged_bodies"}]}, r) == ["body:merged_bodies"]
+    assert video.is_animal_look("a small white puppy with floppy ears") and not video.is_animal_look("a short stocky old dwarf herbalist")
+    assert not video.is_animal_look("a twelve-year-old girl with two long black braids, a wine-red hat with a cat badge")
+    # 클립: 첫 화면에서 센 사람보다 많아졌을 때만 (지어낸 사람·복제). 화면 밖으로 나간 사람은 괜찮다. 군중·모르는 수는 세지 않는다
+    r = checks.clip_rule(2, 0)
+    assert checks.problems({"people": 3}, r) == ["people:3/2"] and checks.problems({"people": 1}, r) == [] and checks.problems({"people": 2}, r) == []
+    assert checks.problems({"people": 9}, checks.clip_rule(checks.CROWD_COUNT + 1, 0)) == []
+    assert checks.problems({"people": 9}, checks.clip_rule(None, 0)) == [] and checks.problems({"people": 9}, checks.clip_rule(True, 0)) == []
+    # 입 맞춤 클립: 한 사람 그대로. 말하는 입 때문의 '뭉개진 얼굴'은 보지 않는다 (입 모양은 보지 않기로 함)
+    r = checks.clip_rule(None, 0, talk=True)
+    assert checks.problems({"people": 2}, r) == ["people:2/1"] and checks.problems({"people": 1, "issues": [{"type": "face"}]}, r) == []
+    assert checks.problems({"people": 1, "issues": [{"type": "merged_bodies"}]}, r) == ["body:merged_bodies"]
+    assert checks.problems({"people": 0, "issues": [{"type": "extra_limb"}]}, checks.clip_rule(None, 1, talk=True)) == []
+
+
+async def t_dialogue_picture_check_remakes_a_two_person_still_and_a_bad_talk_clip():
+    """11-20 메인 재시험: 기준 그림을 고친 첫 화면에 푸토르가 둘로 나왔다. 검사에서 사람 수가 틀리면 그림을, 클립 가운데 프레임의 몸이
+    겹치면 클립을 씨앗을 바꿔 다시 만든다"""
+    from app.studio import checks
+    old = (settings.results_dir, settings.envs_dir, settings.studio_picture_check)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        settings.studio_picture_check = True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = DialogueDeps(fs, settings.results_dir)
+            # 검사 차례: 장면0 그림·클립, 장면1 편집(사람 2 → 다시)·편집·입 맞춤(몸 겹침 → 다시)·입 맞춤, 장면2 편집·입 맞춤, 장면3 편집·클립
+            deps.inspect_seq = [PASS, PASS, {"people": 2, "issues": [], "traits": []}, {"people": 1, "issues": [], "traits": []},
+                                {"people": 1, "issues": [{"type": "merged_bodies"}], "traits": []}, PASS] + [PASS] * 4
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            story = library_story(settings.results_dir)
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            tid = str(t["id"])
+            tags = [c[1]["client_id"].split(f"studio-{tid}-")[1] for c in subs]
+            assert tags.count("L1e1") == 1 and tags.count("L1e2") == 1 and "L1e3" not in tags, tags      # 편집을 한 번 더
+            assert tags.count("L1v1") == 1 and tags.count("L1v2") == 1, tags                              # 입 맞춤도 한 번 더
+            assert "L2e2" not in tags and "L2v2" not in tags and "L0i2" not in tags and "L0v2" not in tags
+            insp = [c[1] for c in deps.calls if c[0] == "inspect"]
+            assert len(insp) == 10 and not deps.inspect_seq, len(insp)
+            style = D._video().story_style(story)
+            assert insp[2][3] == [checks.style_trait(style)] and insp[2][2].startswith("img_")             # 편집 그림 + 화풍 한 줄
+            assert insp[4][2].startswith("talkcheck_")                                                    # 입 맞춤 클립의 검사 프레임
+            retries = [e[1] for e in fs.events if e[0] == "picture_retry"]
+            assert [(r["what"], r["index"]) for r in retries] == [("edit", 1), ("talk_clip", 1)], retries
+            assert retries[0]["why"] == ["people:2/1"] and retries[1]["why"] == ["body:merged_bodies"]
+            # 다시 만든 그림·클립을 쓴다 (첫 번째가 아니라)
+            work = t["work"]
+            edit1 = [e[1] for e in fs.events if e[0] == "picture_check" and e[1].get("what") == "edit" and e[1]["index"] == 1]
+            assert [x["attempt"] for x in edit1] == [1, 2] and work["scenes"][1]["edit_rel"].endswith("/" + edit1[1]["file"])
+            talk1 = [e[1] for e in fs.events if e[0] == "picture_check" and e[1].get("what") == "talk_clip" and e[1]["index"] == 1]
+            assert [x["attempt"] for x in talk1] == [1, 2]
+            assert work["scenes"][1]["clip_rel"].endswith("talk_" + talk1[1]["file"].split("_")[1].split(".")[0] + ".mp4")
+            assert not work.get("check_left")                                                             # 다시 만들어서 다 통과했다
+            res = [m for m in fs.messages if m["kind"] == "result"][0]
+            assert not any("자동 검사" in n for n in res["data"]["notes"])
+        finally:
+            settings.results_dir, settings.envs_dir, settings.studio_picture_check = old
+
+
+async def t_long_video_picture_check_keeps_the_best_and_tells_the_user():
+    """세 번 만들어도 검사를 통과하지 못하면 가장 나은 그림으로 잇고 결과에 한 줄로 알린다 (멈추지 않는다)"""
+    old = (settings.results_dir, settings.studio_picture_check)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        settings.studio_picture_check = True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            bad = {"people": 1, "issues": [{"type": "merged_bodies"}], "traits": []}
+            deps.inspect_seq = [bad, dict(bad), dict(bad), PASS, PASS, PASS, PASS]
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            tid = str(t["id"])
+            tags = [c[1]["client_id"].split(f"studio-{tid}-")[1] for c in subs]
+            assert [x for x in tags if x.startswith("L0i")] == ["L0i1", "L0i2", "L0i3"], tags          # 처음 + 다시 두 번
+            assert [x for x in tags if x.startswith("L2i")] == ["L2i1"] and "L0v2" not in tags
+            seen = [e[1] for e in fs.events if e[0] == "picture_check"]
+            # 장면0 그림 셋(몸 겹침), 장면0 클립, 이어지는 장면1 클립(그림 없음), 장면2 그림·클립
+            assert [(c["what"], c["index"]) for c in seen] == [("scene_image", 0)] * 3 + [("clip", 0), ("clip", 1), ("scene_image", 2), ("clip", 2)]
+            # 사람 수 기준: 장면0 넓은 장면은 세지 않고, 장면2 가까운 장면(close shot)은 정확히 1명.
+            # 클립은 첫 화면 그림에서 센 수가 기준(장면0 그림은 1명으로 셌다), 이어지는 장면1·센 수를 모르는 장면2는 세지 않는다
+            assert [c["want"] for c in seen if c["what"] == "scene_image"] == [None, None, None, 1]
+            assert [c["want"] for c in seen if c["what"] == "clip"] == [1, None, None]
+            assert all(c["fewer_ok"] and not c["more_ok"] for c in seen if c["what"] == "clip" and c["want"] is not None)
+            assert t["work"]["scenes"][0]["first_people"] == 1 and "first_people" not in t["work"]["scenes"][1]
+            work = t["work"]
+            assert work["check_left"] == {"0:image": ["body:merged_bodies"]}
+            first = [c["file"] for c in seen if c["what"] == "scene_image" and c["index"] == 0][0]
+            assert work["scenes"][0]["image_rel"].endswith("/" + first)                                  # 모두 같으면 처음 것을 쓴다
+            res = [m for m in fs.messages if m["kind"] == "result"][0]
+            assert "장면 1: 다시 만들어도 자동 검사에서 몸 모양 문제가 남아 가장 나은 결과로 이었습니다" in res["data"]["notes"]
+            # 예상 시간에 검사 시간이 들어간다 (장면마다 두 장)
+            ctx = D.Ctx(t, {"id": 1, "username": "bob"}, {"id": 1}, LTX)
+            settings.studio_picture_check = False
+            base = await d.estimate_long(ctx, copy.deepcopy(LONG_STORY))
+            settings.studio_picture_check = True
+            more = await d.estimate_long(ctx, copy.deepcopy(LONG_STORY))
+            assert more - base == 2 * 3 * D.PICTURE_CHECK_SECONDS, (base, more)
+        finally:
+            settings.results_dir, settings.studio_picture_check = old
+
+
+async def t_picture_retry_that_fails_keeps_the_best_result():
+    """검사 때문에 다시 만든 작업이 오류로 끝나도 영상을 잃지 않는다: 앞서 만든 결과로 잇는다 (11-20 검토)"""
+    old = (settings.results_dir, settings.studio_picture_check)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        settings.studio_picture_check = True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            deps.inspect_seq = [{"people": 1, "issues": [{"type": "merged_bodies"}], "traits": []}] + [PASS] * 6
+            deps.outcome_seq = ["success", "error", "error"]       # 장면0 그림 → 검사 실패 → 다시 만든 그림이 두 번 다 오류
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            failed = [e[1] for e in fs.events if e[0] == "picture_retry_failed"]
+            assert failed == [{"what": "scene_image", "index": 0, "attempt": 2, "code": "run_error"}], failed
+            first = [e[1] for e in fs.events if e[0] == "picture_check" and e[1]["what"] == "scene_image"][0]["file"]
+            assert t["work"]["scenes"][0]["image_rel"].endswith("/" + first)
+            assert t["work"]["check_left"] == {"0:image": ["body:merged_bodies"]}
+        finally:
+            settings.results_dir, settings.studio_picture_check = old
+
+
+async def t_picture_check_notes_survive_a_retry_and_a_redo_clears_them():
+    """다시 시도는 이어받은 장면의 남은 검사 문제를 이어받는다. 장면을 다시 만들 때(_long_reset)는 그 장면의 기록을 지운다"""
+    old = (settings.results_dir, settings.studio_picture_check)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        settings.studio_picture_check = True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            bad = {"people": 1, "issues": [{"type": "merged_bodies"}], "traits": []}
+            deps.inspect_seq = [bad, dict(bad), dict(bad), PASS, PASS, PASS]
+            # 장면0 그림 셋·클립, 장면1 클립, 장면2 그림은 되고, 장면2 클립이 두 번 다 실패한다
+            deps.outcome_seq = ["success"] * 6 + ["error", "error"]
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "failed" and t["work"]["check_left"] == {"0:image": ["body:merged_bodies"]}, (t["state"], t.get("error"))
+            r = new_via(fs, "다시 시도", rec=LTX, spec={"seconds": 30.0})
+            r["request"].update(long=True, mode="rewrite", source_turn=str(t["id"]))
+            deps.inspect_seq = [PASS] * 4
+            await d.pump(); await settle(d, 20)
+            assert r["state"] == "done", (r["state"], r.get("error"))
+            assert r["work"]["check_left"] == {"0:image": ["body:merged_bodies"]}
+            res = [m for m in fs.messages if m["kind"] == "result"][-1]
+            assert "장면 1: 다시 만들어도 자동 검사에서 몸 모양 문제가 남아 가장 나은 결과로 이었습니다" in res["data"]["notes"]
+            # 장면 0 을 다시 만들면(클립이 바뀜) 그 장면과 이어지는 장면 1 의 기록을 지운다
+            ctx = D.Ctx(r, {"id": 1, "username": "bob"}, {"id": 1}, LTX)
+            ctx.long = {}
+            work = {"story": copy.deepcopy(LONG_STORY), "check_left": {"0:image": ["x"], "1:clip": ["y"], "2:clip": ["z"], "c0:portrait": ["w"]}}
+            scenes = [{"clip_rel": "a"}, {"clip_rel": "b"}, {"clip_rel": "c"}]
+            await d._long_reset(ctx, work, scenes, 0)
+            assert work["check_left"] == {"2:clip": ["z"], "c0:portrait": ["w"]}
+        finally:
+            settings.results_dir, settings.studio_picture_check = old
+
+
+async def t_picture_check_off_or_failing_never_blocks_the_film():
+    old = (settings.results_dir, settings.studio_picture_check)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            # 꺼 두면 검사하지 않는다
+            settings.studio_picture_check = False
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+            await d.pump(); await settle(d, 20)
+            assert t["state"] == "done" and not [c for c in deps.calls if c[0] == "inspect"]
+            # 검사가 실패하면(시각 모델 오류) 통과로 보고 계속한다
+            settings.studio_picture_check = True
+            fs2 = FakeStore(); fs2.patch()
+            deps2 = LongDeps(fs2, root)
+            deps2.inspect_seq = [RuntimeError("vision model down")] + [PASS] * 6
+            d2 = D.Director(deps2, dict(deps2.recs))
+            t2 = long_turn(fs2)
+            t2["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+            await d2.pump(); await settle(d2, 20)
+            assert t2["state"] == "done", (t2["state"], t2.get("error"))
+            skipped = [e[1] for e in fs2.events if e[0] == "picture_check" and e[1].get("skipped")]
+            assert len(skipped) == 1 and skipped[0]["what"] == "scene_image" and "picture_retry" not in kinds(fs2)
+            tags = [c[1]["client_id"] for c in deps2.calls if c[0] == "submit"]
+            assert not any(x.endswith("L0i2") for x in tags)
+        finally:
+            settings.results_dir, settings.studio_picture_check = old
 
 
 async def t_dialogue_plan_card_shows_the_library_characters_and_the_style():

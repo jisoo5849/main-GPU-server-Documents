@@ -2018,13 +2018,18 @@ def test_dialogue_prompts_keep_one_person_and_the_look():
     s = video.clean_dialogue_story(DLG_OK, 48)
     talk = video.talk_prompt(s, 3)
     assert "alone in the frame, no other people" in talk and "golden-ochre coat." in talk and "warm and wise" in talk
+    # 11-20: '화면 밖의 누군가에게 말한다'는 그 누군가를 그려 넣게 할 수 있다 → 화면 가장자리 쪽으로 말하고 아무도 들어오지 않는다
+    assert "someone off-screen" not in talk and "speaks toward the" in talk and "no one else ever enters the frame" in talk
     assert "Style: semi-realistic painterly" in talk and "lips and jaw move" in talk
     edit = video.cast_edit_prompt(s, 2)
-    assert edit.startswith("Keep the same person from the image exactly") and "Only this one person" in edit
+    assert edit.startswith("Keep the same person from the image exactly") and video.ONE_PERSON in edit
+    # 11-20 메인 재시험: "looking at someone off-screen" 이 그 '누군가'를 그려 넣어 푸토르가 둘이 됐다 (같은 씨앗으로 재현, 이 글로 한 명)
+    assert "someone off-screen" not in edit and "looking past the edge of the frame at nothing visible" in edit
+    assert "no copy or mirror image" in video.ONE_PERSON and "no second person" in video.ONE_PERSON
     assert "winding forest path" in edit and "about to speak" in edit
     assert "listening quietly" in video.cast_edit_prompt(s, 4)                 # 듣는 얼굴은 입을 다문다
     cast = video.cast_prompt(s, "A")
-    assert "two long black braids" in cast and "Only this one person" in cast and "hands not visible" in cast
+    assert "two long black braids" in cast and video.ONE_PERSON in cast and "hands not visible" in cast and "No text." in cast
     vi = video.voice_instruct(s, "B")
     assert vi.startswith("A kind Korean grandpa") and vi.endswith(video.VOICE_REF_EMOTION + ".") and "Emotion:" in vi
     # 11-19 메인 시험 2: 설명 끝의 "Natural Korean speech, clear pronunciation. Emotion: calm and friendly, relaxed." 가 80세 푸토르를

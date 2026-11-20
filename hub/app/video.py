@@ -1417,11 +1417,18 @@ def cast_prompt(story: dict, cid: str) -> str:
     return (f"Character reference portrait of one person: {_look(story, cid)} Head and shoulders, centered in a wide frame, "
             f"the face in three-quarter view turned toward the {side} side of the frame, a calm natural expression, mouth closed, "
             "hands not visible, a plain softly lit neutral background, soft even light, sharp detail on the face and clothing. "
-            "Only this one person, no text." + _style_line(story))
+            + ONE_PERSON + " No text." + _style_line(story))
+
+
+# 그림에 한 사람만 나오게 하는 문장 (11-20 메인 재시험: 기준 그림을 고친 첫 화면에 푸토르가 둘로 나왔다. 편집 글의
+# "looking at someone off-screen" 이 그 '누군가'를 그려 넣게 했다 — 같은 씨앗으로 재현했고 이 문장으로 바꾸자 한 명이 됐다)
+ONE_PERSON = ("The picture shows exactly one person, alone, with empty background beside the person: "
+              "no second person, no reflection, no copy or mirror image of the person.")
 
 
 def cast_edit_prompt(story: dict, i: int) -> str:
-    """기준 그림을 장면 i 의 첫 화면으로 고치는 편집 지시 (Qwen 편집). 얼굴·옷은 그대로, 구도·표정·배경만 바꾼다"""
+    """기준 그림을 장면 i 의 첫 화면으로 고치는 편집 지시 (Qwen 편집). 얼굴·옷은 그대로, 구도·표정·배경만 바꾼다.
+    바라보는 쪽은 '화면 밖의 누군가'가 아니라 화면 가장자리 너머로 쓴다 (11-20: '누군가'를 그려 넣어 사람이 둘이 됐다)"""
     sc = story["scenes"][i]
     b = story["bible"]
     cid = sc.get("speaker") if sc.get("kind") == "talk" else (sc.get("characters") or [""])[0]
@@ -1430,9 +1437,9 @@ def cast_edit_prompt(story: dict, i: int) -> str:
     mood = sc.get("emotion") or "attentive and natural"
     talking = "lips slightly parted as if about to speak" if sc.get("kind") == "talk" else "listening quietly, lips closed"
     return (f"Keep the same person from the image exactly: the same face, age, hair, clothing and colours. {sc['shot']}. "
-            f"The head is turned in three-quarter view toward the {side} side of the frame, looking at someone off-screen, "
-            f"a {mood} expression, {talking}. The background is now this place, softly out of focus: {place} "
-            f"Time: {b['time']} Light: {b['light']} The hands are not visible. Only this one person in the frame."
+            f"The head is turned in three-quarter view toward the {side} side of the frame, the eyes looking past the edge of "
+            f"the frame at nothing visible, a {mood} expression, {talking}. The background is now this place, softly out of focus: "
+            f"{place} Time: {b['time']} Light: {b['light']} The hands are not visible. {ONE_PERSON}"
             + _style_line(story))[:1990]
 
 
@@ -1443,7 +1450,8 @@ def talk_prompt(story: dict, i: int) -> str:
     cid = sc.get("speaker") or (sc.get("characters") or [""])[0]
     place = next((p["look"] for p in b["places"] if p["id"] == sc["place"]), "")
     return (f"{sc['shot']} of one person alone in the frame, no other people: {_look(story, cid)} {sc['action']} "
-            f"The person speaks to someone off-screen to the {speaker_side(story, cid)}, {sc.get('emotion') or 'natural'}; "
+            f"The person speaks toward the {speaker_side(story, cid)} edge of the frame, {sc.get('emotion') or 'natural'}, "
+            "and no one else ever enters the frame; "
             "the lips and jaw move clearly with the words, natural blinking, small head movements and calm breathing. "
             f"Behind, softly out of focus: {place} Time: {b['time']} Light: {b['light']}"
             + _style_line(story) + (" " + style_lock(story) if style_lock(story) else "")
@@ -2241,10 +2249,19 @@ def emotion_body_problems(prompt: str, said: str = "") -> list[str]:
 # 정규식으로 알 수 있는 흔한 대상(사람·동물·탈것)만 검사한다. 액체·천·불꽃·기계 같은 나머지는 지시문 규칙이 맡는다
 _ANIMAL = (r"(?:dog|puppy|cat|kitten|horse|pony|deer|stag|fox|wolf|bear|lion|tiger|leopard|cheetah|rabbit|hare|elephant|cow|sheep"
            r"|goat|bird|eagle|hawk|owl|crow|gull|duck|swan|goose|butterfly|bee|dragonfly|fish|whale|dolphin|shark|turtle|lizard"
-           r"|snake|animal)(?:s|es)?|puppies|ponies|butterflies|dragonflies")
+           r"|snake|animal|squirrel|mouse|rat|hamster|hedgehog|raccoon|otter|badger|panda|monkey|pig|chicken|hen|frog|toad|penguin"
+           r"|parrot|dragon|unicorn|bunny|lamb|donkey|creature|beast|chick|crab|octopus|seal|camel|giraffe|zebra|koala)(?:s|es)?"
+           r"|puppies|ponies|butterflies|dragonflies|mice")
 _MOVE = (r"(?:walk|trot|gallop|run|sprint|prowl|lope|bound|leap|jump|hop|soar|glide|swim|dart|crawl|slither|trudg|pad|"
          r"stride|fl(?:y|ies|ew|ying))(?:s|es|ing|ed)?|ran|flies|flying|flew")
 ANIMAL_MOVER_RE = re.compile(rf"\b(?:{_ANIMAL})\b(?:\s+[\w'’,-]+){{0,6}}?\s+(?:{_MOVE})\b", re.I)
+# 설정집 외형 글이 동물인가: 첫 몇 낱말에 동물 이름이 있다 ('a small white puppy with…'). 사람 외형 뒤쪽의 소품('a cat-shaped bag')은
+# 잡지 않는다. 그림 검사(studio/checks.py)가 동물을 사람 수에 넣지 않으려고 쓴다 (11-20 검토)
+ANIMAL_LOOK_RE = re.compile(rf"^\W*(?:[\w'’-]+\W+){{0,5}}?(?:{_ANIMAL})\b", re.I)
+
+
+def is_animal_look(look: str) -> bool:
+    return bool(ANIMAL_LOOK_RE.search(look or ""))
 _ANIMAL_BUCKETS = (
     re.compile(r"\b(?:paws?|hoofs?|hooves|legs?|wings?|fins?|claws?|talons?|feet|flippers?|forelegs?|hindlegs?)\b", re.I),
     re.compile(r"\b(?:weight|balance|momentum|thrust|pushes? off)\b", re.I),
