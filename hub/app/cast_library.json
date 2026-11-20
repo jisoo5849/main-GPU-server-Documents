@@ -1,6 +1,6 @@
 {
  "version": 1,
- "note": "이야기에 이미 정해진 인물. 요청에 이름이 나오면 구성안의 설정집을 이 값으로 덮어쓰고, 기준 그림(ref)으로 말하는 얼굴을 고쳐 만들고, 승인된 기준 소리(voice_ref + 그 글 voice_ref_text)를 따라 대사를 녹음한다. 11-19 숲길 단편(니키·푸토르)에서 승인된 모습·목소리. ref·voice_ref 는 결과 폴더 안의 상대 경로다. voice_ref_text 는 소리 파일이 말하는 글과 같아야 한다(맥락 복제). 같은 사람의 다른 모습은 variant_of(기본 인물 id)와 variant_when(그 모습을 쓸 때, 영어)을 적고, 목소리·말투·그림체는 기본 인물 것을 이어받는다(제임스: 무언가에 집중할 때만 안경).",
+ "note": "이야기에 이미 정해진 인물. 요청에 이름이 나오면 구성안의 설정집을 이 값으로 덮어쓰고, 기준 그림(ref)으로 말하는 얼굴을 고쳐 만들고, 승인된 기준 소리(voice_ref + 그 글 voice_ref_text)를 따라 대사를 녹음한다. 11-19 숲길 단편(니키·푸토르)에서 승인된 모습·목소리. ref·voice_ref 는 결과 폴더 안의 상대 경로다. voice_ref_text 는 소리 파일이 말하는 글과 같아야 한다(맥락 복제). 같은 사람의 다른 모습은 variant_of(기본 인물 id)와 variant_when(그 모습을 쓸 때, 영어)을 적고, 목소리·말투·그림체는 기본 인물 것을 이어받는다(제임스: 무언가에 집중할 때만 안경). refs 는 화풍 열쇠(photo·semi·anime)별 기준 그림이고 없으면 그 화풍으로 바꿔 만든다(ref 는 예전 2.5D 기준 그림이라 그대로 둔다). signature 는 그 인물을 알아보게 하는 소품·머리·옷 짧은 영어 명사구다(끝 프레임·화풍 검사용).",
  "characters": [
   {
    "id": "niki",
@@ -15,7 +15,15 @@
    "voice_ko": "맑고 자연스러운 열두 살 여자아이 목소리",
    "voice_ref": "admin/main/2026-11-19/cast/niki_voice_00001.flac",
    "voice_ref_text": "안녕하세요, 저는 니키예요. 오늘은 할아버지랑 숲길을 걷고 있어요.",
-   "ref": "admin/main/2026-11-19/cast/niki_00001_.png"
+   "ref": "admin/main/2026-11-19/cast/niki_00001_.png",
+   "refs": {
+    "semi": "admin/main/2026-11-20/chaintest/S1_niki_semi_00001_.png"
+   },
+   "signature": [
+    "wine-red round-brimmed hat",
+    "two long black braids",
+    "wine-red cape with embroidered flowers"
+   ]
   },
   {
    "id": "putor",
@@ -31,7 +39,16 @@
    "voice_fx": "bass",
    "voice_ref": "admin/main/2026-11-19/cast/putor_voice_00001.flac",
    "voice_ref_text": "얘야, 이 숲길이 왜 이렇게 구불구불한지 아느냐? 곧은 길은 빨리 가게 하지만, 굽은 길은 천천히 보게 해 준단다.",
-   "ref": "admin/main/2026-11-19/cast/putor_00001_.png"
+   "ref": "admin/main/2026-11-19/cast/putor_00001_.png",
+   "refs": {
+    "semi": "admin/main/2026-11-20/chaintest/S2_putor_semi_00001_.png"
+   },
+   "signature": [
+    "wild white hair",
+    "long white beard",
+    "small round glasses",
+    "golden-ochre coat with a green herb badge"
+   ]
   },
   {
    "id": "beth",
@@ -49,7 +66,15 @@
    "voice_ko": "차분하고 따뜻한 엄마 목소리",
    "ref": "admin/main/2026-11-20/cast/beth_s1_00001_.png",
    "voice_ref": "admin/main/2026-11-20/cast/beth_voice_a_00001.flac",
-   "voice_ref_text": "니키, 오늘 아침도 잘 잤니? 따뜻한 차가 식기 전에 어서 마시렴. 엄마는 언제나 네 편이란다."
+   "voice_ref_text": "니키, 오늘 아침도 잘 잤니? 따뜻한 차가 식기 전에 어서 마시렴. 엄마는 언제나 네 편이란다.",
+   "refs": {
+    "semi": "admin/main/2026-11-20/cast/beth_s1_00001_.png"
+   },
+   "signature": [
+    "long straight black hair parted in the middle",
+    "cream blouse with a stand-up collar",
+    "beige linen apron with an amber brooch"
+   ]
   },
   {
    "id": "james",
@@ -67,7 +92,15 @@
    "voice_ko": "다정하고 장난기 있는 아빠 목소리",
    "ref": "admin/main/2026-11-20/cast/james_s2_00001_.png",
    "voice_ref": "admin/main/2026-11-20/cast/james_voice_b_00001.flac",
-   "voice_ref_text": "니키, 아빠가 달걀을 구웠는데 껍데기가 조금 들어갔지 뭐야. 그래도 맛은 최고야, 한번 먹어 볼래?"
+   "voice_ref_text": "니키, 아빠가 달걀을 구웠는데 껍데기가 조금 들어갔지 뭐야. 그래도 맛은 최고야, 한번 먹어 볼래?",
+   "refs": {
+    "semi": "admin/main/2026-11-20/cast/james_s2_00001_.png"
+   },
+   "signature": [
+    "messy tousled brown hair",
+    "blue knit cardigan with metal buttons",
+    "muddy rubber boots"
+   ]
   },
   {
    "id": "james_glasses",
@@ -79,7 +112,15 @@
     "James Green (glasses)"
    ],
    "look": "a tall lean man in his early forties with messy tousled brown hair, light grey-green eyes, round wire-rimmed glasses and a warm smile, a blue knit cardigan with metal buttons over a cream open-collar shirt, a thin silver chain, muddy brown trousers and rubber boots",
-   "ref": "admin/main/2026-11-20/cast/jamesg_s1_00001.png"
+   "ref": "admin/main/2026-11-20/cast/jamesg_s1_00001.png",
+   "refs": {
+    "semi": "admin/main/2026-11-20/cast/jamesg_s1_00001.png"
+   },
+   "signature": [
+    "messy tousled brown hair",
+    "round wire-rimmed glasses",
+    "blue knit cardigan with metal buttons"
+   ]
   }
  ]
 }

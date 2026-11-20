@@ -75,7 +75,9 @@ LONG_RESUME_MAX = 5            # 허브가 다시 시작될 때 긴 영상을 �
 DISSOLVE_SECONDS = 0.6     # 이어 만든 장면 사이의 디졸브 길이(초) [추정 값, 메인 시험 전]
 LONG_SCENE_KEYS = ("plan", "scene_prompt", "image_rel", "first_from", "prompt", "ko", "profile", "settings", "frame_known",
                    "frame_people", "no_chain", "clip_rel", "clip_sha", "last_rel", "check_rel", "seed", "seconds", "violations",
-                   "edit_rel", "first_people")
+                   "edit_rel", "first_people", "seam", "chain_rel", "end_rel", "end_att", "end_fail")
+# 장면 잇기 (11-20, docs/scene-chaining-design.md)
+CHAIN_EDIT_SECONDS = 17       # 고쳐 잇기·끝 키프레임 편집 한 장(그림 2~3장) 실행 시간(초). 11-20 메인 실측 12~17초
 # 대사 영상 (11-19, docs/short-film-dialogue-design.md 12절)
 TALK_TAIL = 0.9            # 말하는 장면은 대사 끝 + 이만큼에서 자른다 (11-19 숲길: 대사가 끝난 뒤 IA2V 화면이 어두워짐)
 TALK_MIN_SHOT = 3.0
@@ -291,9 +293,13 @@ class RealDeps:
         from .. import video
         return await video.storyboard(user, ip, env["username"], env["slug"], kw.pop("text"), **kw)
 
-    def assemble(self, clips, music, out, sound=True, transitions=None):
-        """장면 클립 + 음악 합치기 (ffmpeg, 스레드에서 부른다)"""
-        return assemble.run(clips, music, out, sound, transitions)
+    def assemble(self, clips, music, out, sound=True, transitions=None, seams=None):
+        """장면 클립 + 음악 합치기 (ffmpeg, 스레드에서 부른다). seams = 이음 종류 목록(continue·cut·jump·refresh, 장면 잇기)"""
+        return assemble.run(clips, music, out, sound, transitions, seams=seams)
+
+    def last_frame(self, clip, out):
+        """클립의 마지막 프레임을 PNG 로 뽑는다 (ffmpeg, 스레드에서). 잇는 프레임 파일이 없어졌을 때 다시 뽑는다"""
+        return assemble.last_frame(clip, out)
 
     def trim_voice(self, src, out, fx=None, level=False, max_seconds=None):
         """녹음한 대사의 앞뒤 무음을 잘라 입력 폴더에 WAV 로 (ffmpeg, 스레드에서). fx 는 목소리 후처리 이름, level 이면 소리 크기를
@@ -304,9 +310,9 @@ class RealDeps:
         """투명 PNG 자막 (Pillow, 스레드에서). 글꼴이 없으면 None"""
         return assemble.render_subtitle(text, (int(size[0]), int(size[1])), out)
 
-    def assemble_dialogue(self, clips, lines, music, out, trims=None):
+    def assemble_dialogue(self, clips, lines, music, out, trims=None, seams=None):
         """대사 영상 합치기: 디졸브 + 대사 소리 + 자막 + 음악 (ffmpeg, 스레드에서)"""
-        return assemble.run_dialogue(clips, lines, music, out, trims=trims)
+        return assemble.run_dialogue(clips, lines, music, out, trims=trims, seams=seams)
 
     async def inspect(self, user, ip, username, filename, subfolder, expect):
         from .. import promptx
@@ -861,11 +867,21 @@ class Director:
             return
         scenes = [dict(s or {}) for s in (work.get("scenes") or [])][:n]
         scenes += [{} for _ in range(n - len(scenes))]
+        # 장면 잇기 방식(모든 장면의 첫 화면을 앞 장면 마지막 프레임에서 만든다)은 승인 뒤 한 번 정해 저장한다: 이어 하기가 같은 방식을 잇는다.
+        # 정한 뒤 편집 레시피가 꺼지면 예전 방식(글로 새 그림)으로 조용히 내려가지 않고 멈춘다 (R1·R2를 못 지키므로)
+        if "chain" not in work:
+            work["chain"] = self._chain_ready(ctx, story)
+            await store.merge_work(turn["id"], {"chain": work["chain"]})
+        if work.get("chain") and not self._chain_ready(ctx, story):
+            raise StepError("unavailable", "장면 잇기 편집 레시피가 꺼져 있습니다")
         if dialogue and story.get("dialogue"):
             # 목소리를 먼저: 인물마다 목소리 하나 → 그 목소리로 모든 대사 → 장면 길이를 녹음에 맞춤 → 인물 기준 그림
             if not await self._dlg_voices(ctx, work) or not await self._dlg_casts(ctx, work):
                 return           # 취소됐다
             story = work["story"]
+        elif work.get("chain"):
+            if not await self._dlg_casts(ctx, work):      # 대사 없는 긴 영상도 인물마다 고정 기준 그림 (얼굴 닻)
+                return
         ctx.long.update(phase="scenes", done=sum(1 for s in scenes if s.get("clip_rel")))
         for i in range(n):
             s = scenes[i]
@@ -875,7 +891,9 @@ class Director:
                 if ok:
                     continue
                 await self._long_reset(ctx, work, scenes, i)
-            if dialogue and story.get("dialogue") and _video().cast_scene(story, i):
+            if work.get("chain"):
+                st = await self._chain_scene(ctx, work, scenes, i)
+            elif dialogue and story.get("dialogue") and _video().cast_scene(story, i):
                 st = await self._dlg_scene(ctx, work, scenes, i)
             else:
                 st = await self._long_scene(ctx, work, scenes, i)
@@ -898,18 +916,22 @@ class Director:
         재시작해도 옛 클립이 되살아나지 않게 바로 저장한다"""
         story = work["story"]
         idx = [i]
-        while idx[-1] + 1 < len(scenes) and story["scenes"][idx[-1] + 1].get("continues"):
-            idx.append(idx[-1] + 1)
+        if work.get("chain"):
+            idx = list(range(i, len(scenes)))     # 모든 장면이 앞 장면 끝에서 시작하므로 뒤 장면도 첫 화면이 달라진다
+        else:
+            while idx[-1] + 1 < len(scenes) and story["scenes"][idx[-1] + 1].get("continues"):
+                idx.append(idx[-1] + 1)
         patch = {}
         left = dict(work.get("check_left") or {})
         for k in idx:
             if scenes[k].get("clip_rel") or scenes[k].get("first_att"):
                 await store.event(ctx.turn["id"], "long_scene_redo", {"index": k, "chained": k != i})
-            scenes[k] = {key: v for key, v in scenes[k].items() if key in ("plan", "scene_prompt")}
-            for key in (f"L{k}i_pending", f"L{k}v_pending"):
+            keep = ("plan", "scene_prompt") if (k == i or not work.get("chain")) else ()    # 뒤 장면의 계획표는 옛 첫 화면을 보고 쓴 것
+            scenes[k] = {key: v for key, v in scenes[k].items() if key in keep}
+            for key in (f"L{k}i_pending", f"L{k}e_pending", f"L{k}v_pending"):
                 if work.get(key):
                     work[key] = patch[key] = {"client_id": None, "attempt": int((work[key] or {}).get("attempt") or 0)}
-            for key in (f"{k}:image", f"{k}:clip"):          # 다시 만드는 장면의 남은 검사 문제는 이제 그 영상에 없다
+            for key in (f"{k}:image", f"{k}:clip", f"{k}:end"):          # 다시 만드는 장면의 남은 검사 문제는 이제 그 영상에 없다
                 left.pop(key, None)
         if left != (work.get("check_left") or {}):
             work["check_left"] = patch["check_left"] = left
@@ -940,9 +962,13 @@ class Director:
                     break
                 if s.get("last_rel") and not files.result_path(s["last_rel"]):
                     s = {k: v for k, v in s.items() if k != "last_rel"}
+                if s.get("chain_rel") and not files.result_path(s["chain_rel"]):
+                    s = {k: v for k, v in s.items() if k != "chain_rel"}       # 장면 잇기가 클립에서 다시 뽑는다
                 scenes.append({k: s[k] for k in LONG_SCENE_KEYS if k in s})
             kept = len(scenes)
             patch["scenes"] = scenes
+            if sw.get("chain") is not None:
+                patch["chain"] = sw["chain"]            # 같은 방식으로 이어 간다 (바뀌기 전에 시작한 요청은 옛 방식으로 끝난다)
             if sw.get("music_rel") and files.result_path(sw["music_rel"]):
                 patch["music_rel"] = sw["music_rel"]
             for k in ("voices", "lines", "casts"):        # 대사 영상: 녹음한 목소리·대사와 인물 기준 그림 (파일은 쓸 때 다시 확인한다)
@@ -1020,7 +1046,17 @@ class Director:
             tts = float(((self.recipe_for("voice_clone") or {}).get("estimate") or {}).get("gpu_seconds") or 120)
             parts = len(v.speakers_of(story)) + sum(1 for sc in story["scenes"] if sc.get("line_ko"))
             total += parts * (tts + DIALOGUE_PART_OVERHEAD) + len(v.cast_ids(story)) * (DIALOGUE_CAST_SECONDS + DIALOGUE_PART_OVERHEAD)
-        if settings.studio_picture_check:    # 장면마다 그림 한 장 + 클립 검사 프레임 한 장 (다시 만들면 더 걸린다)
+        if self._chain_ready(ctx, story):
+            # 장면 잇기 (11-20): 장면마다 첫 화면 편집 한 장 + 끝 키프레임 편집 한 장(사람이 나오는 장면) + 검사 3번(첫 화면·끝 키프레임·끝 프레임).
+            # 장면 그림(첫 장면 말고)은 없어진다. 인물마다 고정 기준 그림 한 장
+            v = _video()
+            n = len(story["scenes"])
+            ppl = sum(1 for k in range(n) if v.scene_people(story, k))
+            total += n * (CHAIN_EDIT_SECONDS + DIALOGUE_PART_OVERHEAD) + ppl * (CHAIN_EDIT_SECONDS + DIALOGUE_PART_OVERHEAD)
+            total += (n + 2 * ppl) * PICTURE_CHECK_SECONDS
+            if not dlg:
+                total += len(v.anchor_ids(story)) * (DIALOGUE_CAST_SECONDS + DIALOGUE_PART_OVERHEAD + PICTURE_CHECK_SECONDS)
+        elif settings.studio_picture_check:    # 장면마다 그림 한 장 + 클립 검사 프레임 한 장 (다시 만들면 더 걸린다)
             total += 2 * len(story["scenes"]) * PICTURE_CHECK_SECONDS
         try:
             med = await self.deps.medians() or {}
@@ -1036,7 +1072,8 @@ class Director:
         turn, recipe, story = ctx.turn, ctx.recipe, work["story"]
         plan = {"action": "long", "title": story.get("title_ko") or "", "logline": story.get("logline_ko") or "",
                 "seconds": story.get("seconds"), "label": intent.long_label(story.get("seconds")),
-                "scenes": [{"seconds": s["seconds"], "ko": s["ko"], "continues": bool(s.get("continues"))} for s in story["scenes"]],
+                "scenes": [{"seconds": s["seconds"], "ko": s["ko"], "continues": bool(s.get("continues")),
+                            "seam": _video().scene_seam(story, k)} for k, s in enumerate(story["scenes"])],
                 "music": (story.get("music") or {}).get("ko") or "", "size": work.get("long_size"),
                 "fps": recipe["defaults"].get("fps"), "quality": recipe.get("quality_label"),
                 "estimate_s": await self.estimate_long(ctx, story), "recipe_version": recipe["version"],
@@ -1174,8 +1211,16 @@ class Director:
                 await store.event(turn["id"], "long_chain_empty", {"index": i})
                 st = {"no_chain": True}
                 await self._save_scene(ctx, work, scenes, i, st)
+                if work.get("chain"):      # 장면 잇기: 글로 새 그림을 그리지 않고 인물 기준 그림을 넣어 고쳐 잇는다
+                    st = await self._chain_first_frame(ctx, work, scenes, i, st)
+                    if st is None:
+                        return None
                 return await self._long_scene(ctx, work, scenes, i)
             await self._save_scene(ctx, work, scenes, i, st)
+        # 3.5) 장면 잇기: 끝 키프레임 (사람이 나오는 장면, 영상이 이 그림으로 끝나게)
+        if work.get("chain") and not st.get("end_att"):
+            if await self._end_keyframe(ctx, work, scenes, i, st) is None:
+                return None
         # 4) 장면 영상 (실패하면 시드를 바꿔 한 번 더)
         got = await self._long_video(ctx, work, i, st)
         if got is None:
@@ -1209,7 +1254,7 @@ class Director:
 
     # ── 그림·클립 자동 검사 (11-20): 사람 수·몸의 이상·화풍이 틀리면 씨앗을 바꿔 다시 만든다 (studio/checks.py) ──
     async def _picture_check(self, ctx: Ctx, rel: str | None, rule, style: str, what: str, index: int,
-                             attempt: int) -> tuple[list[str], int | None]:
+                             attempt: int, extra: list[str] | None = None) -> tuple[list[str], int | None]:
         """그림 한 장(장면 그림·편집 그림·인물 기준 그림·클립의 검사 프레임)을 시각 모델로 검사해 (다시 만들 까닭, 센 사람 수)를 돌려준다.
         rule 은 checks.rule() 기준(또는 정확히 맞아야 하는 사람 수, None 이면 세지 않음).
         11-20 메인 재시험: 기준 그림을 편집한 첫 화면에 푸토르가 둘로 나왔고, 시각 모델은 그 그림을 사람 2명으로 셌다.
@@ -1218,13 +1263,14 @@ class Director:
             return [], None
         owner, sub, name = files.split_rel(rel)
         trait = checks.style_trait(style)
+        expect = ([trait] if trait else []) + [x for x in (extra or []) if x]      # extra: 화풍을 가려내는 부정 문장 등 (장면 잇기)
         ip = str(ctx.turn.get("client_ip") or "")
         ctx.text = "그림 검사 중"
         await self.emit(ctx, True)
         try:
             with self.deps.llm_context() as bag:
                 ctx.bag = bag
-                insp = await self._guard_llm(ctx, self.deps.inspect(ctx.user, ip, owner, name, sub, [trait] if trait else None))
+                insp = await self._guard_llm(ctx, self.deps.inspect(ctx.user, ip, owner, name, sub, expect or None))
                 for e in bag:
                     await store.link_job(ctx.tid, e["job_id"], "inspect", e["purpose"])
         except StepError as e:
@@ -1232,7 +1278,7 @@ class Director:
                                                                 "skipped": e.code, "detail": str(e.detail or "")[:200]})
             return [], None
         r = rule if isinstance(rule, dict) else checks.rule(rule)
-        why = checks.problems(insp, r, style)
+        why = checks.problems(insp, r, style or ("style" if expect else ""))
         seen = (insp or {}).get("people")
         seen = seen if isinstance(seen, int) and not isinstance(seen, bool) else None
         await store.event(ctx.turn["id"], "picture_check", {
@@ -1418,14 +1464,20 @@ class Director:
         recipe = ctx.recipe
         story = work["story"]
         sc = story["scenes"][i]
+        chain = bool(work.get("chain"))
+        xrec = self._end_recipe(ctx) if (chain and st.get("end_att")) else None       # 끝 키프레임이 있으면 그 가이드가 붙은 레시피
+        if xrec is not None:
+            recipe = xrec
         fps = int(recipe["defaults"].get("fps") or 24)
         frames = int((st.get("settings") or {}).get("frames") or (int(sc["seconds"]) * fps + 1))
         pend = f"L{i}v_pending"
         swork = {"prompt": st["prompt"], "scene_att": st["first_att"], "settings": {"frames": frames},
                  "size": list(work["long_size"]), pend: work.get(pend)}
+        if xrec is not None:
+            swork["end_att"] = st["end_att"]
         # 클립 가운데 프레임(검사 프레임)을 검사한다: 영상 모델이 사람을 지어내거나 몸이 겹치거나 화풍이 바뀌면 시드를 바꿔 한 번 더.
         # 사람 수는 첫 화면에서 센 수(장면 그림 검사, 없으면 영상 글을 쓸 때 읽은 첫 화면)보다 많아졌을 때만 본다: 새 시드로는
-        # 첫 화면에 있는 사람 수를 바꿀 수 없다 (11-20 검토)
+        # 첫 화면에 있는 사람 수를 바꿀 수 없다 (11-20 검토). 장면 잇기는 거기에 끝 프레임에 인물이 있는지도 본다 (R2)
         _humans, animals = self._scene_cast(story, i)
         base = st.get("first_people") if isinstance(st.get("first_people"), int) else None
         rule = checks.clip_rule(base, animals)
@@ -1444,6 +1496,8 @@ class Director:
                 return None
             work[pend] = swork.get(pend)
             why, _seen = await self._picture_check(ctx, got.get("check_rel"), rule, style, "clip", i, check)
+            if chain:
+                why = why + await self._end_check(ctx, got.get("last_rel"), story, i, "end_frame", check)
             if checks.better(best_why, why):
                 best, best_why = got, why
             if not why:
@@ -1451,7 +1505,20 @@ class Director:
             if check < CLIP_TRIES:
                 await store.event(ctx.turn["id"], "picture_retry", {"what": "clip", "index": i, "attempt": check, "why": why})
         await self._check_left(ctx, work, f"{i}:clip", best_why)
-        return {**best, "seconds": sc["seconds"]}
+        out = {**best, "seconds": sc["seconds"]}
+        if chain:
+            out.update(self._chain_source(st, out, best_why))
+        return out
+
+    @staticmethod
+    def _chain_source(st: dict, out: dict, why: list[str]) -> dict:
+        """다음 장면이 잇는 프레임. 끝 프레임이 인물 검사를 통과하면 끝 키프레임(깨끗한 그림, 있으면)이나 끝 프레임, 통과하지 못하면 검사를
+        통과한 끝 키프레임이나 첫 화면을 쓰고 end_fail 로 적는다: 다음 이음은 그대로 잇지 않고 고쳐 잇는다 (R1·R2를 함께 지킨다)"""
+        failed = any(w.startswith("end:") and w != "end:unchecked" for w in why)
+        first = st.get("edit_rel") or st.get("image_rel")
+        if not failed:
+            return {"chain_rel": st.get("end_rel") or out.get("last_rel"), "end_fail": False}
+        return {"chain_rel": st.get("end_rel") or first or out.get("last_rel"), "end_fail": True}
 
     async def _long_music(self, ctx: Ctx, work: dict):
         """배경음악 한 곡 (rel). 레시피가 없거나 실패하면 None (음악 없이 합친다), 취소면 False"""
@@ -1499,8 +1566,11 @@ class Director:
         try:
             # 앞 클립의 마지막 프레임에서 이어 만든 장면과의 이음새는 짧은 디졸브로 움직임 끊김을 가리고,
             # 장면이 바뀌는 이음새는 일부러 컷으로 보이게 둔다 (11-18 3분 실측: 10초마다 끊김)
-            seams = [DISSOLVE_SECONDS if (scenes[i + 1].get("first_from") == "last") else 0.0 for i in range(len(scenes) - 1)]
-            info = await asyncio.to_thread(self.deps.assemble, clips, music_abs, out_abs, True, seams)
+            if work.get("chain"):      # 이음 종류별: 이어짐·장소 바뀜·다시 그림은 디졸브, 같은 장소의 새 샷은 하드 컷 (사용자 11-20)
+                info = await asyncio.to_thread(self.deps.assemble, clips, music_abs, out_abs, True, None, _video().scene_seams(story))
+            else:
+                seams = [DISSOLVE_SECONDS if (scenes[i + 1].get("first_from") == "last") else 0.0 for i in range(len(scenes) - 1)]
+                info = await asyncio.to_thread(self.deps.assemble, clips, music_abs, out_abs, True, seams)
         except assemble.AssembleError as e:
             await store.event(turn["id"], "error", {"where": "assemble", "detail": str(e)[:500]})
             raise StepError("assemble", str(e)[:300]) from None
@@ -1709,14 +1779,219 @@ class Director:
         L["vdone"] = len(speakers) + len(idx)
         return True
 
+    # ── 장면 잇기 (11-20, docs/scene-chaining-design.md): 모든 장면의 첫 화면은 앞 장면 마지막 프레임을 고쳐 만든다 ──
+    # 앞 프레임은 구도·빛·장소를 잇고, 얼굴·머리·옷은 늘 그 인물의 고정 기준 그림에서 가져온다 (일관성이 가장 중요하다, 11-20 사용자)
+    def _chain_ready(self, ctx: Ctx, story: dict) -> bool:
+        """장면 잇기 방식으로 만들 수 있는가: 설정이 켜져 있고 그림 여러 장 편집 레시피가 켜져 있다. 아니면 예전 방식(장면 그림)"""
+        return bool(settings.studio_chain and self.recipe_for("edit_ref") is not None)
+
+    def _end_recipe(self, ctx: Ctx) -> dict | None:
+        """끝 키프레임 가이드가 붙은 영상 레시피 (지금 영상 레시피와 같은 화질). 없으면 끝 그림 없이 만든다"""
+        return self.recipe_for("i2v_end", recipes.quality_of(ctx.recipe), sound=True)
+
+    @staticmethod
+    def _cast_ref(c: dict, key: str) -> tuple[str | None, str | None]:
+        """설정집 인물의 기준 그림 (그림, 바꿔 만들 원본). 그 화풍의 그림이 있으면 그것, 없고 반실사 그림이 있으면 그것을 그 화풍으로
+        바꾼다. 둘 다 없으면 예전 기준 그림(refs 가 없는 라이브러리)"""
+        refs = c.get("refs") if isinstance(c.get("refs"), dict) else {}
+        if refs.get(key):
+            return refs[key], None
+        if key != "semi" and refs.get("semi"):
+            return None, refs["semi"]
+        return c.get("ref"), None
+
+    async def _style_convert(self, ctx: Ctx, work: dict, k: int, cid: str, src_rel: str, key: str):
+        """인물 기준 그림을 영화 화풍(애니·실사 등)으로 바꾼다 (편집 한 장 8초). 돌아오는 값: 그림 rel, 편집 레시피가 없으면 None, 취소면 False"""
+        erec = self.recipe_for("edit")
+        if erec is None:
+            return None
+        v = _video()
+        att = await self.deps.stage_image(ctx.env, ctx.user, ctx.turn, src_rel)
+        pend = f"C{k}s_pending"
+        swork = {"prompt": v.style_convert_prompt(key, v._who(work["story"], cid)), "scene_att": att["id"], pend: work.get(pend)}
+        main = await self._dlg_still(ctx, work, erec, f"C{k}s", pend, "인물 준비", swork, "portrait", k, f"c{k}:portrait", cid)
+        if main is None:
+            return False
+        await store.event(ctx.turn["id"], "cast_style_convert", {"character": cid, "style": key, "rel": main["rel_path"]})
+        return main["rel_path"]
+
+    async def _chain_scene(self, ctx: Ctx, work: dict, scenes: list, i: int) -> dict | None:
+        """장면 하나: 첫 화면을 앞 장면 끝에서 만들고(_chain_first_frame), 그 뒤는 말하는 장면(입 맞춤)과 그 밖의 장면(긴 영상 길)이 나눈다"""
+        story = work["story"]
+        sc = story["scenes"][i]
+        st = dict(scenes[i] or {})
+        if not st.get("first_att"):
+            ctx.long.update(phase="scenes", i=i)
+            st = await self._chain_first_frame(ctx, work, scenes, i, st)
+            if st is None:
+                return None
+        if story.get("dialogue") and sc.get("kind") == "talk":
+            return await self._dlg_scene(ctx, work, scenes, i)
+        return await self._long_scene(ctx, work, scenes, i)
+
+    async def _chain_restore(self, ctx: Ctx, work: dict, scenes: list, k: int) -> str:
+        """장면 k 의 잇는 프레임 파일이 없어졌다: 클립에서 마지막 프레임을 다시 뽑는다 (새 장면 그림으로 내려가지 않는다)"""
+        s = scenes[k]
+        clip = files.result_path(s.get("clip_rel") or "")
+        if clip is None:
+            raise StepError("gone", f"장면 {k + 1} 클립이 없습니다")
+        out_rel = f"{os.path.dirname(s['clip_rel'])}/chain_{k + 1:02d}.png"
+        out_abs = os.path.join(os.path.realpath(settings.results_dir), out_rel)
+        try:
+            await asyncio.to_thread(self.deps.last_frame, clip, out_abs)
+        except assemble.AssembleError as e:
+            raise StepError("gone", f"장면 {k + 1} 의 마지막 프레임을 뽑지 못했습니다: {str(e)[:200]}") from None
+        s["last_rel"] = s["chain_rel"] = out_rel
+        await self._save_scene(ctx, work, scenes, k, s)
+        return out_rel
+
+    async def _chain_first_frame(self, ctx: Ctx, work: dict, scenes: list, i: int, st: dict) -> dict | None:
+        """장면 i 의 첫 화면. 이어지는 장면(continue)은 앞 클립의 마지막 프레임 그대로, 그 밖에는 앞 프레임(그림 1)을 이 장면으로 고친다:
+        그림 2·3 = 이 장면 인물의 고정 기준 그림(언제나 넣는다). 첫 장면은 기준 그림 2~3장에서 구성한다. 인물이 없는 첫 장면은 예전처럼 장면 그림.
+        st 를 돌려준다(취소면 None). 첫 장면 그림을 장면 그림으로 만들 때는 first_att 를 비워 둔다"""
+        turn, story = ctx.turn, work["story"]
+        v = _video()
+        sc = story["scenes"][i]
+        seam = v.scene_seam(story, i)
+        prev = scenes[i - 1] if i > 0 else {}
+        st["seam"] = seam
+        casts = work.get("casts") or {}
+        have = [cid for cid, c in casts.items() if c.get("att")]
+        people = v.scene_people(story, i)
+        ref_ids = v.pick_refs(story, i, have, limit=3 if i == 0 else 2)
+        await store.event(turn["id"], "long_scene_start", {"index": i, "seconds": sc["seconds"], "chain": seam, "refs": ref_ids,
+                                                           "cast": ref_ids[0] if ref_ids else None, "talk": sc.get("kind") == "talk"})
+        # 끝 프레임이 인물 검사를 통과하지 못했거나(end_fail) 빈 프레임을 이어 받았던 장면은 그대로 잇지 않고 고쳐 잇는다
+        keep = (i > 0 and seam == v.SEAM_CONTINUE and prev.get("last_rel") and not prev.get("end_fail") and not st.get("no_chain")
+                and bool(files.result_path(prev["last_rel"])))
+        if keep:
+            att = await self.deps.stage_image(ctx.env, ctx.user, turn, prev["last_rel"])
+            st.update(first_att=att["id"], first_from="last")
+            await self._save_scene(ctx, work, scenes, i, st)
+            return st
+        erec = self.recipe_for("edit_ref")
+        if erec is None:
+            raise StepError("unavailable", "장면 잇기 편집 레시피가 꺼져 있습니다")
+        if i == 0:
+            if not (people and ref_ids):
+                return st             # 인물 기준 그림이 없는 첫 장면(풍경 등): 장면 그림으로 만든다 (_long_scene)
+            image1, refs = casts[ref_ids[0]]["att"], [casts[c]["att"] for c in ref_ids[1:]]
+            prompt, what = v.compose_prompt(story, 0, ref_ids), "compose"
+        else:
+            src = prev.get("chain_rel") or prev.get("last_rel")
+            if not (src and files.result_path(src)):
+                src = await self._chain_restore(ctx, work, scenes, i - 1)
+            att1 = await self.deps.stage_image(ctx.env, ctx.user, turn, src)
+            image1, refs = att1["id"], [casts[c]["att"] for c in ref_ids]
+            prompt, what = v.cut_edit_prompt(story, i, ref_ids, seam if seam != v.SEAM_CONTINUE else v.SEAM_CUT), "cut"
+        humans, animals = self._scene_cast(story, i)
+        rule = checks.cut_rule(len(people), animals, self._scene_extras(story, i))
+        extra = [checks.style_negative(v.style_key(story))]
+        pend = f"L{i}e_pending"
+        swork = {"prompt": prompt, "scene_att": image1, "ref_atts": refs, pend: work.get(pend)}
+        main = await self._dlg_still(ctx, work, erec, f"L{i}e", pend, "장면 준비", swork, what, i, f"{i}:image",
+                                     ref_ids[0] if ref_ids else None, rule=rule, extra=extra)
+        if main is None:
+            return None
+        att = await self.deps.stage_image(ctx.env, ctx.user, turn, main["rel_path"])
+        st.update(first_att=att["id"], first_from="edit", edit_rel=main["rel_path"], scene_prompt=prompt,
+                  first_people=main.get("seen") if rule.get("want") is not None and not rule.get("more_ok") else None)
+        await self._save_scene(ctx, work, scenes, i, st)
+        return st
+
+    async def _end_check(self, ctx: Ctx, rel: str | None, story: dict, i: int, what: str, attempt: int) -> list[str]:
+        """끝 프레임·끝 키프레임 검사: 이 장면의 인물이 모두 화면 안에 얼굴이 보이는가 (R2, 다음 장면이 이 프레임에서 시작한다).
+        사람이 나오지 않는 장면은 검사하지 않는다. STUDIO_PICTURE_CHECK 와 상관없이 늘 돈다. 검사를 못 하면 'end:unchecked'
+        (통과로 보지 않는다: 감독이 결과에 알린다)"""
+        v = _video()
+        ids = v.scene_people(story, i)[:7]
+        if not ids:
+            return []
+        if not rel:
+            return ["end:unchecked"]
+        looks = {c["id"]: c["look"] for c in story["bible"]["characters"]}
+        _h, animals = self._scene_cast(story, i)
+        rule = checks.end_rule(len(ids), animals, self._scene_extras(story, i))
+        neg = checks.style_negative(v.style_key(story))
+        expect = [checks.cast_trait(looks[c]) for c in ids] + ([neg] if neg else [])
+        owner, sub, name = files.split_rel(rel)
+        ip = str(ctx.turn.get("client_ip") or "")
+        ctx.text = "끝 프레임 검사 중"
+        await self.emit(ctx, True)
+        insp = None
+        for _try in (1, 2):                     # 한 번 더 물어 본다 (모델이 잠깐 실패해도 통과로 보지 않으려고)
+            try:
+                with self.deps.llm_context() as bag:
+                    ctx.bag = bag
+                    insp = await self._guard_llm(ctx, self.deps.inspect(ctx.user, ip, owner, name, sub, expect))
+                    for e in bag:
+                        await store.link_job(ctx.tid, e["job_id"], "inspect", e["purpose"])
+                break
+            except StepError as e:
+                await store.event(ctx.turn["id"], "end_check", {"what": what, "index": i, "attempt": attempt, "skipped": e.code,
+                                                                "detail": str(e.detail or "")[:200]})
+        why = checks.end_problems(insp, rule, ids, 0, style="style" if neg else "")
+        if isinstance(insp, dict):
+            await store.event(ctx.turn["id"], "end_check", {"what": what, "index": i, "attempt": attempt, "file": name,
+                                                            "people": insp.get("people"), "why": why, "cast": ids})
+        return why
+
+    async def _end_keyframe(self, ctx: Ctx, work: dict, scenes: list, i: int, st: dict) -> bool | None:
+        """사람이 나오는 장면의 끝 키프레임: 첫 화면(그림 1)과 인물 기준 그림(그림 2·3)에서 '이 샷이 끝나는 순간' 그림을 만들고 검사한다.
+        영상 모델이 이 그림으로 끝나게 해서 끝 프레임에 인물이 남게 한다 (R2). 레시피가 없거나 검사를 통과한 그림이 없으면 끝 그림 없이 만든다.
+        취소면 None"""
+        story = work["story"]
+        v = _video()
+        xrec, erec = self._end_recipe(ctx), self.recipe_for("edit_ref")
+        if xrec is None or erec is None or not v.scene_people(story, i) or st.get("end_att"):
+            return True
+        casts = work.get("casts") or {}
+        have = [cid for cid, c in casts.items() if c.get("att")]
+        ref_ids = v.pick_refs(story, i, have, limit=2)
+        ending = str(((st.get("plan") or {}).get("ending")) or "")
+        pend = f"L{i}k_pending"
+        swork = {"prompt": v.end_keyframe_prompt(story, i, ending), "scene_att": st["first_att"],
+                 "ref_atts": [casts[c]["att"] for c in ref_ids], pend: work.get(pend)}
+        best, best_why = None, None
+        for check in range(1, STILL_TRIES + 1):
+            ctx.text = "끝 그림 준비 중"
+            try:
+                main = await self._dlg_job(ctx, erec, f"L{i}k", pend, "끝 그림", swork, "scene", scene_phase=True, fresh=check > 1)
+            except StepError as e:
+                if best is None:
+                    await store.event(ctx.turn["id"], "end_keyframe_failed", {"index": i, "code": e.code})
+                    return True            # 끝 그림 없이 만든다 (영상은 잃지 않는다)
+                break
+            if main is None:
+                return None
+            work[pend] = swork.get(pend)
+            why = await self._end_check(ctx, main["rel_path"], story, i, "end_key", check)
+            if checks.better(best_why, why):
+                best, best_why = main, why
+            if not why:
+                break
+            if check < STILL_TRIES:
+                await store.event(ctx.turn["id"], "picture_retry", {"what": "end_key", "index": i, "attempt": check, "why": why})
+        if best is None or best_why:
+            # 검사를 통과한 끝 그림이 없다: 영상 모델에 틀린 끝 그림을 주지 않는다 (끝 프레임 검사가 그 장면을 따로 지킨다)
+            await self._check_left(ctx, work, f"{i}:end", best_why)
+            await store.event(ctx.turn["id"], "end_keyframe_dropped", {"index": i, "why": best_why})
+            return True
+        att = await self.deps.stage_image(ctx.env, ctx.user, ctx.turn, best["rel_path"])
+        st.update(end_att=att["id"], end_rel=best["rel_path"])
+        await self._save_scene(ctx, work, scenes, i, st)
+        return True
+
     async def _dlg_still(self, ctx: Ctx, work: dict, recipe: dict, tag: str, pend: str, label: str, swork: dict, what: str,
-                         index: int, key: str, cid: str | None = None) -> dict | None:
+                         index: int, key: str, cid: str | None = None, rule: dict | None = None,
+                         extra: list[str] | None = None) -> dict | None:
         """대사 영상의 그림 한 장(인물 기준 그림·기준 그림을 고친 첫 화면)을 검사하며 만든다. 둘 다 한 사람만 나와야 한다
         (인물이 동물이면 사람 수와 팔다리는 보지 않는다). 틀리면 씨앗을 바꿔 다시 만들고(STILL_TRIES), 다 틀리면 가장 나은 그림을 쓰고
         남은 문제를 기억한다. 결과에 센 사람 수(seen)를 붙인다. 취소면 None"""
         story = work["story"]
         style = _video().story_style(story)
-        rule = checks.rule(None, skip=checks.ANIMAL_SKIP) if self._is_animal(story, cid) else checks.ONE
+        if rule is None:
+            rule = checks.rule(None, skip=checks.ANIMAL_SKIP) if self._is_animal(story, cid) else checks.ONE
         best, best_why, best_seen = None, None, None
         for check in range(1, STILL_TRIES + 1):
             ctx.text = label + " 중"
@@ -1730,7 +2005,7 @@ class Director:
             if main is None:
                 return None
             work[pend] = swork.get(pend)
-            why, seen = await self._picture_check(ctx, main["rel_path"], rule, style, what, index, check)
+            why, seen = await self._picture_check(ctx, main["rel_path"], rule, style, what, index, check, extra=extra)
             if checks.better(best_why, why):
                 best, best_why, best_seen = main, why, seen
             if not why:
@@ -1745,7 +2020,8 @@ class Director:
         얼굴을 맞춘다 (11-19 시범: 같은 반신 사진에서 편집한 첫 화면 6장이 같은 얼굴). 취소면 False"""
         story = work["story"]
         v = _video()
-        need = v.cast_ids(story)
+        chain = bool(work.get("chain"))
+        need = v.anchor_ids(story) if chain else v.cast_ids(story)      # 장면 잇기: 어느 장면에든 나오는 사람 모두 (대사가 없어도)
         if not need:
             return True
         # 기준 그림을 새로 그릴 때(라이브러리의 기준 그림 파일이 없을 때)도 장면 그림과 같은 모델 계열로 그려 화풍이 갈리지 않게 한다
@@ -1755,15 +2031,31 @@ class Director:
         casts = dict(work.get("casts") or {})
         vsz = work["long_size"]
         ssz = list(recipes.default_size(img, photo=(vsz[0], vsz[1])))
-        refs = {c["id"]: c.get("ref") for c in story["bible"]["characters"]}
+        key = v.style_key(story)
+        refs, convert = {}, {}
+        for ch in story["bible"]["characters"]:
+            rel, src = self._cast_ref(ch, key) if chain else (ch.get("ref"), None)
+            refs[ch["id"]] = rel
+            if src:
+                convert[ch["id"]] = src
         ctx.long.update(phase="scenes", i=0)
         for k, cid in enumerate(need):
             c = dict(casts.get(cid) or {})
             if c.get("att") and await store.attachments_of([c["att"]]):
                 continue
+            if chain and not (c.get("rel") and files.result_path(c["rel"])) and convert.get(cid) and files.result_path(convert[cid]):
+                # 라이브러리 인물의 그 화풍 기준 그림이 없다: 확정 반실사 그림을 영화 화풍으로 바꾼다 (얼굴·머리·옷은 그대로, 11-20 실측)
+                rel = await self._style_convert(ctx, work, k, cid, convert[cid], key)
+                if rel is False:
+                    return False
+                if rel:
+                    c = {"rel": rel, "library": True, "converted": key}
             if not (c.get("rel") and files.result_path(c["rel"])) and refs.get(cid) and files.result_path(refs[cid]):
                 # 인물 라이브러리의 기준 그림이 있으면 새로 그리지 않고 그 그림을 쓴다 (손으로 만든 니키·푸토르와 같은 얼굴)
                 c = {"rel": refs[cid], "library": True}
+            if chain and not (c.get("rel") and files.result_path(c["rel"])) and cid in {x["id"] for x in story["bible"]["characters"]
+                                                                                       if x.get("library")} and not refs.get(cid):
+                await store.event(ctx.turn["id"], "dialogue_cast_ref_missing", {"character": cid, "ref": None})
             if not (c.get("rel") and files.result_path(c["rel"])):
                 if refs.get(cid):
                     await store.event(ctx.turn["id"], "dialogue_cast_ref_missing", {"character": cid, "ref": refs[cid]})
@@ -1825,6 +2117,10 @@ class Director:
         pend = f"L{i}v_pending"
         swork = {"prompt": st["prompt"], "scene_att": st["first_att"], "audio_in": line["in_rel"],
                  "settings": {"frames": int(sc["seconds"]) * fps + 1}, "size": list(work["long_size"]), pend: work.get(pend)}
+        # 잇는 프레임은 합칠 때 자르는 지점의 프레임이다 (클립 끝은 입 맞춤 모델이 대사 뒤에 어두워지는 구간, TALK_TAIL)
+        trim = max(TALK_MIN_SHOT, float(line.get("seconds") or 0) + TALK_TAIL)
+        swork["last_index"] = int(round(min(trim, float(sc["seconds"])) * fps))
+        chain = bool(work.get("chain"))
         style = v.story_style(story)
         rule = checks.clip_rule(st.get("first_people"), 1 if self._is_animal(story, cid) else 0, talk=True)
         best, best_why = None, None
@@ -1842,6 +2138,8 @@ class Director:
             work[pend] = swork.get(pend)
             main = {**main, "seed": swork.get("seed")}
             why, _seen = await self._picture_check(ctx, self._output_rel(trec, main.get("outs"), "check"), rule, style, "talk_clip", i, check)
+            if chain and self._output_rel(trec, main.get("outs"), "last"):
+                why = why + await self._end_check(ctx, self._output_rel(trec, main.get("outs"), "last"), story, i, "end_frame", check)
             if checks.better(best_why, why):
                 best, best_why = main, why
             if not why:
@@ -1855,6 +2153,9 @@ class Director:
         except OSError:
             sha = None
         st.update(clip_rel=main["rel_path"], clip_sha=sha, seed=main.get("seed"), seconds=sc["seconds"])
+        if chain:
+            st["last_rel"] = self._output_rel(trec, main.get("outs"), "last")
+            st.update(self._chain_source(st, {"last_rel": st["last_rel"]}, best_why))
         await self._save_scene(ctx, work, scenes, i, st)
         await store.event(turn["id"], "long_scene_done", {"index": i, "clip": st["clip_rel"], "first_from": st.get("first_from"),
                                                           "talk": True})
@@ -1902,7 +2203,11 @@ class Director:
             items = [{k: x for k, x in it.items() if k != "sub"} for it in items]
             notes.append("자막을 그리지 못해 자막 없이 이어 붙였습니다")
         try:
-            info = await asyncio.to_thread(self.deps.assemble_dialogue, clips, items, music_abs, out_abs, trims)
+            if work.get("chain"):
+                info = await asyncio.to_thread(self.deps.assemble_dialogue, clips, items, music_abs, out_abs, trims,
+                                               _video().scene_seams(story))
+            else:
+                info = await asyncio.to_thread(self.deps.assemble_dialogue, clips, items, music_abs, out_abs, trims)
         except assemble.AssembleError as e:
             await store.event(turn["id"], "error", {"where": "assemble", "detail": str(e)[:500]})
             raise StepError("assemble", str(e)[:300]) from None
@@ -2314,6 +2619,18 @@ class Director:
             values["width"], values["height"] = size[0], size[1]
         if img is not None:
             values[img_slot] = img["input_rel"]
+        if "ref_image" in inject:        # 편집(그림 여러 장): 그림 2·3 = 인물 기준 그림. 없으면 그 자리는 비운다 (레시피가 그 노드를 뺀다)
+            ref_ids = [x for x in (work.get("ref_atts") or []) if x]
+            by_id = {str(a["id"]): a for a in (await store.attachments_of(ref_ids) if ref_ids else [])}
+            rels = [by_id[str(x)]["input_rel"] for x in ref_ids if str(x) in by_id and by_id[str(x)].get("input_rel")]
+            for slot, rel in zip(("ref_image", "ref_image2"), rels):
+                if slot in inject:
+                    values[slot] = rel
+        if "end_frame" in inject:        # 끝 키프레임: 영상이 이 그림으로 끝난다
+            ea = await store.attachments_of([work["end_att"]]) if work.get("end_att") else []
+            if not ea or not ea[0].get("input_rel"):
+                raise StepError("no_image", "끝 키프레임이 없습니다")
+            values["end_frame"] = ea[0]["input_rel"]
         if "frames" in inject:
             values["frames"] = frames
         if "seconds" in inject:      # LTX: 길이를 초로 받는다 (프레임은 초 × fps + 1)
@@ -2322,6 +2639,9 @@ class Director:
                                                                int(round(((frames or 121) - 1) / int(d.get("fps") or 24)))))
         if "check_index" in inject:
             values["check_index"] = max(0, min((frames or 0) // 2, int(inject["check_index"].get("max", 80))))
+        if "last_index" in inject:       # 잇는 프레임 번호: 입 맞춤은 합칠 때 자르는 지점, 그 밖에는 끝
+            values["last_index"] = max(0, min(int(work.get("last_index") if work.get("last_index") is not None else max((frames or 1) - 1, 0)),
+                                              int(inject["last_index"].get("max", 480))))
         try:
             prompt = recipes.build(recipe, values)
         except recipes.RecipeError as e:

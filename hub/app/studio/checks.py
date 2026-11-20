@@ -30,13 +30,38 @@ EXTRAS_RE = re.compile(
     r"passengers?|commuters?|fishermen|farmers?|monks?|neighbou?rs?|"
     r"man|men|woman|women|boys?|girls?|lady|ladies|child|baby|friends?|mother|father|grand\w+|elder|sailors?|"
     r"cook|chef|clerk|teacher|doctor|nurse|police|officers?)\b", re.I)
-CROWD_COUNT = 3            # 첫 화면의 사람이 이보다 많으면 클립에서 사람 수를 세지 않는다 (군중은 셀 때마다 수가 달라진다)
+TRAIT_MAX = 200            # promptx.inspect 가 받는 특징 한 줄의 최대 길이
+CROWD_COUNT = 3           # 첫 화면의 사람이 이보다 많으면 클립에서 사람 수를 세지 않는다 (군중은 셀 때마다 수가 달라진다)
 
 
 def style_trait(style: str) -> str:
     """검사 모델에게 볼 화풍 한 줄 (사실적이지 않은 화풍만 준다: 사진 화풍은 따로 보지 않는다)"""
     style = str(style or "").strip().rstrip(".")
     return f"The whole picture is in this art style: {style}" if style else ""
+
+
+def style_negative(style_key: str) -> str:
+    """화풍 열쇠(cast_lib.style_key)별로 '아닌 것'을 함께 말하는 검사 문장 (영어). style_trait 의 화풍 글만으로는 검사 모델이
+    3D 렌더·사진·만화를 가려내지 못해서(11-20 실측 S6: 실사로 바꾼 그림에 그림 느낌이 남아도 통과) 아닌 쪽을 못 박는다"""
+    return {
+        "semi": "The picture is a soft painted semi-realistic illustration, not a glossy 3D render, not a flat cartoon, not cel-shaded",
+        "anime": "The picture is a 2D anime-style illustration with clean cel-shaded line art, not a 3D render, not a photograph",
+        "photo": "The picture looks like a real photograph or live-action film still, not a painting, not a cartoon, not a 3D render",
+    }.get(str(style_key or ""), "")
+
+
+def cast_trait(look: str, name: str = "") -> str:
+    """끝 프레임 검사용: 이 외형의 인물이 화면 안에 있고 얼굴이 보이는가 (검사 모델에게 주는 '기대' 한 줄, 영어).
+    외형은 첫 14낱말까지만 쓰고(쉼표·공백 경계, 끝 문장부호 제거) 전체가 200자(promptx 의 특징 한 개 한도)를 넘지 않게 자른다.
+    name 은 검사 모델이 모르는 이름이라 글에 넣지 않는다(호출 쪽 시그니처 맞춤용)"""
+    head = ("A person who looks like this is fully inside the frame and the face is clearly visible "
+            "from the front or three-quarter: ")
+    words = " ".join(str(look or "").split()[:14]).strip(" ,;:.")
+    room = TRAIT_MAX - len(head)
+    if len(words) > room:
+        cut = words[:room]
+        words = (cut.rsplit(" ", 1)[0] if " " in cut else cut).strip(" ,;:.")
+    return head + words
 
 
 def rule(want: int | None = None, more_ok: bool = False, fewer_ok: bool = False, skip=frozenset()) -> dict:
@@ -72,6 +97,68 @@ def clip_rule(first_people: int | None, animals: int, talk: bool = False) -> dic
     return rule(first_people, fewer_ok=True, skip=skip)
 
 
+def cut_rule(humans: int, animals: int, extras: bool) -> dict:
+    """앞 장면의 마지막 프레임을 고쳐 만든 장면의 첫 화면 기준 (장면 잇기). 샷 크기와 상관없이 그 장면 인물 수를 센다:
+    고치는 편집이 사람을 복제하거나 빠뜨리기 쉽다. 장면 글에 행인 말이 있으면 더 많아도 되고, 동물이 있으면 사람으로 세어질 수 있어
+    더 많아도 되지만 사람 수 아래로는 안 된다(want 를 None 으로 두지 않는다). 동물이 있으면 팔다리 검사는 뺀다"""
+    return rule(humans, more_ok=bool(extras) or bool(animals), skip=ANIMAL_SKIP if animals else frozenset())
+
+
+def end_rule(humans: int, animals: int, extras: bool) -> dict:
+    """사람이 나오는 장면의 클립 마지막 프레임 기준: 다음 장면이 이 프레임에서 시작하므로 그 장면 인물이 모두 있어야 한다.
+    아래쪽만 본다(사람 수 >= humans, more_ok 항상 참: 행인·군중·동물이 더 있어도 끝 프레임을 버리지 않는다).
+    사람 없는 장면(humans 0, 행인 말도 동물도 없음)은 정확히 0명이어야 해서 want=None 에 zero=True 로 적는다
+    (다음 장면이 지어낸 사람을 이어받지 않게). 동물이 있으면 동물이 사람으로 세어질 수 있어 0명을 요구하지 않는다.
+    몸의 이상은 클립 기준과 같고(동물이면 팔다리 검사 뺌) 입 맞춤 예외(TALK_SKIP)는 없다"""
+    humans = max(int(humans or 0), 0)
+    r = rule(humans or None, more_ok=True, skip=ANIMAL_SKIP if animals else frozenset())
+    r["zero"] = humans == 0 and not extras and not animals
+    r["end"] = True
+    return r
+
+
+def _body_reasons(insp: dict, r: dict) -> list[str]:
+    look = BODY_ISSUES - frozenset(r.get("skip") or ())
+    bad = sorted({str(i.get("type")) for i in insp.get("issues") or [] if isinstance(i, dict) and i.get("type") in look})
+    return ["body:" + ",".join(bad)] if bad else []
+
+
+def end_problems(insp, rule: dict, cast_ids: list[str], first_trait_index: int = 0, style: str = "") -> list[str]:
+    """끝 프레임 검사 결과에서 다시 만들 까닭 (짧은 영어 코드). 빈 목록이면 통과.
+    - end:unchecked: 검사 결과가 없다. 통과로 보지 않고 감독이 정한다 (다음 장면의 원본이 되는 프레임이라)
+    - end:people:<n>/<최소>: 사람이 모자람 / end:extra:<n>: 사람 없는 장면인데 사람이 보임
+    - end:missing:<id>: 그 인물의 cast_trait(traits[first_trait_index + i], cast_ids 와 같은 차례)가 '없음'. 검사 모델이 모르겠다고
+      (None) 답했어도 사람이 한 명도 안 보이면 없는 것으로 본다
+    - body:…: problems 와 같음
+    - style: 화풍 특징을 마지막 특징으로 줬고(style 글이 있고 인물 특징 뒤에 있는 마지막 것) 이유를 붙여 '아님'이라고 답했을 때
+    rule 은 end_rule() 결과(아니면 사람 수 기준 없이 몸의 이상만 본다)"""
+    if not isinstance(insp, dict):
+        return ["end:unchecked"]
+    r = rule if isinstance(rule, dict) else {}
+    why = []
+    n = insp.get("people")
+    n = n if isinstance(n, int) and not isinstance(n, bool) else None
+    want = r.get("want")
+    if n is not None:
+        if want is not None and n < int(want):
+            why.append(f"end:people:{n}/{int(want)}")
+        elif r.get("zero") and n > 0:
+            why.append(f"end:extra:{n}")
+    traits = insp.get("traits") if isinstance(insp.get("traits"), list) else []
+    for i, cid in enumerate(cast_ids or []):
+        j = first_trait_index + i
+        t = traits[j] if 0 <= j < len(traits) and isinstance(traits[j], dict) else {}
+        if t.get("present") is False or (t.get("present") is None and n == 0):
+            why.append(f"end:missing:{cid}")
+    why += _body_reasons(insp, r)
+    last = len(traits) - 1
+    if style and last >= first_trait_index + len(cast_ids or []):
+        t = traits[last]
+        if isinstance(t, dict) and t.get("present") is False and str(t.get("note") or "").strip():
+            why.append("style")
+    return why
+
+
 def problems(insp, want_or_rule=None, style: str = "") -> list[str]:
     """검사 결과에서 다시 만들 까닭(짧은 영어 낱말). 빈 목록이면 통과다.
     want_or_rule: rule() 결과, 또는 사람 수(정확히 그 수), 또는 None(세지 않음).
@@ -87,10 +174,7 @@ def problems(insp, want_or_rule=None, style: str = "") -> list[str]:
     if want is not None and isinstance(n, int) and not isinstance(n, bool):
         if (n > int(want) and not r.get("more_ok")) or (n < int(want) and not r.get("fewer_ok")):
             why.append(f"people:{n}/{int(want)}")
-    look = BODY_ISSUES - frozenset(r.get("skip") or ())
-    bad = sorted({str(i.get("type")) for i in insp.get("issues") or [] if isinstance(i, dict) and i.get("type") in look})
-    if bad:
-        why.append("body:" + ",".join(bad))
+    why += _body_reasons(insp, r)
     if style and any(isinstance(t, dict) and t.get("present") is False and str(t.get("note") or "").strip()
                      for t in insp.get("traits") or []):
         why.append("style")
@@ -102,7 +186,11 @@ def describe(why) -> str:
     parts = []
     for w in why or []:
         w = str(w)
-        if w.startswith("people:"):
+        if w == "end:unchecked":
+            parts.append("끝 프레임 확인 못 함")
+        elif w.startswith(("end:missing", "end:people", "end:extra")):
+            parts.append("끝 프레임에 인물 없음")
+        elif w.startswith("people:"):
             parts.append("사람 수")
         elif w.startswith("body:"):
             parts.append("몸 모양")
@@ -111,6 +199,12 @@ def describe(why) -> str:
     return "·".join(dict.fromkeys(parts))
 
 
+def _rank(why) -> tuple[int, int]:
+    """(끝 프레임 까닭 수, 전체 까닭 수): 끝 프레임 실패는 다른 문제보다 나쁘다 (다음 장면이 그 프레임에서 시작한다)"""
+    why = [str(w) for w in why or []]
+    return sum(w.startswith("end:") for w in why), len(why)
+
+
 def better(a: list[str] | None, b: list[str]) -> bool:
-    """b 가 a 보다 나은 결과인가 (남은 까닭이 적을수록). 처음(a 가 None)이면 늘 낫다"""
-    return a is None or len(b) < len(a)
+    """b 가 a 보다 나은 결과인가. 끝 프레임 까닭(end:*)이 적을수록, 같으면 남은 까닭이 적을수록. 처음(a 가 None)이면 늘 낫다"""
+    return a is None or _rank(b) < _rank(a)

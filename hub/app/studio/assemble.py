@@ -120,10 +120,13 @@ def same_video(probes: list[dict]) -> bool:
 
 
 def fit_transitions(durations: list[float], transitions: list[float] | None) -> list[float]:
-    """이음새마다 겹침 길이(초). 0 이면 컷. 이웃 두 클립 중 짧은 쪽의 절반을 넘지 않게 자른다. 길이가 안 맞거나 없으면 전부 컷"""
+    """이음새마다 겹침 길이(초). 0 이면 컷. 이웃 두 클립 중 짧은 쪽의 절반을 넘지 않게 자른다. 없으면(None) 전부 컷.
+    목록 길이가 이음새 수(장면 수 - 1)와 다르면 오류: 조용히 전부 컷으로 바꾸면 디졸브가 말없이 사라진다 (11-20 이음 종류 설계)"""
     n = len(durations)
-    if not transitions or len(transitions) != n - 1:
+    if transitions is None:
         return [0.0] * max(0, n - 1)
+    if len(transitions) != max(0, n - 1):
+        raise AssembleError(f"이음새 목록의 길이({len(transitions)})가 장면 수({n})보다 하나 적어야 합니다")
     out = []
     for i, o in enumerate(transitions):
         try:
@@ -133,6 +136,21 @@ def fit_transitions(durations: list[float], transitions: list[float] | None) -> 
         cap = min(durations[i], durations[i + 1]) / 2 - 0.05
         out.append(round(max(0.0, min(o, cap)), 3) if o > 0.05 and cap > 0.05 else 0.0)
     return out
+
+
+LONG_DISSOLVE = 0.6        # 긴 영화의 디졸브 길이(초). 감독의 DISSOLVE_SECONDS 와 같은 값
+
+
+def overlaps_for(seams: list | None, dissolve_seconds: float) -> list[float]:
+    """이음 종류 목록(감독이 장면마다 저장하는 seams: continue·jump·refresh·cut) → 이음새마다 겹침(초).
+    cut(같은 장소·같은 시간의 새 카메라 샷)만 하드 컷 0, 나머지와 모르는 값은 디졸브 (11-20 사용자 결정)"""
+    return [0.0 if str(k or "").strip().lower() == "cut" else float(dissolve_seconds) for k in (seams or [])]
+
+
+def _seam_overlaps(n_clips: int, seams: list, dissolve_seconds: float) -> list[float]:
+    if len(seams) != max(0, n_clips - 1):
+        raise AssembleError(f"이음 종류 목록의 길이({len(seams)})가 장면 수({n_clips})보다 하나 적어야 합니다")
+    return overlaps_for(seams, dissolve_seconds)
 
 
 def timeline_total(durations: list[float], overlaps: list[float]) -> float:
@@ -264,9 +282,12 @@ def _fps(p: dict) -> float:
         return 24.0
 
 
-def run(clips: list[str], music: str | None, out: str, sound: bool = True, transitions: list[float] | None = None) -> dict:
+def run(clips: list[str], music: str | None, out: str, sound: bool = True, transitions: list[float] | None = None,
+        seams: list | None = None) -> dict:
     """장면 클립(절대 경로, 순서대로)과 음악을 합쳐 out 에 쓴다. 실패하면 AssembleError. 같은 이름이 있으면 덮어쓴다.
-    transitions: 이음새(장면 i 와 i+1 사이)마다 디졸브 길이(초), 0 이면 컷. 없으면 전부 컷(다시 인코딩하지 않음)"""
+    transitions: 이음새(장면 i 와 i+1 사이)마다 디졸브 길이(초), 0 이면 컷. 없으면 전부 컷(다시 인코딩하지 않음)
+    seams: 이음 종류 목록(장면 수 - 1 개, continue·jump·refresh·cut). 주면 transitions 보다 앞서고, cut 만 컷, 나머지는 LONG_DISSOLVE 디졸브.
+    전부 cut 이면 다시 인코딩하지 않고, 하나라도 디졸브면 다시 인코딩하며 cut 이음새는 그래프 안에서 concat 으로 잇는다"""
     if not available():
         raise AssembleError("허브에 ffmpeg 가 없습니다 (hub/Dockerfile 에 넣은 판으로 업데이트해야 합니다)")
     if not clips:
@@ -278,12 +299,14 @@ def run(clips: list[str], music: str | None, out: str, sound: bool = True, trans
     if len(sizes) > 1:
         raise AssembleError(f"장면 크기가 서로 다릅니다: {sorted(sizes)}")
     durations = [p["duration"] for p in probes]
+    if seams is not None:
+        transitions = _seam_overlaps(len(clips), seams, LONG_DISSOLVE)
     overlaps = fit_transitions(durations, transitions)
     dissolve = any(o > 0 for o in overlaps)
     total = timeline_total(durations, overlaps)
     copy_video = same_video(probes) and not dissolve
     info = {"scenes": len(clips), "seconds": round(total, 3), "copy_video": copy_video, "music": bool(music and sound),
-            "dissolves": sum(1 for o in overlaps if o > 0)}
+            "dissolves": sum(1 for o in overlaps if o > 0), "overlaps": overlaps}
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     tmp_out = out + ".part.mp4"
     with tempfile.TemporaryDirectory(prefix="studio-long-") as tmp:
@@ -315,6 +338,65 @@ def run(clips: list[str], music: str | None, out: str, sound: bool = True, trans
     os.replace(tmp_out, out)
     info.update(duration=round(got["duration"], 3), bytes=os.path.getsize(out))
     return info
+
+
+def _ffmpeg_exe(ffmpeg: str | None) -> str:
+    return ffmpeg or shutil.which("ffmpeg") or "ffmpeg"
+
+
+def frame_at(clip_path: str, seconds: float, out_path: str, ffmpeg: str | None = None) -> str:
+    """클립의 seconds 초 프레임 한 장을 PNG 로 저장하고 out_path 를 돌려준다 (정확한 탐색: -i 뒤의 -ss).
+    음수는 0 으로. ffmpeg 가 실패하거나 파일이 안 생기면(끝을 넘어 탐색 등) AssembleError"""
+    t = max(0.0, float(seconds))
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    tmp = out_path + ".part.png"           # 확장자가 png 여야 ffmpeg 가 형식을 안다
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    try:
+        _run([_ffmpeg_exe(ffmpeg), "-hide_banner", "-nostats", "-loglevel", "error", "-y", "-i", clip_path,
+              "-ss", f"{t:.3f}", "-frames:v", "1", tmp], 120)
+        if not os.path.isfile(tmp) or os.path.getsize(tmp) == 0:
+            raise AssembleError(f"{t:.2f}초 프레임이 만들어지지 않았습니다 (클립 끝을 넘었을 수 있습니다): {clip_path}")
+        os.replace(tmp, out_path)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    return out_path
+
+
+def _clip_length(clip_path: str, ffmpeg: str | None) -> tuple[float, float]:
+    """(영상 길이 초, fps). ffprobe 가 있으면 그것으로, 없으면 `ffmpeg -i` 의 stderr 에서 읽는다"""
+    if shutil.which("ffprobe"):
+        try:
+            p = probe(clip_path)
+            if p["video"] and p["duration"] > 0:
+                return p["duration"], _fps(p)
+        except (AssembleError, ValueError):
+            pass
+    r = subprocess.run([_ffmpeg_exe(ffmpeg), "-hide_banner", "-i", clip_path], capture_output=True, text=True, timeout=60)
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", r.stderr or "")
+    if not m:
+        raise AssembleError(f"클립 길이를 읽지 못했습니다: {clip_path}")
+    f = re.search(r"([\d.]+) fps", r.stderr or "")
+    return int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3]), (float(f[1]) if f and 1 <= float(f[1]) <= 120 else 24.0)
+
+
+def last_frame(clip_path: str, out_path: str, ffmpeg: str | None = None) -> str:
+    """클립의 진짜 마지막 프레임(길이 - 한 프레임)을 PNG 로 저장한다. 소리가 영상보다 길어 컨테이너 길이가 더 길면
+    그 시각에 프레임이 없을 수 있어, 못 얻으면 조금씩 앞으로 물러나 다시 시도한다"""
+    length, fps = _clip_length(clip_path, ffmpeg)
+    t = max(0.0, length - 1.0 / fps)
+    err = None
+    for back in (0.0, 0.1, 0.3, 0.7):
+        try:
+            return frame_at(clip_path, max(0.0, t - back), out_path, ffmpeg)
+        except AssembleError as e:
+            err = e
+    raise err
 
 
 # ── 대사 있는 단편: 샷 영상 + 대사 소리 + 배경음악 (11-19) ──
@@ -391,9 +473,11 @@ def build_dialogue_cmd(clips: list[str], line_files: list[str], music: str | Non
 
 
 def run_dialogue(clips: list[str], lines: list[dict], music: str | None, out: str, overlap: float = DIALOGUE_OVERLAP,
-                 lead: float = DIALOGUE_LEAD, music_db: float = DIALOGUE_MUSIC_DB, trims: list | None = None) -> dict:
+                 lead: float = DIALOGUE_LEAD, music_db: float = DIALOGUE_MUSIC_DB, trims: list | None = None,
+                 seams: list | None = None) -> dict:
     """샷 영상(절대 경로, 순서대로)과 대사 소리 파일들, 배경음악을 합쳐 out 에 쓴다. 실패하면 AssembleError.
-    lines: [{"file": 경로, "shot": 샷 번호(0부터), "delay": 선택, "gain_db": 선택}]"""
+    lines: [{"file": 경로, "shot": 샷 번호(0부터), "delay": 선택, "gain_db": 선택}]
+    seams: 이음 종류 목록(샷 수 - 1 개). 주면 cut 이음새는 겹침 0(하드 컷), 나머지는 overlap 초 디졸브. 없으면 모든 이음새가 overlap 초"""
     if not available():
         raise AssembleError("허브에 ffmpeg 가 없습니다 (hub/Dockerfile 에 넣은 판으로 업데이트해야 합니다)")
     if not clips:
@@ -411,7 +495,8 @@ def run_dialogue(clips: list[str], lines: list[dict], music: str | None, out: st
     durations = [p["duration"] for p in probes]
     trims = [(float(t) if t else None) for t in (trims or [])] + [None] * (len(clips) - len(trims or []))
     durations = [min(d, t) if t else d for d, t in zip(durations, trims)]   # 끝이 어두워지는 샷 등은 앞쪽만 쓴다
-    overlaps = fit_transitions(durations, [overlap] * (len(clips) - 1)) if len(clips) > 1 else []
+    per_seam = _seam_overlaps(len(clips), seams, overlap) if seams is not None else [overlap] * (len(clips) - 1)
+    overlaps = fit_transitions(durations, per_seam) if len(clips) > 1 else []
     starts, total = dialogue_starts(durations, overlaps)      # 겹침이 줄어든 이음새가 있으면 소리 시작도 그 기준(실제 영상 시각)을 따른다
     vfilter = build_video_filter(durations, overlaps, _fps(probes[0]), trims)
     afilter = build_dialogue_audio_filter(len(clips), lines, starts, lead, total, bool(music), music_db)
@@ -571,7 +656,7 @@ def render_subtitle(text: str, size: tuple[int, int], out: str, font_path: str |
 def main(argv: list[str] | None = None) -> int:
     """python -m app.studio.assemble 타임라인.json 결과.mp4   (타임라인 자리에 - 를 쓰면 표준 입력에서 읽는다)
     타임라인.json: {"clips": [경로…], "lines": [{"file": 경로, "shot": 0, "delay": 0, "gain_db": 0}…], "music": 경로 또는 null,
-                   "overlap": 0.5, "lead": 0.2, "music_db": -14, "trims": [null, 16.4, …]}
+                   "overlap": 0.5, "lead": 0.2, "music_db": -14, "trims": [null, 16.4, …], "seams": ["continue", "cut", …]}
                    lines 의 "sub" 는 자막 PNG 경로(선택), trims 는 샷마다 앞에서 쓸 길이(초, null 이면 전체)  (경로는 컨테이너 안에서 보이는 절대 경로)"""
     import sys
     args = list(sys.argv[1:] if argv is None else argv)
@@ -585,7 +670,7 @@ def main(argv: list[str] | None = None) -> int:
             spec = json.load(f)
     info = run_dialogue(spec["clips"], spec.get("lines") or [], spec.get("music"), args[1],
                         float(spec.get("overlap", DIALOGUE_OVERLAP)), float(spec.get("lead", DIALOGUE_LEAD)),
-                        float(spec.get("music_db", DIALOGUE_MUSIC_DB)), spec.get("trims"))
+                        float(spec.get("music_db", DIALOGUE_MUSIC_DB)), spec.get("trims"), seams=spec.get("seams"))
     print(json.dumps(info, ensure_ascii=False))
     return 0
 

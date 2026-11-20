@@ -14,14 +14,19 @@ import re
 RECIPE_DIR = os.path.join(os.path.dirname(__file__), "recipes")
 ACTIONS = {"image", "i2v", "t2v", "edit", "music",       # music: 긴 영상의 배경음악 (ACE-Step, docs/long-video-design.md 7절)
            "voice", "voice_clone", "talk",               # 대사 영상(11-19): 목소리 설계·목소리 복제(Qwen3-TTS), 대사 소리로 입 맞춤(LTX-2.3 IA2V)
-           "scene_image"}                                # 대사 영상의 장면 그림 (Qwen-Image 2512, 인물 라이브러리의 반실사 회화체와 같은 계열)
+           "scene_image",                                # 대사 영상의 장면 그림 (Qwen-Image 2512, 인물 라이브러리의 반실사 회화체와 같은 계열)
+           "edit_ref", "i2v_end"}                        # 장면 잇기(11-20, docs/scene-chaining-design.md): 그림 여러 장 편집, 끝 키프레임 가이드가 붙은 긴 영상 클립
 # 대사 영상의 부품: 화질·엔진을 따지지 않고 action 마다 하나를 고른다 (음악과 같다)
 PART_ACTIONS = {"music", "voice", "voice_clone", "talk", "scene_image"}
 # 글이 영상·이미지 모델의 positive 로 가지 않는 레시피(목소리)는 부정 자리도 없다: negative_source "none"
 NO_NEGATIVE_ACTIONS = {"voice", "voice_clone"}
 SLOT_TYPES = {"string", "int", "float", "bool", "input_image", "input_audio", "prefix"}
 SLOT_NAMES = {"prompt", "first_frame", "edit_image", "seed", "frames", "seconds", "width", "height", "check_index", "save_prefix",
-              "duration", "bpm", "keyscale", "audio", "voice_instruct", "max_tokens", "ref_text", "x_vector"}
+              "duration", "bpm", "keyscale", "audio", "voice_instruct", "max_tokens", "ref_text", "x_vector",
+              "ref_image", "ref_image2", "end_frame", "last_index"}
+# 값이 없으면 그래프에서 빼도 되는(optional) 이미지 자리는 참고 그림뿐이다. 첫 화면·편집 대상·끝 프레임이 빠지면 그래프가 깨진다
+OPTIONAL_OK_SLOTS = {"ref_image", "ref_image2"}
+IMAGE_SLOT_NAMES = ("first_frame", "edit_image", "ref_image", "ref_image2", "end_frame")
 ZERO_OUT = {"ConditioningZeroOut"}
 SAVE_NODES = {"SaveVideo", "SaveImage", "SaveWEBM", "SaveAnimatedWEBP", "SaveAnimatedPNG",
               "SaveAudio", "SaveAudioMP3", "SaveAudioOpus", "SaveAudioAdvanced"}
@@ -177,6 +182,23 @@ def reaches_input(prompt: dict, start: str, input_name: str, depth: int = 0, see
     return False
 
 
+def _reaches_at(prompt: dict, start: str, target: str, input_name: str, depth: int = 0, seen: frozenset = frozenset()) -> bool:
+    """start 의 출력이 (깊이 8 안에서) 노드 target 의 input_name 입력에 닿는가. reaches 는 같은 종류의 노드 아무데나 닿으면
+    참이라, 글 노드가 둘(긍정·부정)인 편집 레시피에서 한쪽만 이어져도 통과해 버린다"""
+    for nid, node in prompt.items():
+        for name, val in (node.get("inputs") or {}).items():
+            if is_link(val) and str(val[0]) == start:
+                if name == input_name and nid == target:
+                    return True
+                if depth < 8 and nid not in seen and _reaches_at(prompt, nid, target, input_name, depth + 1, seen | {nid}):
+                    return True
+    return False
+
+
+def _encode_nodes(prompt: dict) -> list[str]:
+    return [nid for nid, n in prompt.items() if str(n.get("class_type", "")).startswith("TextEncodeQwenImageEdit")]
+
+
 # ── 검증 (파일만 보고 하는 것, 6.4) ──────────────────────
 
 def _slot_ok(prompt: dict, slot, where: str, errs: list):
@@ -194,6 +216,8 @@ def _slot_ok(prompt: dict, slot, where: str, errs: list):
         return
     if is_link(node["inputs"][slot["input"]]):
         errs.append(f"{where}: 노드 {slot['node']}.{slot['input']} 은 링크라 값을 넣을 수 없습니다 (리터럴이어야 합니다)")
+    if slot.get("optional") and slot["type"] != "input_image":
+        errs.append(f"{where}: optional 은 input_image 자리에만 쓸 수 있습니다")
 
 
 def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
@@ -224,7 +248,7 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
     mx = (recipe.get("limits") or {}).get("max_run_seconds")
     if not isinstance(mx, int) or mx <= 0:
         e.append("limits.max_run_seconds 는 0 보다 큰 정수여야 합니다")
-    if recipe.get("action") in ("i2v", "t2v"):
+    if recipe.get("action") in ("i2v", "i2v_end", "t2v"):
         vp = recipe.get("video_profile")
         if not vp:
             e.append("영상 레시피는 video_profile 이 필요합니다")
@@ -299,8 +323,9 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
                 e.append("프롬프트 자리 노드의 출력을 받는 0 조건 노드가 없습니다")
     add("V5", e)
 
-    # V6 첫 화면·편집 대상 자리
+    # V6 첫 화면·편집 대상·참고 그림·끝 프레임 자리
     e = []
+    action = recipe.get("action")
     for name, cls_in in (("first_frame", [("", "start_image"), ("LTXVImgToVideoInplace", "image")]),
                          ("edit_image", [("TextEncodeQwenImageEdit", "image1"), ("VAEEncode", "pixels")])):
         for s in slots_of(recipe, name):
@@ -317,15 +342,57 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
                 for cls, inp in cls_in:
                     if (cls, inp) not in hits:
                         e.append(f"inject.{name} 의 이미지가 {cls or '노드'} 의 {inp} 입력에 닿지 않습니다")
-    if recipe.get("action") in ("i2v", "talk") and not slots_of(recipe, "first_frame"):
-        e.append(f"{recipe.get('action')} 레시피는 inject.first_frame 이 필요합니다")
+                if action == "edit_ref":      # 그림 여러 장 편집은 긍정·부정 글 노드 모두에 닿아야 한다 (한쪽만 이어지면 두 조건이 어긋난다)
+                    for tid in _encode_nodes(prompt):
+                        if not _reaches_at(prompt, str(s["node"]), tid, "image1"):
+                            e.append(f"inject.edit_image 의 이미지가 글 노드 {tid} 의 image1 입력에 닿지 않습니다")
+    if action in ("i2v", "i2v_end", "talk") and not slots_of(recipe, "first_frame"):
+        e.append(f"{action} 레시피는 inject.first_frame 이 필요합니다")
+    # 참고 그림(edit_ref): ref_image → image2, ref_image2 → image3, 글 노드 모두에
+    for name, inp in (("ref_image", "image2"), ("ref_image2", "image3")):
+        if slots_of(recipe, name) and action != "edit_ref":
+            e.append(f"inject.{name} 은 edit_ref 레시피에서만 쓸 수 있습니다")
+        if action == "edit_ref" and not slots_of(recipe, name):
+            e.append(f"edit_ref 레시피는 inject.{name} 이 필요합니다")
+        for s in slots_of(recipe, name):
+            if prompt.get(str(s.get("node")), {}).get("class_type") != "LoadImage":
+                e.append(f"inject.{name} 노드는 LoadImage 여야 합니다")
+            elif action == "edit_ref":
+                encs = _encode_nodes(prompt)
+                if not encs:
+                    e.append("edit_ref 레시피에 TextEncodeQwenImageEdit 계열 글 노드가 없습니다")
+                for tid in encs:
+                    if not _reaches_at(prompt, str(s["node"]), tid, inp):
+                        e.append(f"inject.{name} 의 이미지가 글 노드 {tid} 의 {inp} 입력에 닿지 않습니다")
+    # 끝 프레임(i2v_end): 모든 LTXVAddGuide(1단계·2단계)의 image 가 end_frame 에서 LTXVPreprocess 를 거쳐 와야 한다
+    ends = slots_of(recipe, "end_frame")
+    if ends and action != "i2v_end":
+        e.append("inject.end_frame 은 i2v_end 레시피에서만 쓸 수 있습니다")
+    if action == "i2v_end" and not ends:
+        e.append("i2v_end 레시피는 inject.end_frame 이 필요합니다")
+    for s in ends:
+        if prompt.get(str(s.get("node")), {}).get("class_type") != "LoadImage":
+            e.append("inject.end_frame 노드는 LoadImage 여야 합니다")
+        elif action == "i2v_end":
+            guides = [nid for nid, n in prompt.items() if n.get("class_type") == "LTXVAddGuide"]
+            if len(guides) < 2:
+                e.append(f"i2v_end 레시피는 LTXVAddGuide 가 1단계·2단계 둘 필요합니다 (지금 {len(guides)}개)")
+            for gid in guides:
+                src = (prompt[gid].get("inputs") or {}).get("image")
+                if not (is_link(src) and prompt.get(str(src[0]), {}).get("class_type") == "LTXVPreprocess"
+                        and _reaches_at(prompt, str(s["node"]), str(src[0]), "image")):
+                    e.append(f"inject.end_frame 의 이미지가 LTXVAddGuide {gid} 의 LTXVPreprocess.image 로 이어지지 않습니다")
+    for name in IMAGE_SLOT_NAMES:
+        for s in slots_of(recipe, name):
+            if isinstance(s, dict) and s.get("optional") and name not in OPTIONAL_OK_SLOTS:
+                e.append(f"inject.{name} 은 optional 일 수 없습니다 (참고 그림만 비울 수 있습니다)")
     for s in slots_of(recipe, "audio"):
         if prompt.get(str(s.get("node")), {}).get("class_type") != "LoadAudio":
             e.append("inject.audio 노드는 LoadAudio 여야 합니다")
-    if recipe.get("action") in ("talk", "voice_clone") and not slots_of(recipe, "audio"):
-        e.append(f"{recipe.get('action')} 레시피는 inject.audio 가 필요합니다")
-    if recipe.get("action") == "edit" and not slots_of(recipe, "edit_image"):
-        e.append("edit 레시피는 inject.edit_image 가 필요합니다")
+    if action in ("talk", "voice_clone") and not slots_of(recipe, "audio"):
+        e.append(f"{action} 레시피는 inject.audio 가 필요합니다")
+    if action in ("edit", "edit_ref") and not slots_of(recipe, "edit_image"):
+        e.append(f"{action} 레시피는 inject.edit_image 가 필요합니다")
     add("V6", e)
 
     # V7 저장 노드
@@ -356,7 +423,8 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
 
     # V9 금지 노드 (파일만 보고)
     e = []
-    loads = {str(s["node"]) for name in ("first_frame", "edit_image", "audio") for s in slots_of(recipe, name)}
+    loads = {str(s["node"]) for name in ("first_frame", "edit_image", "audio", "ref_image", "ref_image2", "end_frame")
+             for s in slots_of(recipe, name)}
     for nid, n in prompt.items():
         ct = str(n.get("class_type", ""))
         if BAD_NODE_RE.search(ct):
@@ -436,18 +504,36 @@ def check_value(slot: dict, value, input_dir: str | None = None):
     raise RecipeError(f"알 수 없는 type {t}")
 
 
+def prune_load_image(prompt: dict, node_id: str):
+    """값이 없는 optional 이미지 자리: LoadImage 노드와 그 노드로 가는 링크 입력을 모두 지운다.
+    지워지는 입력은 참고 그림처럼 '없어도 되는' 입력이어야 한다 (image2·image3 이 비면 편집 노드는 그림 한 장으로 돈다)"""
+    nid = str(node_id)
+    prompt.pop(nid, None)
+    for node in prompt.values():
+        ins = node.get("inputs") or {}
+        for k in [k for k, v in ins.items() if is_link(v) and str(v[0]) == nid]:
+            del ins[k]
+
+
 def build(recipe: dict, values: dict, input_dir: str | None = None) -> dict:
-    """레시피의 prompt 를 복사해 값을 넣는다. submit_comfy 가 dict 를 그 자리에서 바꾸므로 복사본을 준다."""
+    """레시피의 prompt 를 복사해 값을 넣는다. submit_comfy 가 dict 를 그 자리에서 바꾸므로 복사본을 준다.
+    optional 자리(참고 그림)는 값 키가 없거나 값이 None 이면 비운 것으로 보고 그래프에서 뺀다. 필수 자리가 비면 RecipeError."""
     prompt = copy.deepcopy(recipe["prompt"])
     for name, slots in recipe["inject"].items():
-        if name not in values:
-            raise RecipeError(f"값 {name} 이 없습니다")
-        vals = values[name]
         sl = slots if isinstance(slots, list) else [slots]
+        if name not in values:
+            if not all(s.get("optional") for s in sl):
+                raise RecipeError(f"값 {name} 이 없습니다")
+            vals = [None] * len(sl) if isinstance(slots, list) else None
+        else:
+            vals = values[name]
         if isinstance(slots, list) and not isinstance(vals, list):
             raise RecipeError(f"{name} 은 자리마다 값 목록이어야 합니다")
         for i, slot in enumerate(sl):
             v = vals[i] if isinstance(slots, list) else vals
+            if v is None and slot.get("optional"):
+                prune_load_image(prompt, slot["node"])
+                continue
             prompt[str(slot["node"])]["inputs"][slot["input"]] = check_value(slot, v, input_dir)
     for key, slot in (recipe.get("fixed") or {}).items():
         if "value" in slot and prompt[str(slot["node"])]["inputs"][slot["input"]] != slot["value"]:
@@ -495,7 +581,8 @@ def sample_values(recipe: dict, frames: int | None = None) -> dict:
     inj = recipe.get("inject") or {}
     vals = {"prompt": "a calm test scene", "seed": 0, "width": int(d.get("width") or 640),
             "height": int(d.get("height") or 640), "frames": f, "check_index": max(0, min(f // 2, 80)),
-            "first_frame": SAMPLE_IMAGE, "edit_image": SAMPLE_IMAGE,
+            "first_frame": SAMPLE_IMAGE, "edit_image": SAMPLE_IMAGE, "ref_image": SAMPLE_IMAGE, "ref_image2": SAMPLE_IMAGE,
+            "end_frame": SAMPLE_IMAGE, "last_index": max(0, min(f * 3 // 4, 480)),
             "seconds": max(2, min(int(round(max(f - 1, 1) / int(d.get("fps") or 24))), 20)),
             "bpm": 90, "keyscale": "C major", "audio": SAMPLE_AUDIO, "voice_instruct": "A calm adult voice.",
             "max_tokens": 512, "ref_text": "안녕하세요.", "x_vector": False}

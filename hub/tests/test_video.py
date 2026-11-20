@@ -2234,6 +2234,41 @@ def test_dialogue_reference_voice_is_in_character_short_and_capped():
     assert 14 <= video.voice_ref_max_seconds(video.VOICE_REF_TEXT) <= 15 and video.voice_ref_max_seconds("가" * 40) == 24.0
 
 
+def test_cast_library_has_style_refs_and_signature_and_style_key_picks_the_film_style():
+    """11-20 장면 잇기: 인물마다 화풍별 기준 그림(refs)·알아볼 소품(signature), 화풍 글 → 열쇠, 예전 ref 는 그대로"""
+    from app import cast_lib
+    lib = {e["id"]: e for e in cast_lib.library()}
+    for e in lib.values():
+        assert isinstance(e["refs"], dict) and set(e["refs"]) <= set(cast_lib.STYLE_KEYS), e["id"]
+        assert e["refs"]["semi"].endswith(".png") and not e["refs"]["semi"].startswith("/") and ".." not in e["refs"]["semi"]
+        assert 2 <= len(e["signature"]) <= 5 and not any(video.HANGUL_RE.search(s) for s in e["signature"]), e["id"]
+        assert cast_lib.ref_for(e, "semi") == e["refs"]["semi"] and cast_lib.ref_for(e, "legacy") == e["ref"]
+        assert cast_lib.ref_for(e, "photo") is None and cast_lib.ref_for(e, "anime") is None     # 다른 화풍에 예전 그림을 대신 내주지 않는다
+    assert lib["niki"]["refs"]["semi"] == "admin/main/2026-11-20/chaintest/S1_niki_semi_00001_.png"
+    assert lib["putor"]["refs"]["semi"] == "admin/main/2026-11-20/chaintest/S2_putor_semi_00001_.png"
+    assert lib["niki"]["ref"] == "admin/main/2026-11-19/cast/niki_00001_.png"                     # 예전 기준 그림은 그대로
+    assert lib["beth"]["refs"]["semi"] == lib["beth"]["ref"] and lib["james"]["refs"]["semi"] == lib["james"]["ref"]
+    assert "wine-red round-brimmed hat" in lib["niki"]["signature"]
+    # 변형은 기본 인물의 그림·소품을 이어받지 않는다 (자기 것이 있다)
+    assert lib["james_glasses"]["refs"]["semi"] == lib["james_glasses"]["ref"] != lib["james"]["refs"]["semi"]
+    assert lib["james_glasses"]["signature"] != lib["james"]["signature"]
+    assert cast_lib.ref_for({}, "semi") is None and cast_lib.ref_for({"refs": {"semi": ""}}, "semi") is None
+    assert cast_lib.ref_for({"ref": "a.png"}, "semi") is None and cast_lib.ref_for({"ref": "a.png"}, "legacy") == "a.png"
+    # 화풍 글 → 열쇠
+    key = cast_lib.style_key
+    assert key(lib["niki"]["style"]) == "semi" and key("") == "semi" and key(None) == "semi"
+    assert key("semi-realistic digital painting") == "semi" and key("반실사 컨셉아트") == "semi"
+    assert key("photorealistic live-action film still") == "photo" and key("실사 영화") == "photo" and key("a cinematic photograph") == "photo"
+    assert key("2D anime style") == "anime" and key("cel-shaded cartoon") == "anime" and key("애니메이션") == "anime" and key("만화 느낌") == "anime"
+    assert key("2.5D concept art") == "semi" and key("something unknown") == "semi"
+    # 이야기 설정집에 refs·signature 가 복사되고 ref 도 그대로 간다
+    story = {"bible": {"characters": [{"id": "A", "name_ko": "니키", "look": "x"}, {"id": "B", "name_ko": "행인", "look": "y"}]}}
+    cast_lib.apply_to_story(story, cast_lib.library())
+    c = story["bible"]["characters"][0]
+    assert c["refs"] == lib["niki"]["refs"] and c["signature"] == lib["niki"]["signature"] and c["ref"] == lib["niki"]["ref"]
+    assert "refs" not in story["bible"]["characters"][1]
+
+
 def test_cast_library_finds_names_in_the_request_and_matches_story_characters():
     from app import cast_lib
     assert [e["id"] for e in cast_lib.known_in("니키와 푸토르가 숲속을 걸어가며 대화")] == ["niki", "putor"]
@@ -2396,6 +2431,82 @@ def test_dialogue_storyboard_tells_the_model_the_known_characters_and_then_appli
             sys.modules.pop("app.llm", None)
         else:
             sys.modules["app.llm"] = saved
+
+
+
+# ── 장면 잇기 (11-20 설계): 이음 종류, 편집 글, 닻 ──
+def test_scene_seams_continue_cut_jump_refresh():
+    import copy as _copy
+    st = video.clean_dialogue_story(_copy.deepcopy(DLG_OK), 48)
+    sc = st["scenes"]
+    sc[1]["continues"] = True           # 같은 장소에서 동작이 이어짐
+    sc[5]["place"] = "P2"               # 장소가 바뀜
+    sc[4]["place"] = "P1"
+    assert video.scene_seam(st, 0) is None
+    assert video.scene_seam(st, 1) == "continue" and video.scene_seam(st, 2) == "cut"
+    assert video.scene_seam(st, 5) == "jump"
+    sc[3]["refresh"] = True             # 이어 쓰기가 많아 같은 구도를 다시 그린다
+    assert video.scene_seam(st, 3) == "refresh"
+    sc[4]["time"] = "dusk"              # 같은 장소라도 시간이 바뀌면 jump
+    assert video.scene_seam(st, 4) == "jump"
+    seams = video.scene_seams(st)
+    assert len(seams) == len(sc) - 1 and seams[0] == "continue"
+    assert [k for k in seams if k not in video.DISSOLVE_SEAMS] == ["cut"]       # 하드 컷은 cut 뿐 (사용자 11-20)
+
+
+def test_chain_mark_chains_refresh_instead_of_fresh_image():
+    scenes = [{"continues": i > 0, "place": "P1"} for i in range(6)]
+    video._mark_chains(scenes)
+    assert [bool(x.get("refresh")) for x in scenes] == [False, False, False, False, True, False]
+    assert scenes[4]["continues"] is False
+
+
+def test_chain_anchor_ids_and_pick_refs():
+    import copy as _copy
+    st = video.clean_dialogue_story(_copy.deepcopy(DLG_OK), 48)
+    assert video.anchor_ids(st) == ["B", "A"] or video.anchor_ids(st) == ["A", "B"]
+    ids = video.scene_people(st, 1)
+    assert set(ids) == {"A", "B"}
+    # 말하는 사람이 먼저, 자리는 2장까지
+    assert video.pick_refs(st, 1, ["A", "B"])[0] == "B" and len(video.pick_refs(st, 1, ["A", "B"])) == 2
+    assert video.pick_refs(st, 1, ["A"]) == ["A"] and video.pick_refs(st, 0, ["A", "B"]) == []
+    st["bible"]["characters"].append({"id": "D", "look": "a small white puppy with floppy ears"})
+    st["scenes"][1]["characters"].append("D")
+    assert "D" not in video.scene_people(st, 1) and "D" not in video.anchor_ids(st)        # 동물은 사람 기준 그림이 없다
+
+
+def test_chain_cut_edit_prompt_uses_the_reference_for_faces():
+    import copy as _copy
+    st = video.clean_dialogue_story(_copy.deepcopy(DLG_OK), 48)
+    pr = video.cut_edit_prompt(st, 1, ["B", "A"], "cut")
+    assert "image 1" in pr and "image 2" in pr and "image 3" in pr
+    assert "has exactly the face, hair and clothes of image 2" in pr and "not the face of image 1" in pr
+    assert "Exactly 2 people" in pr and "faces visible" in pr and "not a glossy 3D render" in pr
+    assert "same light and colours as image 1" in pr and "no Korean" or not video.HANGUL_RE.search(pr)
+    assert not video.HANGUL_RE.search(pr) and len(pr) <= 1990
+    # 장소가 바뀌는 컷은 그림 1 의 빛·색 문장을 빼고 새 장소·시간을 쓴다
+    pj = video.cut_edit_prompt(st, 5, ["A"], "jump")
+    assert "new place" in pj and "same light and colours as image 1" not in pj and "The place is now:" in pj
+    pr2 = video.cut_edit_prompt(st, 4, [], "refresh")
+    assert "Redraw the same camera shot as image 1" in pr2 and "Exactly 1" not in pr2 and "exactly one person" in pr2
+    # 끝 키프레임·첫 장면 구성·화풍 변환
+    ek = video.end_keyframe_prompt(st, 1, "they stop and look at each other.")
+    assert "a few seconds later" in ek and "faces visible" in ek and "none walking out of frame" in ek and "Exactly 2 people" in ek
+    cp = video.compose_prompt(st, 1, ["A", "B"])
+    assert "face, hair and clothes of image 1" in cp and "of image 2" in cp and "Exactly 2 people" in cp
+    assert "anime" in video.style_convert_prompt("anime", "girl") and "live-action" in video.style_convert_prompt("photo", "man")
+    assert "semi-realistic" in video.style_convert_prompt("semi", "girl")
+
+
+def test_chain_style_keep_follows_the_film_style():
+    import copy as _copy
+    st = video.clean_dialogue_story(_copy.deepcopy(DLG_OK), 48)
+    assert video.style_key(st) == "semi" and "not cel-shaded" in video.style_keep(st)
+    st["bible"]["style"] = "2D anime film, clean cel-shaded line art"
+    assert video.style_key(st) == "anime" and "2D anime-style" in video.style_keep(st)
+    st["bible"]["style"] = "photorealistic cinematic live action"
+    assert video.style_key(st) == "photo" and "live-action" in video.style_keep(st)
+    assert "There is no person" in video.people_sentence(0) and video.people_sentence(1) == video.ONE_PERSON
 
 
 if __name__ == "__main__":

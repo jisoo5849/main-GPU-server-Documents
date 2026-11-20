@@ -1,7 +1,7 @@
 {
  "schema": "studio-recipe-1",
  "id": "ltx23_ia2v_talk",
- "version": 2,
+ "version": 3,
  "title": "대사 소리로 입 맞춤 · LTX-2.3 IA2V (증류 LoRA)",
  "quality_label": "빠름",
  "action": "talk",
@@ -10,7 +10,7 @@
  "source": {
   "template": "video_ltx2_3_ia2v",
   "exported": "2026-11-19 메인 ComfyUI(8101) graphToPrompt",
-  "changes": "프롬프트 다듬기 노드(345 LoRA·346 TextGenerateLTX2Prompt·347 PreviewAny·348 스위치·349 켜기)를 빼고 306 글 인코더에 319 글을 바로 이음. 부정 글을 화풍과 상관없는 결함으로 바꿈. 높이 720→704(결과와 같게). 11-20: 검사 프레임(900 ImageFromBatch·901 SaveImage, 클립 가운데 한 장) 추가",
+  "changes": "프롬프트 다듬기 노드(345 LoRA·346 TextGenerateLTX2Prompt·347 PreviewAny·348 스위치·349 켜기)를 빼고 306 글 인코더에 319 글을 바로 이음. 부정 글을 화풍과 상관없는 결함으로 바꿈. 높이 720→704(결과와 같게). 11-20: 검사 프레임(900 ImageFromBatch·901 SaveImage, 클립 가운데 한 장) 추가 / 11-20 판 3: 마지막 프레임 저장 추가(902 ImageFromBatch → 903 SaveImage). 합칠 때 잘리는 지점의 프레임을 last_index 로 받는다 (끝 -1 은 입 맞춤 모델이 대사 뒤에 어두워지는 구간이라 쓰지 않는다)",
   "measured": "2026-11-19 NIKI 시범·숲길 단편: 대사 6초 샷 약 40~60초, 12초 약 90초, 17초 약 190초 (1280×704)"
  },
  "prompt": {
@@ -624,6 +624,27 @@
      0
     ]
    }
+  },
+  "902": {
+   "inputs": {
+    "image": [
+     "340:316",
+     0
+    ],
+    "batch_index": 0,
+    "length": 1
+   },
+   "class_type": "ImageFromBatch"
+  },
+  "903": {
+   "inputs": {
+    "images": [
+     "902",
+     0
+    ],
+    "filename_prefix": "last_frame"
+   },
+   "class_type": "SaveImage"
   }
  },
  "inject": {
@@ -686,10 +707,23 @@
     "input": "filename_prefix",
     "type": "prefix",
     "suffix": "check_frame"
+   },
+   {
+    "node": "903",
+    "input": "filename_prefix",
+    "type": "prefix",
+    "suffix": "last_frame"
    }
   ],
   "check_index": {
    "node": "900",
+   "input": "batch_index",
+   "type": "int",
+   "min": 0,
+   "max": 480
+  },
+  "last_index": {
+   "node": "902",
    "input": "batch_index",
    "type": "int",
    "min": 0,
@@ -721,6 +755,13 @@
   },
   "check": {
    "node": "901",
+   "kind": "image",
+   "ext": [
+    ".png"
+   ]
+  },
+  "last": {
+   "node": "903",
    "kind": "image",
    "ext": [
     ".png"
@@ -817,7 +858,9 @@
      "340:316",
      "341",
      "900",
-     "901"
+     "901",
+     "902",
+     "903"
     ]
    }
   ]
