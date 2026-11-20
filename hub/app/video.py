@@ -677,7 +677,8 @@ Rules:
 - The bible look of a character lists everything worn or carried that the audience sees (hair, face, glasses or none, coat, bag, umbrella). A scene must not add anything to a character that the bible look does not list (glasses, hats, scarves, beards, masks).
 - Every scene can be shot from one still frame: one place, one main action, no cut inside it, no flashback, and no text, signs or logos.
 - Name no brands, songs, artists or real people. English everywhere except "title_ko", "logline_ko" and "ko".
-- A person must not be added when the request has none."""
+- A person must not be added when the request has none.
+- Every scene that shows people must end with all of its listed characters still fully in frame and their faces visible (front or three-quarter view), because the next scene is built from this scene's last frame and takes the people's faces from it. Never end a shot on a back view, on a character walking out of frame or away into the distance, or on an empty place; show a departure by cutting to the next scene. Never let a character walk into a shot: every listed character is already in frame in the first moment."""
 STORY_SCHEMA = {"type": "object", "required": ["title_ko", "logline_ko", "bible", "music", "scenes"], "properties": {
     "title_ko": {"type": "string"}, "logline_ko": {"type": "string"},
     "bible": {"type": "object", "required": ["characters", "places", "time", "light"], "properties": {
@@ -923,16 +924,43 @@ def _fit_seconds(scenes: list[dict], seconds: float):
 
 
 def _mark_chains(scenes: list[dict]):
-    """이어 쓰기가 CHAIN_MAX 번 연속되면 다음 장면은 새 장면 이미지로 시작한다"""
+    """이어 쓰기가 CHAIN_MAX 번 연속되면 그 장면은 앞 프레임을 같은 구도로 다시 그려 시작한다 (refresh, 11-20 설계: 색·선명도가 쌓이는 것을 되돌린다)"""
     run = 0
     for s in scenes:
         if s["continues"]:
             run += 1
             if run > CHAIN_MAX:
                 s["continues"] = False
+                s["refresh"] = True
                 run = 0
         else:
             run = 0
+
+
+# 장면 이음 종류 (11-20 설계, docs/scene-chaining-design.md 2·7절): 모든 장면은 앞 장면의 마지막 프레임에서 시작한다
+SEAM_CONTINUE, SEAM_CUT, SEAM_JUMP, SEAM_REFRESH = "continue", "cut", "jump", "refresh"
+DISSOLVE_SEAMS = (SEAM_CONTINUE, SEAM_JUMP, SEAM_REFRESH)      # 하드 컷은 cut 하나뿐이다 (사용자 11-20: 장소·시간이 바뀌는 컷은 디졸브)
+
+
+def scene_seam(story: dict, i: int) -> str | None:
+    """장면 i 가 앞 장면에 이어지는 방식. 첫 장면은 None.
+    continue = 같은 샷이 그대로 이어짐(끝 프레임이 곧 첫 화면), refresh = 이어짐이 CHAIN_MAX 를 넘어 같은 구도를 다시 그림,
+    jump = 장소나 시간이 바뀜, cut = 같은 장소·시간의 새 카메라 샷"""
+    if i <= 0:
+        return None
+    sc, prev = story["scenes"][i], story["scenes"][i - 1]
+    if sc.get("continues"):
+        return SEAM_CONTINUE
+    if sc.get("refresh") and sc.get("place") == prev.get("place"):
+        return SEAM_REFRESH
+    if sc.get("place") != prev.get("place") or (sc.get("time") and sc.get("time") != prev.get("time")):
+        return SEAM_JUMP
+    return SEAM_CUT
+
+
+def scene_seams(story: dict) -> list[str]:
+    """이음 종류 목록 (장면 수 - 1 개). 합치기(assemble)가 이음마다 디졸브나 하드 컷을 정한다"""
+    return [scene_seam(story, i) for i in range(1, len(story["scenes"]))]
 
 
 PHOTO_STYLE_RE = re.compile(r"photo[- ]?real|live[- ]action|photograph|cinematic live", re.I)
@@ -1441,6 +1469,147 @@ def cast_edit_prompt(story: dict, i: int) -> str:
             f"the frame at nothing visible, a {mood} expression, {talking}. The background is now this place, softly out of focus: "
             f"{place} Time: {b['time']} Light: {b['light']} The hands are not visible. {ONE_PERSON}"
             + _style_line(story))[:1990]
+
+
+# ── 장면 잇기 (11-20 설계, docs/scene-chaining-design.md): 모든 장면의 첫 화면은 앞 장면 마지막 프레임을 고쳐 만든다 ──
+# 얼굴·머리·옷은 늘 고정 기준 그림에서 (11-19 손으로 만든 시범이 일관됐던 까닭: 키프레임마다 같은 기준 그림에서 새로 편집했다)
+STYLE_KEEP = {
+    "semi": ("Keep the exact rendering style of the reference images: a soft painted semi-realistic illustration with visible painterly brush "
+             "texture, matte soft shading and natural proportions, the same level of painted detail on faces at every distance. "
+             "It is not a glossy 3D render, not a cartoon, not cel-shaded."),
+    "anime": ("Keep the exact rendering style of the reference images: a 2D anime-style illustration with clean cel-shaded line art and flat "
+              "colours with soft shading, the same line weight on every face. It is not a 3D render, not a photograph."),
+    "photo": ("Keep the exact look of the reference images: a real photograph or live-action film still with real skin, hair and fabric and "
+              "natural light. It is not a painting, not a cartoon, not a 3D render."),
+}
+
+
+def style_key(story: dict) -> str:
+    """영화 화풍 열쇠: photo(실사)·semi(반실사)·anime(애니). 화풍 글에서 정한다 (cast_lib.style_key)"""
+    return cast_lib.style_key(_s(((story or {}).get("bible") or {}).get("style")))
+
+
+def style_keep(story: dict) -> str:
+    return STYLE_KEEP.get(style_key(story), STYLE_KEEP["semi"])
+
+
+def people_sentence(n: int) -> str:
+    """그림 속 사람 수 문장: 한 사람이면 ONE_PERSON, 여럿이면 정확한 수 (복제·지어낸 사람을 막는다)"""
+    if n <= 0:
+        return "There is no person in the picture."
+    if n == 1:
+        return ONE_PERSON
+    return f"Exactly {n} people in the picture, no other person, no reflection, no copy or mirror image of anyone."
+
+
+def anchor_ids(story: dict) -> list[str]:
+    """고정 기준 그림이 필요한 인물 id: 어느 장면에든 나오는 사람(동물 아님), 처음 나오는 차례대로. 대사가 없어도 모든 긴 영상에 둔다"""
+    looks = {c["id"]: c["look"] for c in story["bible"]["characters"]}
+    out = []
+    for sc in story["scenes"]:
+        for cid in list(sc.get("characters") or []) + ([sc["speaker"]] if sc.get("speaker") else []):
+            if cid in looks and cid not in out and not is_animal_look(looks[cid]):
+                out.append(cid)
+    return out
+
+
+def scene_people(story: dict, i: int) -> list[str]:
+    """장면 i 에 나오는 사람 id (동물 아님). 말하는 사람이 characters 에 없어도 넣는다"""
+    looks = {c["id"]: c["look"] for c in story["bible"]["characters"]}
+    sc = story["scenes"][i]
+    ids = list(sc.get("characters") or [])
+    if sc.get("speaker") and sc["speaker"] not in ids:
+        ids.append(sc["speaker"])
+    return [c for c in ids if c in looks and not is_animal_look(looks[c])]
+
+
+def pick_refs(story: dict, i: int, have: list[str], limit: int = 2) -> list[str]:
+    """편집 그림 2·3 자리에 넣을 인물 id (고정 기준 그림이 있는 사람만). 말하는 사람이 먼저, 그다음 나오는 차례.
+    그림이 limit 장을 넘으면 넘친 인물은 글로만 설명한다"""
+    people = [c for c in scene_people(story, i) if c in have]
+    sp = story["scenes"][i].get("speaker")
+    people.sort(key=lambda c: 0 if c == sp else 1)
+    return people[:limit]
+
+
+def _who(story: dict, cid: str) -> str:
+    return ((next((c["look"] for c in story["bible"]["characters"] if c["id"] == cid), "") or "").split(",")[0]).strip().rstrip(".")
+
+
+def cut_edit_prompt(story: dict, i: int, ref_ids: list[str], seam: str | None = None) -> str:
+    """앞 장면 마지막 프레임(그림 1)을 장면 i 의 첫 화면으로 고치는 편집 지시 (Qwen 편집, 그림 2·3 = ref_ids 순서의 인물 기준 그림).
+    그림 1 은 구도·빛·장소·그림체, 얼굴·머리·옷은 늘 그 인물의 기준 그림에서 (일관성이 가장 중요하다, 11-20 사용자).
+    seam: cut(같은 장소·시간의 새 샷), jump(장소·시간 바뀜: 그림 1 의 빛·색 문장을 뺀다), refresh(같은 구도를 다시 그림)"""
+    sc = story["scenes"][i]
+    b = story["bible"]
+    looks = {c["id"]: c["look"] for c in b["characters"]}
+    place = next((p["look"] for p in b["places"] if p["id"] == sc["place"]), "")
+    people = scene_people(story, i)
+    parts = []
+    if seam == SEAM_REFRESH:
+        parts.append("Redraw the same camera shot as image 1, the same moment and composition, with the same people in the same places, "
+                     "with clean sharp detail on every face and the original light and colours.")
+    elif seam == SEAM_JUMP:
+        parts.append("Cut to a new shot in a new place, built from image 1 only for the painting style and the people.")
+    else:
+        parts.append("Cut to a new camera shot of the same moment in the same place, built from image 1.")
+    parts.append(f"New shot: {sc['shot']}. What happens: {sc['action']}")
+    for n, cid in enumerate(ref_ids, start=2):
+        parts.append(f"The person {_who(story, cid)} has exactly the face, hair and clothes of image {n}, not the face of image 1; "
+                     "they appear once in the frame.")
+    for cid in people:
+        if cid not in ref_ids:
+            parts.append(f"The person {looks.get(cid, '')} looks exactly as in image 1.")
+    if seam == SEAM_JUMP:
+        parts.append(f"The place is now: {place} Time: {sc.get('time') or b['time']} Light: {b['light']}")
+    else:
+        parts.append(f"The place: {place} Light: {b['light']} The same light and colours as image 1.")
+    parts.append("All the people are fully in frame with their faces visible (front or three-quarter) and all are already in frame in the "
+                 "first moment. The hands are not visible or relaxed at the sides.")
+    parts.append(style_keep(story))
+    parts.append(people_sentence(len(people)))
+    return " ".join(parts)[:1990]
+
+
+def end_keyframe_prompt(story: dict, i: int, ending: str = "") -> str:
+    """장면 i 의 첫 화면(그림 1)에서 '이 샷이 끝나는 순간' 그림을 만드는 편집 지시. 같은 샷·같은 장소 안에서 자세·표정·작은 카메라 움직임만 바꾼다.
+    인물은 모두 화면 안, 얼굴이 정면이나 3/4 로 보인다 (R2: 다음 장면은 이 끝에서 시작한다)"""
+    people = scene_people(story, i)
+    end = ending.strip().rstrip(".") or "everyone calm in the same frame, the camera settled"
+    return (f"The same camera shot a few seconds later, at the very end of this shot: {end}. Keep the same place, the same light and the "
+            "same people with exactly the same faces, hair and clothes as image 1; only the pose, the expression and a small camera move "
+            "change. All the people stay fully in frame, standing or sitting calmly, faces visible (front or three-quarter), none walking "
+            f"out of frame. The hands are relaxed. {style_keep(story)} {people_sentence(len(people))}")[:1990]
+
+
+def compose_prompt(story: dict, i: int, ref_ids: list[str]) -> str:
+    """영화 첫 장면을 인물 기준 그림 2~3장(그림 1~3)에서 구성하는 편집 지시. 각자 자기 그림의 얼굴·머리·옷"""
+    sc = story["scenes"][i]
+    b = story["bible"]
+    looks = {c["id"]: c["look"] for c in b["characters"]}
+    place = next((p["look"] for p in b["places"] if p["id"] == sc["place"]), "")
+    people = scene_people(story, i)
+    parts = [f"Compose one new picture: {sc['shot']}. What happens: {sc['action']}"]
+    for n, cid in enumerate(ref_ids, start=1):
+        parts.append(f"The person {_who(story, cid)} has exactly the face, hair and clothes of image {n}.")
+    for cid in people:
+        if cid not in ref_ids:
+            parts.append(f"The person {looks.get(cid, '')}")
+    parts.append(f"The place: {place} Time: {sc.get('time') or b['time']} Light: {b['light']}")
+    parts.append("All the people are fully in frame with their faces visible (front or three-quarter). The hands are not visible or relaxed.")
+    parts.append(style_keep(story))
+    parts.append(people_sentence(len(people)))
+    return " ".join(parts)[:1990]
+
+
+def style_convert_prompt(key: str, who: str) -> str:
+    """인물 기준 그림을 영화 화풍으로 바꾸는 편집 지시 (11-20 메인 실측 S3~S8). 얼굴·머리·옷은 그대로"""
+    base = ("Redraw this exact {who} as {kind}: the same face shape, hairstyle, hair colour, eye colour and the same clothes and "
+            "accessories, the same head-and-shoulders framing, centered, the hands out of the frame, a plain background. ")
+    kinds = {"anime": "a character in a 2D anime feature film: clean cel-shaded line art, flat colours with soft shading. Not a photograph, not a 3D render",
+             "photo": "a real person in a live-action film still: photorealistic skin, real hair and real fabric, natural soft light. Not a painting, not a cartoon, not a 3D render",
+             "semi": "a calm, sharp head-and-shoulders portrait in a soft painted semi-realistic illustration style"}
+    return base.format(who=who or "person", kind=kinds.get(key, kinds["semi"])) + ONE_PERSON
 
 
 def talk_prompt(story: dict, i: int) -> str:

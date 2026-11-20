@@ -22,7 +22,51 @@ LIB_FILE = os.path.join(os.path.dirname(__file__), "cast_library.json")
 REQUIRED = ("id", "names", "look")
 # 사용자가 일부러 실사를 말했으면 라이브러리의 그림체로 바꾸지 않는다
 REAL_STYLE_RE = re.compile(r"실사|포토\s*리얼|photo\s*-?real|live[- ]action", re.I)
+# 화풍 열쇠 (11-20 장면 잇기 설계 4절): 한 영화의 인물은 모두 한 화풍이어야 해서, 화풍 글을 세 열쇠 중 하나로 줄여 인물마다 그 화풍의 기준 그림을 고른다
+STYLE_KEYS = ("photo", "semi", "anime")
+_SEMI_RE = re.compile(r"semi\s*-?\s*(?:real|photo)|반\s*실사|painterly|digital\s+painting|\bpainted\b|수채|유화", re.I)
+_PHOTO_RE = re.compile(REAL_STYLE_RE.pattern + r"|photograph\w*", re.I)
+_ANIME_RE = re.compile(r"anime|animation|animated|cartoon|cel[\s-]*shad|\b2\s*-?\s*d\b|애니|만화|웹툰", re.I)
 _cache: dict = {}
+
+
+def style_key(style: str) -> str:
+    """화풍 글 → 열쇠 'photo'(실사)·'semi'(반실사)·'anime'(애니). 위에서부터 먼저 맞는 것:
+    1) semi-realistic·painting·반실사 등 (라이브러리 화풍 글은 'semi-realistic'을 품어 실사 낱말에 걸리지 않게 먼저 본다)
+    2) 실사·photorealistic·live action·photograph  3) anime·2D·cel·animation·cartoon·애니·만화
+    4) 어디에도 안 맞거나 비었으면 semi (우리 기본 그림체)"""
+    t = str(style or "")
+    if _SEMI_RE.search(t):
+        return "semi"
+    if _PHOTO_RE.search(t):
+        return "photo"
+    if _ANIME_RE.search(t):
+        return "anime"
+    return "semi"
+
+
+def ref_for(entry: dict, key: str) -> str | None:
+    """인물의 그 화풍 기준 그림 경로. 없으면 None (영화 시작 때 그 화풍으로 바꿔 만든다).
+    key 가 'legacy' 이면 예전 기준 그림 ref (2.5D 만화풍): 다른 열쇠에는 ref 를 대신 내주지 않는다 (화풍이 섞이므로)"""
+    if not isinstance(entry, dict):
+        return None
+    if key == "legacy":
+        return entry.get("ref") or None
+    refs = entry.get("refs")
+    v = refs.get(key) if isinstance(refs, dict) else None
+    return v if isinstance(v, str) and v.strip() else None
+
+
+def _clean_refs(e: dict) -> dict:
+    """refs 는 {화풍 열쇠: 결과 폴더 안 상대 경로}만 남긴다 (틀린 칸 하나로 인물을 버리지 않는다)"""
+    refs = e.get("refs")
+    if refs is None:
+        return e
+    good = {k: v for k, v in refs.items() if isinstance(refs, dict) and k in STYLE_KEYS and isinstance(v, str)
+            and v.strip() and not v.startswith("/") and ".." not in v} if isinstance(refs, dict) else {}
+    if good != refs:
+        log.warning("인물 라이브러리 %s 의 refs 에 형식이 틀린 칸이 있어 뺍니다", e.get("id"))
+    return {**e, "refs": good}
 
 
 def _valid(e) -> bool:
@@ -50,13 +94,14 @@ def library() -> list[dict]:
     out = [e for e in (data.get("characters") or []) if _valid(e)]
     if len(out) != len(data.get("characters") or []):
         log.warning("인물 라이브러리에 형식이 틀린 항목이 있어 건너뜁니다 (%s)", path)
-    out = _resolve_variants(out, path)
+    out = _resolve_variants([_clean_refs(e) for e in out], path)
     _cache[path] = (mtime, out)
     return out
 
 
 # 같은 사람의 다른 모습 (11-20: 제임스는 무언가에 집중할 때만 안경을 쓴다). 변형 항목은 variant_of 에 기본 인물 id 를, variant_when 에
-# 그 모습을 쓸 때(영어 글)를 적고, 목소리·말투·그림체는 기본 인물 것을 이어받는다. 이름으로는 찾지 않고 기본 인물이 나오면 따라 나온다
+# 그 모습을 쓸 때(영어 글)를 적고, 목소리·말투·그림체는 기본 인물 것을 이어받는다
+# (기준 그림 ref·refs 와 signature 는 이어받지 않는다: 안경 쓴 얼굴은 자기 그림이 따로 있다). 이름으로는 찾지 않고 기본 인물이 나오면 따라 나온다
 INHERIT = ("style", "speech", "voice", "voice_ko", "voice_fx", "voice_ref", "voice_ref_text")
 
 
@@ -161,7 +206,7 @@ def prompt_block(entries: list[dict] | None, speech: bool = True, by_id: bool = 
 
 def apply_to_story(story: dict, entries: list[dict], text: str = "", keep_style: bool = False) -> dict:
     """구성안의 설정집을 라이브러리로 덮어쓴다. {설정집 인물 id: 라이브러리 id} 를 돌려준다.
-    - 같은 인물: 외형(look)·목소리(voice·voice_ko)·후처리(voice_fx)·기준 그림(ref)과 표시 이름을 라이브러리 값으로.
+    - 같은 인물: 외형(look)·목소리(voice·voice_ko)·후처리(voice_fx)·기준 그림(ref·refs)·알아볼 소품(signature)과 표시 이름을 라이브러리 값으로.
     - 그림체: 모델이 그림체를 정하지 않았거나 실사로 정했고(keep_style 이 거짓) 사용자가 실사를 말하지 않았으면 라이브러리의 그림체로.
     keep_style 은 구성안의 그림체가 이미 사실이 아닌 화풍(애니메이션 등)이라는 뜻이다: 사용자가 말한 화풍을 지킨다"""
     matched: dict = {}
@@ -177,6 +222,10 @@ def apply_to_story(story: dict, entries: list[dict], text: str = "", keep_style:
         c["library"] = e["id"]
         # voice_ref(+voice_ref_text): 승인된 기준 목소리 소리 파일과 그 글. 있으면 영상마다 목소리를 새로 설계하지 않고 이 소리를 복제한다
         for k in ("voice", "voice_ko", "voice_fx", "ref", "voice_ref", "voice_ref_text"):
+            if e.get(k):
+                c[k] = e[k]
+        # refs(화풍별 기준 그림)·signature(알아볼 소품): 새 감독 코드가 읽는다. ref 는 예전 코드를 위해 그대로 둔다
+        for k in ("refs", "signature"):
             if e.get(k):
                 c[k] = e[k]
         matched[str(c.get("id"))] = e["id"]

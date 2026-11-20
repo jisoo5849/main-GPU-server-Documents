@@ -72,7 +72,15 @@ def t_mix_and_final_commands():
 
 
 def t_transitions_are_clamped_and_total_shrinks_by_overlaps():
-    assert A.fit_transitions([10, 10, 10], None) == [0.0, 0.0] and A.fit_transitions([10, 10, 10], [0.6]) == [0.0, 0.0]   # 길이가 안 맞으면 전부 컷
+    assert A.fit_transitions([10, 10, 10], None) == [0.0, 0.0]            # 목록이 없으면 전부 컷
+    for bad in ([0.6], [], [0.6, 0.6, 0.6]):                              # 길이가 안 맞으면 조용히 컷이 되지 않고 오류 (11-20)
+        try:
+            A.fit_transitions([10, 10, 10], bad)
+        except A.AssembleError as e:
+            assert "이음새" in str(e)
+        else:
+            raise AssertionError("길이가 안 맞는 이음새 목록을 받았다")
+    assert A.fit_transitions([5], []) == [] and A.fit_transitions([5], None) == []
     assert A.fit_transitions([10, 10, 10], [0.6, 0]) == [0.6, 0.0]
     assert A.fit_transitions([10, 1.0], [0.6]) == [0.45]                  # 짧은 쪽 절반을 넘지 않는다
     assert A.fit_transitions([10, 0.2], [0.6]) == [0.0] and A.fit_transitions([10, 10], ["x"]) == [0.0]
@@ -312,6 +320,139 @@ def t_real_join_when_ffmpeg_is_present():
         info2 = A.run([a, c], music, out2, True, [0.6])
         got2 = A.probe(out2)
         assert abs(got2["duration"] - 4.4) < 0.3 and got2["audio"] and info2["dissolves"] == 1 and not info2["copy_video"]
+
+
+def t_overlaps_for_cuts_only_on_cut_seams():
+    assert A.overlaps_for(["continue", "cut", "jump", "refresh"], 0.6) == [0.6, 0.0, 0.6, 0.6]
+    assert A.overlaps_for(["CUT", " cut "], 0.5) == [0.0, 0.0]                  # 대소문자·공백은 무시
+    assert A.overlaps_for(["zoom", None, ""], 0.5) == [0.5, 0.5, 0.5]            # 모르는 값은 디졸브
+    assert A.overlaps_for([], 0.6) == [] and A.overlaps_for(None, 0.6) == []
+    assert A.LONG_DISSOLVE == 0.6 and A.DIALOGUE_OVERLAP == 0.5
+
+
+def t_seam_length_mismatch_is_an_error_not_a_silent_cut():
+    try:
+        A._seam_overlaps(3, ["cut"], 0.5)
+    except A.AssembleError as e:
+        assert "하나 적어야" in str(e)
+    else:
+        raise AssertionError("길이가 안 맞는 이음 종류 목록을 받았다")
+    assert A._seam_overlaps(1, [], 0.5) == [] and A._seam_overlaps(3, ["cut", "jump"], 0.5) == [0.0, 0.5]
+    if not A.available():
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b = _make_clip(tmp, "a.mp4", 2, "testsrc"), _make_clip(tmp, "b.mp4", 2, "testsrc2")
+        for fn in (lambda: A.run([a, b], None, os.path.join(tmp, "o.mp4"), seams=["cut", "cut"]),
+                   lambda: A.run_dialogue([a, b], [], None, os.path.join(tmp, "o.mp4"), seams=[])):
+            try:
+                fn()
+            except A.AssembleError as e:
+                assert "하나 적어야" in str(e), str(e)
+            else:
+                raise AssertionError("이음 종류 목록 길이가 틀려도 합치기가 돌았다")
+
+
+def t_mixed_seams_build_a_graph_with_dissolve_and_plain_concat():
+    """cut 은 겹침 0 이라 xfade(길이 0 은 잘못된 값)를 쓰지 않고 그래프 안에서 concat, 소리도 concat"""
+    ov = A.overlaps_for(["continue", "cut", "jump"], 0.6)
+    vf = A.build_video_filter([10, 10, 10, 10], ov, 24)
+    assert vf.count("xfade") == 2 and "duration=0.000" not in vf and "[x1][v2]concat=n=2:v=1:a=0[x2]" in vf
+    af = A.build_mix_filter([10, 10, 10, 10], [True] * 4, [0] * 4, None, ov)
+    assert af.count("acrossfade") == 2 and "[y1][a2]concat=n=2:v=0:a=1[y2]" in af
+    starts, total = A.dialogue_starts([6.0, 5.0, 5.0, 5.0], ov)
+    assert starts == [0.0, 5.4, 10.4, 14.8] and abs(total - 19.8) < 1e-6      # 컷 이음새는 겹치지 않는다
+
+
+def _make_clip(tmp, name, sec, src, audio=False, size="320x176"):
+    path = os.path.join(tmp, name)
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"{src}=size={size}:rate=24:duration={sec}"]
+    if audio:
+        cmd += ["-f", "lavfi", "-i", f"sine=frequency=440:duration={sec}:sample_rate=48000"]
+    cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p"] + (["-c:a", "aac", "-shortest"] if audio else []) + [path]
+    subprocess.run(cmd, check=True, capture_output=True)
+    return path
+
+
+def t_real_run_with_seams_when_ffmpeg_is_present():
+    """이음 종류별 합치기: 전부 cut 은 다시 인코딩 없이, 전부 디졸브·섞임은 겹친 만큼 짧게, 소리도 길이를 맞춘다"""
+    if not A.available():
+        print("  (ffmpeg 가 없어 실제 이음 종류 합치기는 건너뜀)")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b, c = (_make_clip(tmp, f"{n}.mp4", 3, s, True) for n, s in (("a", "testsrc"), ("b", "testsrc2"), ("c", "smptebars")))
+        music = os.path.join(tmp, "m.mp3")
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        "sine=frequency=220:duration=12:sample_rate=48000", music], check=True, capture_output=True)
+        out = os.path.join(tmp, "o", "cuts.mp4")
+        info = A.run([a, b, c], music, out, seams=["cut", "cut"])
+        assert info["copy_video"] and info["dissolves"] == 0 and abs(A.probe(out)["duration"] - 9.0) < 0.3
+        info = A.run([a, b, c], music, os.path.join(tmp, "o", "dis.mp4"), seams=["continue", "jump"])
+        got = A.probe(os.path.join(tmp, "o", "dis.mp4"))
+        assert info["dissolves"] == 2 and not info["copy_video"] and abs(got["duration"] - 7.8) < 0.3 and got["audio"]
+        for k, seams in enumerate((["continue", "cut"], ["cut", "refresh"])):
+            o = os.path.join(tmp, "o", f"mix{k}.mp4")
+            info = A.run([a, b, c], music, o, seams=seams)
+            got = A.probe(o)
+            assert info["dissolves"] == 1 and info["overlaps"].count(0.0) == 1 and not info["copy_video"]
+            assert abs(got["duration"] - 8.4) < 0.3 and got["audio"], (seams, got)
+        # seams 가 없으면 지금까지처럼 transitions 가 정한다
+        info = A.run([a, b], None, os.path.join(tmp, "o", "old.mp4"), True, [0.6])
+        assert info["dissolves"] == 1
+
+
+def t_real_dialogue_with_seams_when_ffmpeg_is_present():
+    if not A.available():
+        print("  (ffmpeg 가 없어 실제 이음 종류 대사 합치기는 건너뜀)")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        clips = [_make_clip(tmp, "a.mp4", 4, "testsrc"), _make_clip(tmp, "b.mp4", 3, "testsrc2"), _make_clip(tmp, "c.mp4", 3, "smptebars")]
+        tone = os.path.join(tmp, "l.mp3")
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        "sine=frequency=440:duration=2:sample_rate=48000", tone], check=True, capture_output=True)
+        lines = [{"file": tone, "shot": 0}, {"file": tone, "shot": 2}]
+        for seams, want in ((["cut", "cut"], 10.0), (["continue", "cut"], 9.5), (["jump", "refresh"], 9.0), (["cut", "jump"], 9.5)):
+            o = os.path.join(tmp, "o", "_".join(seams) + ".mp4")
+            info = A.run_dialogue(clips, lines, None, o, seams=seams)
+            got = A.probe(o)
+            assert abs(got["duration"] - want) < 0.3 and got["audio"], (seams, got)
+            assert info["overlaps"] == A.overlaps_for(seams, 0.5) and abs(info["expected"] - want) < 1e-6
+        info = A.run_dialogue(clips, lines, None, os.path.join(tmp, "o", "default.mp4"))     # seams 없음 = 전부 0.5초
+        assert info["overlaps"] == [0.5, 0.5]
+
+
+def t_real_frame_at_and_last_frame_when_ffmpeg_is_present():
+    if not A.available():
+        print("  (ffmpeg 가 없어 프레임 뽑기는 건너뜀)")
+        return
+    try:
+        from PIL import Image
+    except ImportError:
+        Image = None
+    with tempfile.TemporaryDirectory() as tmp:
+        clip = _make_clip(tmp, "a.mp4", 2, "testsrc", True)
+        out = A.frame_at(clip, 1.0, os.path.join(tmp, "f", "mid.png"))
+        assert out.endswith("mid.png") and os.path.getsize(out) > 100 and not os.path.exists(out + ".part.png")
+        if Image:
+            assert Image.open(out).size == (320, 176)
+        first = A.frame_at(clip, -5, os.path.join(tmp, "f", "first.png"))              # 음수는 0 초
+        assert os.path.isfile(first)
+        end = A.last_frame(clip, os.path.join(tmp, "f", "last.png"))
+        assert os.path.getsize(end) > 100
+        if Image:
+            assert Image.open(end).tobytes() != Image.open(first).tobytes()              # testsrc 는 시간에 따라 달라진다
+        try:
+            A.frame_at(clip, 30.0, os.path.join(tmp, "f", "beyond.png"))
+        except A.AssembleError as e:
+            assert "프레임" in str(e)
+        else:
+            raise AssertionError("클립 끝을 넘은 프레임이 만들어졌다")
+        assert not os.path.exists(os.path.join(tmp, "f", "beyond.png"))
+        try:
+            A.frame_at(os.path.join(tmp, "nope.mp4"), 0, os.path.join(tmp, "f", "x.png"))
+        except A.AssembleError as e:
+            assert "ffmpeg" in str(e) or "프레임" in str(e)
+        else:
+            raise AssertionError("없는 파일에서 프레임이 나왔다")
 
 
 if __name__ == "__main__":

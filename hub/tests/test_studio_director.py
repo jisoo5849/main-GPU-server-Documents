@@ -669,7 +669,7 @@ async def t_all_shipped_recipes_pass_checks_and_build():
         assert recipes.recipe_ok(rep), (rid, [x for x in rep if not x["ok"]])
         p = recipes.build(r, recipes.sample_values(r))
         assert D.negative_problem(r, p) is None, (rid, D.negative_problem(r, p))
-    assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music", "voice", "voice_clone", "talk", "scene_image"}
+    assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music", "voice", "voice_clone", "talk", "scene_image", "edit_ref", "i2v_end"}
     # 4스텝 LoRA 는 레시피가 켠 채로 고정한다
     assert rs["wan22_t2v_14b_fast"]["prompt"]["128:129"]["inputs"]["value"] is True
     assert rs["qwen_image_edit"]["prompt"]["170:168"]["inputs"]["value"] is True
@@ -1577,9 +1577,17 @@ class LongDeps(FakeDeps):
         await asyncio.sleep(0.01)
         return {"story": copy.deepcopy(LONG_STORY), "violations": [], "rounds": 1}
 
-    def assemble(self, clips, music, out, sound=True, transitions=None):
+    def last_frame(self, clip, out):
+        self.calls.append(("last_frame", (clip, out)))
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(b"png")
+        return out
+
+    def assemble(self, clips, music, out, sound=True, transitions=None, seams=None):
         self.calls.append(("assemble", (list(clips), music, out)))
         self.transitions = transitions
+        self.seam_kinds = seams
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
             f.write(b"final video")
@@ -1625,7 +1633,7 @@ class LongDeps(FakeDeps):
             self.n += 1
             main = rec["outputs"]["main"]["node"]
             ext = (rec["outputs"]["main"].get("ext") or [".mp4"])[0]
-            if rec["action"] in ("image", "edit", "scene_image"):
+            if rec["action"] in ("image", "edit", "scene_image", "edit_ref"):
                 outs = [{"node_id": main, "rel_path": self._file(f"img_{self.n}{ext}"), "media": "images"}]
             elif rec["action"] in ("music", "voice", "voice_clone"):
                 outs = [{"node_id": main, "rel_path": self._file(f"{rec['action']}_{self.n}{ext}"), "media": "audio"}]
@@ -1634,6 +1642,9 @@ class LongDeps(FakeDeps):
                 chk = (rec.get("outputs") or {}).get("check")
                 if chk:              # 입 맞춤 클립의 검사 프레임 (11-20)
                     outs.append({"node_id": chk["node"], "rel_path": self._file(f"talkcheck_{self.n}.png"), "media": "images"})
+                lst = (rec.get("outputs") or {}).get("last")
+                if lst:              # 입 맞춤 클립의 잇는 프레임 (자르는 지점, 11-20 장면 잇기)
+                    outs.append({"node_id": lst["node"], "rel_path": self._file(f"talklast_{self.n}.png"), "media": "images"})
             else:
                 outs = [{"node_id": main, "rel_path": self._file(f"video_{self.n}.mp4"), "media": "videos"},
                         {"node_id": "901", "rel_path": self._file(f"check_{self.n}.png"), "media": "images"},
@@ -2120,8 +2131,9 @@ class DialogueDeps(LongDeps):
             f.write(b"png")
         return out
 
-    def assemble_dialogue(self, clips, lines, music, out, trims=None):
+    def assemble_dialogue(self, clips, lines, music, out, trims=None, seams=None):
         self.calls.append(("assemble_dialogue", (list(clips), [dict(x) for x in lines], music, out, list(trims or []))))
+        self.seam_kinds = seams
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "wb") as f:
             f.write(b"dialogue video")
@@ -2763,6 +2775,201 @@ async def t_dialogue_library_missing_reference_falls_back_to_a_drawn_portrait():
             assert [e[1]["library"] for e in fs.events if e[0] == "dialogue_cast"].count(True) == 1
         finally:
             settings.results_dir, settings.envs_dir = old
+
+
+
+# ── 장면 잇기 (11-20, docs/scene-chaining-design.md): 모든 컷을 앞 장면 끝에서 잇고, 끝 프레임에 인물이 나오게, 인물마다 같은 기준 그림 ──
+EDITREF = recipes.load_all()["qwen_image_edit_ref"]
+LTXEND = recipes.load_all()["ltx25_i2v_sound_end"]
+GOOD_END = {"ok": True, "issues": [], "traits": [], "people": 1}
+NO_ONE = {"ok": True, "issues": [], "traits": [], "people": 0}
+
+
+def chain_deps(fs, root, cls=None, **kw):
+    deps = (cls or LongDeps)(fs, root, **kw)
+    deps.recs.update({EDITREF["id"]: EDITREF, LTXEND["id"]: LTXEND})
+    deps.inspect_result = dict(GOOD_END)
+    return deps
+
+
+def tags_of(deps, t):
+    tid = str(t["id"])
+    return [c[1]["client_id"].split(f"studio-{tid}-")[1] for c in deps.calls if c[0] == "submit"]
+
+
+def graph_loads(call):
+    return sum(1 for n in call[1]["prompt"].values() if n.get("class_type") == "LoadImage")
+
+
+async def t_chain_long_film_edits_every_cut_keeps_the_faces_and_ends_with_the_people():
+    old = (settings.results_dir, settings.studio_chain)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.studio_chain = root, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = chain_deps(fs, root)
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+            await d.pump(); await settle(d, 25)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            w = t["work"]
+            assert w["chain"] is True
+            tags = tags_of(deps, t)
+            # 인물 기준 그림(C0) → 첫 장면은 기준 그림에서 구성(L0e) → 끝 키프레임(L0k) → 영상(L0v). 둘째 장면은 같은 샷이 이어져(continue)
+            # 첫 화면 편집이 없다. 셋째 장면(장소 바뀜)은 앞 프레임을 고쳐 잇는다(L2e)
+            for must in ("C01", "L0e1", "L0k1", "L0v1", "L1k1", "L1v1", "L2e1", "L2k1", "L2v1"):
+                assert must in tags, (must, tags)
+            assert "L1e1" not in tags and "L0i1" not in tags and "L2i1" not in tags, tags         # 장면 그림(글로 새로 그림)은 없다
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            by = {x.split("studio-")[-1] if False else tags[i]: subs[i] for i in range(len(subs))}
+            rid = lambda k: recipe_of(by[k])
+            assert rid("L0e1") == EDITREF["id"] and rid("L2e1") == EDITREF["id"] and rid("L0k1") == EDITREF["id"]
+            assert all(rid(f"L{k}v1") == LTXEND["id"] for k in range(3))                            # 끝 키프레임이 있어 가이드 레시피
+            # 편집에는 늘 그 인물의 기준 그림을 함께 넣는다: 장면 2 는 그림 1(앞 프레임) + 그림 2(기준 그림) = LoadImage 둘, 첫 장면은 기준 그림 하나뿐
+            assert graph_loads(by["L2e1"]) == 2 and graph_loads(by["L0e1"]) == 1
+            p2 = " ".join(n["inputs"].get("prompt", "") for n in by["L2e1"][1]["prompt"].values() if isinstance(n["inputs"].get("prompt"), str))
+            assert "face, hair and clothes of image 2" in p2 and "new place" in p2 and "not a glossy 3D render" in p2
+            # 영상은 끝 키프레임(end_frame LoadImage)이 붙는다
+            assert graph_loads(by["L0v1"]) == 2
+            sc = w["scenes"]
+            assert [x["seam"] for x in sc] == [None, "continue", "jump"] or [x.get("seam") for x in sc] == [None, "continue", "jump"]
+            assert sc[1]["first_from"] == "last" and sc[2]["first_from"] == "edit" and sc[0]["first_from"] == "edit"
+            assert all(x.get("end_rel") and x.get("last_rel") and x.get("chain_rel") and x.get("end_fail") is False for x in sc), sc
+            assert sc[0]["chain_rel"] == sc[0]["end_rel"]                                               # 다음 장면이 잇는 것은 깨끗한 끝 키프레임
+            # 합치기: 이음 종류별 (continue·jump 는 디졸브, 같은 장소 새 샷은 하드 컷)
+            assert deps.seam_kinds == ["continue", "jump"]
+            ends = [e[1] for e in fs.events if e[0] == "end_check"]
+            assert len(ends) == 6 and all(e["why"] == [] for e in ends), ends                          # 끝 키프레임 3 + 끝 프레임 3
+        finally:
+            settings.results_dir, settings.studio_chain = old
+
+
+async def t_chain_end_frame_without_people_forces_a_fix_edit_for_the_next_scene():
+    old = (settings.results_dir, settings.studio_chain)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.studio_chain = root, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = chain_deps(fs, root)
+            # 첫 장면: 끝 키프레임 통과, 클립 끝 프레임은 두 번 다 사람이 없다 → 끝 키프레임을 잇는 원본으로 쓰고 end_fail
+            deps.inspect_seq = [dict(GOOD_END), dict(NO_ONE), dict(NO_ONE)]
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+            await d.pump(); await settle(d, 25)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            tags = tags_of(deps, t)
+            assert tags.count("L0v1") == 1 and "L0v2" in tags, tags                                      # 끝 프레임이 틀려 클립을 한 번 더
+            s0, s1 = t["work"]["scenes"][0], t["work"]["scenes"][1]
+            assert s0["end_fail"] is True and s0["chain_rel"] == s0["end_rel"]
+            # 둘째 장면은 continue 였지만 앞 끝 프레임이 사람이 없어 그대로 잇지 않고 고쳐 잇는다 (L1e)
+            assert "L1e1" in tags and s1["first_from"] == "edit", (tags, s1)
+            assert t["work"]["check_left"]["0:clip"][0].startswith("end:")
+            res = [m for m in fs.messages if m["kind"] == "result"][0]
+            assert any("끝 프레임에 인물 없음" in n for n in res["data"]["notes"]), res["data"]["notes"]
+        finally:
+            settings.results_dir, settings.studio_chain = old
+
+
+async def t_chain_off_or_edit_recipe_missing_keeps_the_old_way():
+    old = (settings.results_dir, settings.studio_chain)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            for chain_flag, with_recipe in ((False, True), (True, False)):
+                settings.studio_chain = chain_flag
+                fs = FakeStore(); fs.patch()
+                deps = chain_deps(fs, root)
+                if not with_recipe:
+                    deps.recs.pop(EDITREF["id"])
+                d = D.Director(deps, dict(deps.recs))
+                t = long_turn(fs)
+                t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+                await d.pump(); await settle(d, 25)
+                assert t["state"] == "done", (chain_flag, with_recipe, t["state"], t.get("error"))
+                assert t["work"]["chain"] is False and deps.seam_kinds is None
+                assert "L0i1" in tags_of(deps, t)                                                          # 예전처럼 장면 그림
+        finally:
+            settings.results_dir, settings.studio_chain = old
+
+
+async def t_chain_source_ref_choice_and_readiness():
+    ok = D.Director._chain_source({"end_rel": "k.png", "edit_rel": "f.png"}, {"last_rel": "l.png"}, [])
+    assert ok == {"chain_rel": "k.png", "end_fail": False}                                       # 통과: 깨끗한 끝 키프레임
+    ok2 = D.Director._chain_source({"edit_rel": "f.png"}, {"last_rel": "l.png"}, ["body:floating_limb"])
+    assert ok2 == {"chain_rel": "l.png", "end_fail": False}                                      # 끝 키프레임이 없으면 끝 프레임
+    bad = D.Director._chain_source({"end_rel": "k.png", "edit_rel": "f.png"}, {"last_rel": "l.png"}, ["end:missing:A"])
+    assert bad == {"chain_rel": "k.png", "end_fail": True}
+    bad2 = D.Director._chain_source({"edit_rel": "f.png"}, {"last_rel": "l.png"}, ["end:people:0/1"])
+    assert bad2 == {"chain_rel": "f.png", "end_fail": True}                                      # 통과한 끝 그림이 없으면 검사를 통과한 첫 화면
+    unk = D.Director._chain_source({"edit_rel": "f.png"}, {"last_rel": "l.png"}, ["end:unchecked"])
+    assert unk["end_fail"] is False and unk["chain_rel"] == "l.png"                              # 확인 못 한 것은 실패로 단정하지 않는다
+    assert D.Director._cast_ref({"refs": {"semi": "a.png"}, "ref": "old.png"}, "semi") == ("a.png", None)
+    assert D.Director._cast_ref({"refs": {"semi": "a.png"}, "ref": "old.png"}, "anime") == (None, "a.png")        # 반실사 그림을 바꿔 만든다
+    assert D.Director._cast_ref({"refs": {"semi": "a.png", "anime": "b.png"}}, "anime") == ("b.png", None)
+    assert D.Director._cast_ref({"ref": "old.png"}, "photo") == ("old.png", None)                                 # refs 가 없는 라이브러리
+
+
+async def t_chain_dialogue_film_edits_talk_scenes_and_uses_the_trim_frame():
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir, settings.studio_chain = os.path.join(root, "results"), os.path.join(root, "envs"), True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = chain_deps(fs, settings.results_dir, DialogueDeps)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": dialogue_story(), "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            w = t["work"]
+            tags = tags_of(deps, t)
+            # 말하는 장면(L1·L2)도 앞 프레임을 고쳐 잇는다 (기준 그림 편집이 아니라). 인물 닻은 대사 없는 장면의 인물까지
+            assert "L1e1" in tags and "L2e1" in tags and "L3e1" in tags and "L0e1" in tags, tags
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            talk = [c for c in subs if recipe_of(c) == TALK["id"]]
+            assert len(talk) == 2
+            # 입 맞춤 클립은 합칠 때 자르는 지점의 프레임을 저장한다 (last_index): 대사 2.6초 + 0.9초 = 3.5초 × 24fps
+            idx = [n["inputs"]["batch_index"] for c in talk for n in c[1]["prompt"].values()
+                   if n.get("class_type") == "ImageFromBatch" and n["inputs"].get("batch_index") not in (None, 60)]
+            assert idx and all(i > 0 and i % 1 == 0 for i in idx), idx
+            sc = w["scenes"]
+            assert sc[1]["last_rel"] and sc[1]["chain_rel"] == sc[1]["last_rel"] and sc[1]["end_fail"] is False
+            assert deps.seam_kinds == ["cut", "cut", "cut"], deps.seam_kinds                            # 같은 장소의 새 샷은 하드 컷
+        finally:
+            settings.results_dir, settings.envs_dir, settings.studio_chain = old
+
+
+async def t_chain_style_convert_makes_the_film_style_reference_once():
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir, settings.studio_chain = os.path.join(root, "results"), os.path.join(root, "envs"), True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = chain_deps(fs, settings.results_dir, DialogueDeps)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            story = library_story(settings.results_dir)
+            story["bible"]["style"] = "2D anime film, clean cel-shaded line art"
+            for c in story["bible"]["characters"]:
+                rel = f"studio/_cast/{c['id']}_semi.png"
+                os.makedirs(os.path.dirname(os.path.join(settings.results_dir, rel)), exist_ok=True)
+                with open(os.path.join(settings.results_dir, rel), "wb") as f:
+                    f.write(b"png")
+                c["refs"] = {"semi": rel}
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            conv = [e[1] for e in fs.events if e[0] == "cast_style_convert"]
+            assert len(conv) == len(story["bible"]["characters"]) and all(e["style"] == "anime" for e in conv), conv
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            edits = [c for c in subs if recipe_of(c) == EDITR["id"]]
+            assert edits and all("2D anime feature film" in " ".join(n["inputs"].get("prompt", "") for n in c[1]["prompt"].values()
+                                                                      if isinstance(n["inputs"].get("prompt"), str)) for c in edits)
+            assert all(t["work"]["casts"][c["id"]].get("converted") == "anime" for c in story["bible"]["characters"])
+        finally:
+            settings.results_dir, settings.envs_dir, settings.studio_chain = old
 
 
 async def main():

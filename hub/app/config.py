@@ -107,6 +107,8 @@ class Settings:
     # 긴 영상·대사 영상의 그림·클립 자동 검사 (11-20): 장면 그림·편집 그림·클립의 검사 프레임을 시각 모델로 보고 사람 수·몸의 이상·화풍이
     # 틀리면 씨앗을 바꿔 다시 만든다 (studio/checks.py). 한 장 약 15초
     studio_picture_check = _bool("STUDIO_PICTURE_CHECK", True)
+    # 장면 잇기 (11-20, docs/scene-chaining-design.md): 모든 장면의 첫 화면을 앞 장면 마지막 프레임을 고쳐 만든다. 편집 레시피가 꺼지면 예전 방식
+    studio_chain = _bool("STUDIO_CHAIN", True)
     studio_inspect = _env("STUDIO_INSPECT", "idle")            # on | idle | off
     studio_auto_reroll = _int("STUDIO_AUTO_REROLL", 0)
     studio_progress_min_interval_ms = _int("STUDIO_PROGRESS_MIN_INTERVAL_MS", 500)
