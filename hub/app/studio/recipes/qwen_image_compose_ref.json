@@ -9,7 +9,7 @@
  "source": {
   "template": "image_qwen_image_edit_2511",
   "exported": "qwen_image_edit_ref 레시피에서 KSampler 의 latent_image 를 VAEEncode(그림 1) 대신 빈 잠재(EmptySD3LatentImage 44)로 바꾼 것. 11-20 메인 수동 시험(N1~N3, 결과 admin/main/2026-11-20/newway/)과 같은 연결이고, 사용자가 '화풍이 다 동일해 이렇게만 영상이 나오면 돼'라고 승인했다",
-  "changes": "그림 1(41)은 편집 대상이 아니라 첫 번째 인물 기준 그림이다. 출력은 그림 1의 배치·크기를 따르지 않고 width·height 자리(영상 크기)로 새로 그린다. VAEEncode(170:156)는 쓸 곳이 없어 뺐다. 42·43 은 optional 참고 그림(ref_image·ref_image2)"
+  "changes": "그림 1(41)은 편집 대상이 아니라 첫 번째 인물 기준 그림이다. 출력 크기는 그림 1이 아니라 width·height 자리(영상 크기)를 따른다 (디노이즈 1 이라 시작 잠재의 내용은 남지 않는다). VAEEncode(170:156)는 쓸 곳이 없어 뺐다. 42·43 은 optional 참고 그림(ref_image·ref_image2)"
  },
  "prompt": {
   "9": {
