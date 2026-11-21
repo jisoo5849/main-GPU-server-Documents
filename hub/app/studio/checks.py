@@ -30,6 +30,15 @@ EXTRAS_RE = re.compile(
     r"passengers?|commuters?|fishermen|farmers?|monks?|neighbou?rs?|"
     r"man|men|woman|women|boys?|girls?|lady|ladies|child|baby|friends?|mother|father|grand\w+|elder|sailors?|"
     r"cook|chef|clerk|teacher|doctor|nurse|police|officers?)\b", re.I)
+# 무리(행인·군중)를 가리키는 말만. EXTRAS_RE 의 mother·woman·girl 같은 말은 설정집 인물 자신을 가리키는 일이 많아, 새로 그린 첫 화면의
+# 사람 수를 느슨하게 하면 안 된다 (11-21 메인: 베스 혼자 장면에 2명이 나왔는데 'mother' 때문에 사람 수 오류로 잡히지 않았다)
+# 여러 사람을 가리키는 복수 낱말(people·children …)과 crowded·bustling 은 남긴다: 시장 장면의 'full of people' 처럼 실제 군중이다
+CROWD_RE = re.compile(
+    r"\b(?:crowds?|crowded|bustling|people|children|kids|families|students|travell?ers|dancers|musicians|players|others|"
+    r"passers?-?by|pedestrians?|shoppers?|customers?|vendors?|merchants?|villagers?|townsfolk|audience|onlookers?|"
+    r"spectators?|tourists?|bystanders?|commuters?|passengers?|strangers?|guards?|soldiers?|workers?)\b", re.I)
+# 얼굴 없는 형상(구도 그림)은 얼굴 이상·머리 없음으로 잡히기 쉽다
+LAYOUT_SKIP = frozenset({"face", "missing_head", "detached_head"})
 TRAIT_MAX = 200            # promptx.inspect 가 받는 특징 한 줄의 최대 길이
 CROWD_COUNT = 3           # 첫 화면의 사람이 이보다 많으면 클립에서 사람 수를 세지 않는다 (군중은 셀 때마다 수가 달라진다)
 
@@ -54,7 +63,9 @@ def cast_trait(look: str, name: str = "") -> str:
     """끝 프레임 검사용: 이 외형의 인물이 화면 안에 있고 얼굴이 보이는가 (검사 모델에게 주는 '기대' 한 줄, 영어).
     외형은 첫 14낱말까지만 쓰고(쉼표·공백 경계, 끝 문장부호 제거) 전체가 200자(promptx 의 특징 한 개 한도)를 넘지 않게 자른다.
     name 은 검사 모델이 모르는 이름이라 글에 넣지 않는다(호출 쪽 시그니처 맞춤용)"""
-    head = ("A person who looks like this is fully inside the frame and the face is clearly visible "
+    # '몸 전체가 화면 안'이 아니라 '얼굴이 화면 안'을 묻는다: 대사 클로즈업은 가슴에서 잘려도 맞는 그림이다
+    # (11-21 메인: 얼굴이 정면으로 보이는 니키 끝 프레임을 '없음'으로 답해 클립을 헛되이 다시 만들었다)
+    head = ("A person who looks like this is in the picture with the whole face inside the frame, clearly visible "
             "from the front or three-quarter: ")
     words = " ".join(str(look or "").split()[:14]).strip(" ,;:.")
     room = TRAIT_MAX - len(head)
@@ -116,6 +127,43 @@ def cut_rule(humans: int, animals: int, extras: bool) -> dict:
     고치는 편집이 사람을 복제하거나 빠뜨리기 쉽다. 장면 글에 행인 말이 있으면 더 많아도 되고, 동물이 있으면 사람으로 세어질 수 있어
     더 많아도 되지만 사람 수 아래로는 안 된다(want 를 None 으로 두지 않는다). 동물이 있으면 팔다리 검사는 뺀다"""
     return rule(humans, more_ok=bool(extras) or bool(animals), skip=ANIMAL_SKIP if animals else frozenset())
+
+
+def compose_rule(humans: int, animals: int, crowd: bool) -> dict:
+    """새로 그린 첫 화면(기준 그림·구도 그림에서 그린 것)의 사람 수 기준: 장면 인물 수 정확히. 장면 글에 무리 말(CROWD_RE)이 있거나
+    동물이 있을 때만 더 많아도 된다. cut_rule 과 같은 짜임이지만 EXTRAS_RE 대신 무리 말만 본다"""
+    return rule(humans, more_ok=bool(crowd) or bool(animals), skip=ANIMAL_SKIP if animals else frozenset())
+
+
+def layout_trait(n: int) -> str:
+    """구도 그림 검사용: 얼굴 없는 형상이 정확히 n 개 (검사 모델이 형상을 사람으로 세지 않을 수 있어 특징 줄로 묻는다)"""
+    # 몸이 아니라 머리가 화면 안인지 묻는다: 클로즈업·미디엄 구도는 형상이 가슴·허리에서 잘리는 것이 맞다 (11-21 검토)
+    return f"Exactly {n} faceless mannequin figure{'s' if n != 1 else ''} with blank heads, every head fully inside the frame"[:TRAIT_MAX]
+
+
+def layout_problems(insp, n: int, animals: int = 0, style: str = "") -> list[str]:
+    """구도 그림 검사 결과에서 다시 그릴 까닭. traits[0] = layout_trait(n), (style 이면) 마지막 줄이 화풍.
+    - layout:unchecked: 검사 결과 없음 (다시 그리지 않는다 — 다음 단계의 인물 검사가 사람 수를 다시 본다)
+    - layout:figures: 형상 수 줄이 '아님'
+    - people:<센 수>/<n>: 사람을 형상보다 많이 셌다 (형상을 사람으로 안 세서 적게 세는 것은 보지 않는다). 동물이 있으면 보지 않는다
+    - body:… (얼굴 이상·머리 없음 제외), style"""
+    if not isinstance(insp, dict):
+        return ["layout:unchecked"]
+    why = []
+    traits = insp.get("traits") if isinstance(insp.get("traits"), list) else []
+    t0 = traits[0] if traits and isinstance(traits[0], dict) else {}
+    if t0.get("present") is False:
+        why.append("layout:figures")
+    p = insp.get("people")
+    if isinstance(p, int) and not isinstance(p, bool) and p > n and not animals:
+        why.append(f"people:{p}/{n}")
+    why += _body_reasons(insp, rule(None, skip=LAYOUT_SKIP | (ANIMAL_SKIP if animals else frozenset())))
+    last = len(traits) - 1
+    if style and last >= 1:
+        t = traits[last]
+        if isinstance(t, dict) and t.get("present") is False and str(t.get("note") or "").strip():
+            why.append("style")
+    return why
 
 
 def end_rule(humans: int, animals: int, extras: bool) -> dict:
@@ -233,6 +281,10 @@ def describe(why) -> str:
             parts.append("끝 프레임 확인 못 함")
         elif w.startswith(("end:missing", "end:people", "end:extra")):
             parts.append("끝 프레임에 인물 없음")
+        elif w == "layout:figures":
+            parts.append("구도 그림의 형상 수")
+        elif w == "layout:unchecked":
+            parts.append("구도 그림 확인 못 함")
         elif w.startswith("cast:missing"):
             parts.append("인물 모습(기준 그림과 다름)")
         elif w == "cast:unchecked":
@@ -250,7 +302,7 @@ def _rank(why) -> tuple[int, int]:
     """(끝 프레임·인물 모습 까닭 수, 전체 까닭 수): 끝 프레임 실패(다음 장면이 그 프레임에서 시작한다)와 인물이 기준 그림과 다른 것
     (일관성이 가장 중요하다, 11-20 사용자)은 다른 문제보다 나쁘다"""
     why = [str(w) for w in why or []]
-    return sum(w.startswith(("end:", "cast:missing")) for w in why), len(why)
+    return sum(w.startswith(("end:", "cast:missing", "layout:figures")) for w in why), len(why)
 
 
 def better(a: list[str] | None, b: list[str]) -> bool:

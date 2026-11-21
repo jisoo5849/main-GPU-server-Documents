@@ -15,7 +15,8 @@ NIKI = ("a twelve-year-old girl with two long black braids and thin straight ban
 
 def t_cast_trait_is_short_and_keeps_the_front_of_the_look():
     t = checks.cast_trait(NIKI, "니키")
-    assert t.startswith("A person who looks like this is fully inside the frame and the face is clearly visible from the front or three-quarter: ")
+    # 몸 전체가 아니라 얼굴이 화면 안인지 묻는다 (대사 클로즈업은 가슴에서 잘려도 맞는 그림, 11-21)
+    assert t.startswith("A person who looks like this is in the picture with the whole face inside the frame, clearly visible from the front or three-quarter: ")
     assert len(t) <= 200 and not t.endswith((",", ".", " "))
     assert "twelve-year-old girl" in t and "cape" not in t              # 첫 14낱말까지만
     assert checks.cast_trait("a tall man.").endswith(": a tall man")
@@ -125,6 +126,33 @@ def t_cast_problems_reads_people_each_character_body_and_style():
     assert checks.better(["cast:missing:beth"], ["body:face", "style"]) and not checks.better(["style"], ["cast:missing:a"])
     assert checks.describe(["cast:missing:beth", "people:3/2"]) == "인물 모습(기준 그림과 다름)·사람 수"
     assert checks.describe(["cast:unchecked"]) == "인물 모습 확인 못 함"
+
+
+def t_compose_rule_counts_exactly_unless_a_crowd_is_named():
+    r = checks.compose_rule(1, 0, False)
+    assert r["want"] == 1 and not r["more_ok"] and not r["fewer_ok"]
+    assert checks.cast_problems({"people": 2, "traits": []}, r, ["B"]) == ["people:2/1"]      # 베스 혼자 장면에 2명 (11-21 메인)
+    assert checks.compose_rule(1, 0, True)["more_ok"] and checks.compose_rule(1, 1, False)["more_ok"]
+    assert checks.compose_rule(1, 1, False)["skip"] == checks.ANIMAL_SKIP
+    assert checks.CROWD_RE.search("a crowd of shoppers in the market")
+    assert checks.CROWD_RE.search("Niki walks through the crowded market full of people")      # 실제 군중 (11-21 검토)
+    assert checks.CROWD_RE.search("Children play in the square")
+    assert not checks.CROWD_RE.search("The mother smiles at the girl while her father laughs with a woman")
+
+
+def t_layout_problems_reads_the_figure_line_and_ignores_blank_faces():
+    ok = {"people": 0, "issues": [{"type": "face"}, {"type": "missing_head"}], "traits": [{"present": True}]}
+    assert checks.layout_problems(ok, 2) == []              # 형상을 사람으로 세지 않아도, 얼굴이 없는 것도 문제가 아니다
+    bad = {"people": 3, "issues": [{"type": "merged_bodies"}], "traits": [{"present": False, "note": "three figures"},
+                                                                          {"present": False, "note": "glossy 3D"}]}
+    assert checks.layout_problems(bad, 2, style="style") == ["layout:figures", "people:3/2", "body:merged_bodies", "style"]
+    assert checks.layout_problems({"people": 4, "traits": []}, 2, animals=1) == []      # 동물이 있으면 사람 수를 보지 않는다
+    assert checks.layout_problems({"people": 1, "traits": [{"present": None}]}, 2) == []
+    assert checks.layout_problems(None, 2) == ["layout:unchecked"]
+    assert checks.layout_trait(1).startswith("Exactly 1 faceless mannequin figure with blank heads") and "3 faceless mannequin figures" in checks.layout_trait(3)
+    assert checks.layout_trait(2).endswith("every head fully inside the frame")       # 몸이 아니라 머리 (클로즈업 구도는 몸이 잘린다)
+    assert checks.describe(["layout:figures"]) == "구도 그림의 형상 수" and checks.describe(["layout:unchecked"]) == "구도 그림 확인 못 함"
+    assert not checks.better(["style", "body:face"], ["layout:figures"])          # 형상 수가 틀린 것이 더 나쁘다
 
 
 if __name__ == "__main__":

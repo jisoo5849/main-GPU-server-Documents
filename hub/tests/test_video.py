@@ -2510,6 +2510,89 @@ def test_chain_cut_edit_prompt_uses_the_reference_for_faces():
     assert "semi-realistic" in video.style_convert_prompt("semi", "girl")
 
 
+def test_layout_slots_sizes_poses_and_prompts():
+    import copy as _copy
+    st = video.clean_dialogue_story(_copy.deepcopy(DLG_OK), 48)
+    assert video.figure_size("a twelve-year-old girl with two long black braids") == "child-sized"
+    assert video.figure_size("a short old dwarf herbalist with a long white beard") == "short"
+    assert video.figure_size("a calm neat woman around forty with long straight black hair") == "adult-sized"
+    assert video.figure_size("a tall lean man in his early forties") == "adult-sized"
+    # 자세: 이 장면 글에 단서가 없으면 같은 장소의 앞 장면 (숲길을 걷던 장면 뒤의 클로즈업은 걷는 중)
+    # 걷기는 순간 동작이라 물려받지 않는다 (숲길을 걷던 장면 뒤의 클로즈업은 서 있음)
+    assert video.scene_pose(st, 1) == "walking" and video.scene_pose(st, 2) == "standing" and video.scene_pose(st, 5) == "standing"
+    st_sit = _copy.deepcopy(st)
+    st_sit["scenes"][1]["action"] = "The girl and the old dwarf sit at the wooden table."
+    assert video.scene_pose(st_sit, 2) == "sitting"
+    # 두 사람: 오른쪽을 보는 첫 화자(푸토르)가 왼쪽, 서로 마주 본다. 한 사람은 가운데
+    sl = video.layout_slots(st, 1, ["A", "B"])
+    assert [s["id"] for s in sl] == ["B", "A"] and [s["pos"] for s in sl] == ["on the left", "on the right"]
+    assert [s["facing"] for s in sl] == ["turned toward the right", "turned toward the left"] and [s["size"] for s in sl] == ["short", "child-sized"]
+    one = video.layout_slots(st, 2, ["A"])
+    assert one == [{"id": "A", "pos": "in the centre", "size": "child-sized", "facing": "turned slightly toward the left"}]
+    # ① 구도 글: 장면 글(화면 밖 인물 이름이 섞일 수 있다)은 넣지 않고 형상 수·자리·크기만. 클로즈업은 얼굴을 크게
+    lp = video.layout_prompt(st, 2, one)
+    assert lp.startswith("Picture 1 shows the place.") and "a winding forest path with mossy trees" in lp
+    assert "One child-sized faceless mannequin figure, standing, turned slightly toward the left, in the centre of the frame." in lp
+    assert "no figure is seen from behind" in lp
+    assert "fill most of the frame height" in lp and lp.endswith("Exactly 1 figure, no other figure or person.")
+    assert "She looks up" not in lp and "hesitant" not in lp
+    lp2 = video.layout_prompt(st, 1, sl)
+    assert "2 faceless mannequin figures, walking: on the left a short figure turned toward the right; on the right a child-sized figure turned toward the left." in lp2
+    # ② 인물 입히기: 배경 문장 필수, 대사 컷은 말하는 방향·감정만 (장면 글 없음)
+    ip = video.identity_prompt(st, 2, one, ["A"], final=True)
+    assert ip.startswith("Picture 1 is the layout.") and "Replace the faceless figure in the centre with the person in Picture 2, a twelve-year-old girl" in ip
+    assert "The background stays exactly the place of Picture 1 (a winding forest path with mossy trees); it is not a plain studio background." in ip
+    assert "speaks toward the left side of the frame with a hesitant and a little sad expression" in ip and "She looks up" not in ip
+    assert video.ONE_PERSON in ip and "Take nothing else from Picture 2." in ip
+    ip2 = video.identity_prompt(st, 1, sl, ["B"], final=False)
+    assert "Keep the faceless figure on the right exactly as it is." in ip2 and ip2.endswith("Exactly 2 figures in total, no other person.")
+    assert "What happens: The girl and the old dwarf walk side by side" in ip2          # 대사 컷이 아니면 장면 글
+    both = video.identity_prompt(st, 1, sl, ["B", "A"], final=True)
+    assert "on the left with the person in Picture 2, a short old dwarf herbalist" in both and "on the right with the person in Picture 3" in both
+    assert "Take nothing else from Picture 2 or Picture 3." in both and "Exactly 2 people" in both
+    # ③ 한 명씩
+    fp = video.finish_prompt(st, 1, sl, "A", ["B"], final=True)
+    assert fp.startswith("Picture 1 is the picture to finish.") and "Replace the faceless figure on the right with the person in Picture 2" in fp
+    assert "Exactly 2 people" in fp and "The background stays exactly the place of Picture 1" in fp
+    # 세 사람: 왼쪽·가운데·오른쪽, 나오는 차례
+    st3 = _copy.deepcopy(st)
+    st3["bible"]["characters"].append({"id": "C", "look": "a calm neat woman around forty with long straight black hair"})
+    st3["scenes"][5]["characters"] = ["A", "B", "C"]
+    s3 = video.layout_slots(st3, 5, ["A", "B", "C"])
+    assert [s["id"] for s in s3] == ["A", "B", "C"] and [s["pos"] for s in s3] == ["on the left", "in the middle", "on the right"]
+    lp3 = video.layout_prompt(st3, 5, s3)
+    assert "3 faceless mannequin figures, standing: on the left a child-sized figure turned toward the right" in lp3 and "Exactly 3 figures" in lp3
+    fp3 = video.finish_prompt(st3, 5, s3, "B", ["A"], final=False)
+    assert "Keep the faceless figure on the right exactly as it is." in fp3 and "Exactly 3 figures in total" in fp3
+    # 11-21 검토: 키 판정은 머리 구절만, 자세는 가장 먼저 나오는 동사·같은 사람이 나온 앞 장면의 멈춘 자세, 뒤에서 찍은 샷 말 빼기
+    for look, size in (("a tall man in his forties with short dark hair", "adult-sized"), ("an old man with tiny round spectacles", "adult-sized"),
+                       ("a young woman in her twenties wearing a baby blue cardigan", "adult-sized"),
+                       ("a young mother holding her baby, in a blue dress", "adult-sized"), ("Mina, ten years old, in a raincoat", "child-sized"),
+                       ("a man of short stature", "short"), ("a 40-year-old man in a grey suit", "adult-sized")):
+        assert video.figure_size(look) == size, (look, video.figure_size(look))
+    sp = _copy.deepcopy(st)
+    sp["scenes"][1]["action"] = "The old dwarf stands at the kitchen counter while the girl sits nearby."
+    assert video.scene_pose(sp, 1) == "standing"                                   # 가장 먼저 나오는 동사
+    sp["scenes"][1]["action"] = "The girl walks across the room and sits down at the table."
+    assert video.scene_pose(sp, 1) == "walking"                                    # 첫 화면은 동작의 시작
+    sp["scenes"][1]["action"] = "The girl and the old dwarf sit at the table."
+    sp["scenes"][3]["action"] = "He smiles."                                       # B 의 대사 컷: 같은 장소의 앞 장면에서 B 가 앉아 있었다
+    assert video.scene_pose(sp, 3) == "sitting"
+    sp["scenes"][5]["characters"] = ["A"]
+    sp["scenes"][5]["action"] = "Bright light."                                    # 장소가 바뀌면 물려받지 않는다
+    assert video.scene_pose(sp, 5) == "standing"
+    assert video._layout_shot("wide shot from behind, slow follow") == "wide shot, slow follow"
+    desc = video.layout_description(st, 1, sl)
+    assert "Picture" not in desc and "faceless" not in desc and desc.startswith("wide shot, slow follow. on the left: a short old dwarf herbalist")
+    assert "Every face is visible, front or three-quarter." in ip and "Every face is visible" in fp
+    dup = _copy.deepcopy(st)
+    dup["scenes"][1]["characters"] = ["A", "A", "B"]
+    assert video.scene_people(dup, 1) == ["A", "B"]                               # 두 번 적힌 인물은 한 번
+    # 예전 길(기준 그림으로 바로)도 대사 컷은 장면 글 대신 감정만
+    cp = video.compose_prompt(st, 2, ["A"])
+    assert "She looks up" not in cp and "with a hesitant and a little sad expression" in cp
+
+
 def test_chain_style_keep_follows_the_film_style():
     import copy as _copy
     st = video.clean_dialogue_story(_copy.deepcopy(DLG_OK), 48)

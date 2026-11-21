@@ -94,7 +94,7 @@ PURPOSE_KO = {"prompt_expand": "이미지 프롬프트 확장", "video_frame": "
               "video_plan": "연출 계획표", "video_story": "긴 영상 구성안"}
 LONG_EVENT_KINDS = ("story", "long_inherited", "long_scene_start", "long_scene_retry", "long_scene_done", "long_resumed",
                     "long_music", "long_assembled", "end_check", "end_keyframe_failed", "end_keyframe_dropped", "cast_style_convert",
-                    "long_chain_empty", "long_scene_redo", "place_card", "place_card_dropped")
+                    "long_chain_empty", "long_scene_redo", "place_card", "place_card_dropped", "layout_done")
 
 
 def long_view(work: dict, events: list[dict]) -> dict | None:
@@ -109,7 +109,7 @@ def long_view(work: dict, events: list[dict]) -> dict | None:
         scenes.append({"index": i + 1, "seconds": sc.get("seconds"), "ko": sc.get("ko"), "continues": sc.get("continues"),
                        "shot": sc.get("shot"), "action": sc.get("action"), "sound": sc.get("sound"),
                        "first_from": s.get("first_from"), "seam": s.get("seam"), "end_rel": s.get("end_rel"),
-                       "chain_rel": s.get("chain_rel"), "end_fail": s.get("end_fail"),
+                       "chain_rel": s.get("chain_rel"), "end_fail": s.get("end_fail"), "layout_rel": s.get("layout_rel"),
                        "plan": s.get("plan"), "scene_prompt": s.get("scene_prompt"),
                        "prompt": s.get("prompt"), "violations": s.get("violations"), "clip_rel": s.get("clip_rel"),
                        "last_rel": s.get("last_rel"), "image_rel": s.get("image_rel")})
