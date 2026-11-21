@@ -16,7 +16,7 @@ ACTIONS = {"image", "i2v", "t2v", "edit", "music",       # music: 긴 영상의 
            "voice", "voice_clone", "talk",               # 대사 영상(11-19): 목소리 설계·목소리 복제(Qwen3-TTS), 대사 소리로 입 맞춤(LTX-2.3 IA2V)
            "scene_image",                                # 대사 영상의 장면 그림 (Qwen-Image 2512, 인물 라이브러리의 반실사 회화체와 같은 계열)
            "edit_ref", "i2v_end",                        # 장면 잇기(11-20, docs/scene-chaining-design.md): 그림 여러 장 편집, 끝 키프레임 가이드가 붙은 긴 영상 클립
-           "compose_ref"}                                # 기준 그림으로 새로 그리기(11-20): 같은 편집 모델이지만 빈 잠재에서 그린다 (그림 1의 배치가 남지 않는다)
+           "compose_ref"}                                # 기준 그림으로 새로 그리기(11-20): 같은 편집 모델, 출력 크기는 빈 잠재의 width·height (앞 프레임은 그림에 넣지 않는다)
 # 그림 여러 장을 글 노드 image1~3 에 넣는 레시피. edit_ref 는 그림 1을 고치고, compose_ref 는 그림 1~3을 기준으로 새로 그린다
 REF_ACTIONS = {"edit_ref", "compose_ref"}
 # 대사 영상의 부품: 화질·엔진을 따지지 않고 action 마다 하나를 고른다 (음악과 같다)
@@ -329,7 +329,8 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
     # V6 첫 화면·편집 대상·참고 그림·끝 프레임 자리
     e = []
     action = recipe.get("action")
-    # 새로 그리기(compose_ref)는 그림 1을 글 노드에만 넣는다. 잠재로 들어가면 그림 1의 배치·사람이 그대로 남는다 (11-20 요청 9089e3c7)
+    # 새로 그리기(compose_ref)는 출력 크기를 빈 잠재의 width·height(영상 크기)로 정한다. 그림 1이 VAEEncode 로 잠재가 되면 크기가 그림 1을 따른다.
+    # 디노이즈 1 이라 잠재의 내용은 남지 않는다: 그림의 사람·배치가 남는 것은 글 노드에 넣은 그림 때문이다 (11-21 정정)
     edit_in = [("TextEncodeQwenImageEdit", "image1")] + ([] if action == "compose_ref" else [("VAEEncode", "pixels")])
     for name, cls_in in (("first_frame", [("", "start_image"), ("LTXVImgToVideoInplace", "image")]),
                          ("edit_image", edit_in)):
@@ -352,7 +353,7 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
                         if not _reaches_at(prompt, str(s["node"]), tid, "image1"):
                             e.append(f"inject.edit_image 의 이미지가 글 노드 {tid} 의 image1 입력에 닿지 않습니다")
                 if action == "compose_ref" and reaches(prompt, str(s["node"]), "VAEEncode", "pixels"):
-                    e.append("compose_ref 레시피의 그림 1이 VAEEncode 로 잠재에 들어갑니다 (빈 잠재에서 새로 그려야 합니다)")
+                    e.append("compose_ref 레시피의 그림 1이 VAEEncode 로 잠재에 들어갑니다 (출력 크기를 width·height 자리로 정해야 합니다)")
     if action == "compose_ref":       # 샘플러의 잠재는 빈 잠재여야 하고, 그 크기가 width·height 자리여야 한다 (영상 비율로 그린다)
         sams = [nid for nid, n in prompt.items() if n.get("class_type") == "KSampler"]
         if len(sams) != 1:
