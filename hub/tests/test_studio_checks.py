@@ -102,6 +102,31 @@ def t_cut_rule_counts_people_at_every_size():
     assert checks.cut_rule(0, 0, False)["want"] == 0 and checks.problems({"people": 1}, checks.cut_rule(0, 0, False)) == ["people:1/0"]
 
 
+def t_sign_trait_uses_the_first_two_signature_items():
+    t = checks.sign_trait("a girl with braids", ["wine-red round-brimmed hat", "two long black braids", "wine-red cape"])
+    assert t == "A person with wine-red round-brimmed hat and two long black braids is in the picture with the face visible"
+    assert checks.sign_trait("a man in a navy coat", []) == checks.cast_trait("a man in a navy coat")      # 소품이 없으면 외형으로
+    assert checks.sign_trait("x", None).startswith("A person who looks like")
+    assert len(checks.sign_trait("x", ["a" * 150, "b" * 150])) <= checks.TRAIT_MAX
+
+
+def t_cast_problems_reads_people_each_character_body_and_style():
+    r = checks.cut_rule(2, 0, False)
+    ok = {"people": 2, "issues": [], "traits": [{"present": True}, {"present": True}, {"present": True}]}
+    assert checks.cast_problems(ok, r, ["niki", "beth"], style="style") == []
+    miss = {"people": 2, "issues": [{"type": "merged_bodies"}], "traits": [{"present": True}, {"present": False, "note": "no hat"},
+                                                                           {"present": False, "note": "glossy 3D"}]}
+    assert checks.cast_problems(miss, r, ["niki", "beth"], style="style") == ["cast:missing:beth", "body:merged_bodies", "style"]
+    assert checks.cast_problems({"people": 3, "traits": []}, r, ["niki", "beth"]) == ["people:3/2"]
+    # 모르겠다(None)는 틀린 것으로 보지 않는다. 화풍 줄이 없으면(style 빈 글) 마지막 줄을 화풍으로 읽지 않는다
+    assert checks.cast_problems({"people": 2, "traits": [{"present": None}, {"present": False, "note": "x"}]}, r, ["niki", "beth"]) == ["cast:missing:beth"]
+    assert checks.cast_problems(None, r, ["niki"]) == ["cast:unchecked"]
+    # 인물 모습이 틀린 것은 몸 모양·화풍보다 나쁘다 (가장 나은 그림 고르기)
+    assert checks.better(["cast:missing:beth"], ["body:face", "style"]) and not checks.better(["style"], ["cast:missing:a"])
+    assert checks.describe(["cast:missing:beth", "people:3/2"]) == "인물 모습(기준 그림과 다름)·사람 수"
+    assert checks.describe(["cast:unchecked"]) == "인물 모습 확인 못 함"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("t_")]
     for t in tests:

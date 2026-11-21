@@ -1582,24 +1582,57 @@ def end_keyframe_prompt(story: dict, i: int, ending: str = "") -> str:
             f"out of frame. The hands are relaxed. {style_keep(story)} {people_sentence(len(people))}")[:1990]
 
 
-def compose_prompt(story: dict, i: int, ref_ids: list[str]) -> str:
-    """영화 첫 장면을 인물 기준 그림 2~3장(그림 1~3)에서 구성하는 편집 지시. 각자 자기 그림의 얼굴·머리·옷"""
+def signature_of(story: dict, cid: str) -> list[str]:
+    """설정집 인물의 알아볼 소품(라이브러리 signature, 예: 니키의 와인색 둥근 챙 모자). 없으면 빈 목록"""
+    c = next((c for c in story["bible"]["characters"] if c["id"] == cid), {})
+    return [str(x).strip() for x in (c.get("signature") or []) if str(x).strip()][:4]
+
+
+def scene_place(story: dict, i: int) -> str | None:
+    """장면 i 의 장소 id (설정집에 있는 장소만)"""
+    pid = story["scenes"][i].get("place")
+    return pid if any(p["id"] == pid for p in story["bible"]["places"]) else None
+
+
+def compose_prompt(story: dict, i: int, ref_ids: list[str], place_image: int | None = None) -> str:
+    """장면 i 의 첫 화면을 빈 화면에서 새로 그리는 지시 (compose_ref). 그림 1~ = ref_ids 차례의 인물 기준 그림, place_image = 장소 그림의
+    번호(넣었으면). 앞 장면의 프레임은 넣지 않는다: 앞 프레임을 그림 1로 고치면 그 사람·배치가 남는다(11-20 요청 9089e3c7).
+    짜임은 11-20 사용자가 승인한 메인 시험 N1~N3 과 같다: 그림마다 '그 그림의 얼굴·머리·옷 그대로' + 알아볼 소품, 장소, 화풍, 정확한 사람 수"""
     sc = story["scenes"][i]
     b = story["bible"]
     looks = {c["id"]: c["look"] for c in b["characters"]}
     place = next((p["look"] for p in b["places"] if p["id"] == sc["place"]), "")
     people = scene_people(story, i)
-    parts = [f"Compose one new picture: {sc['shot']}. What happens: {sc['action']}"]
+    parts = [f"A new picture: {sc['shot']}. What happens: {sc['action']}"]
     for n, cid in enumerate(ref_ids, start=1):
-        parts.append(f"The person {_who(story, cid)} has exactly the face, hair and clothes of image {n}.")
+        sig = signature_of(story, cid)
+        parts.append(f"The person from image {n} is {_who(story, cid)}, with exactly the face, hair and clothes of image {n}"
+                     + (f", including the {', the '.join(sig)}" if sig else "") + "; this person appears once.")
     for cid in people:
         if cid not in ref_ids:
             parts.append(f"The person {looks.get(cid, '')}")
-    parts.append(f"The place: {place} Time: {sc.get('time') or b['time']} Light: {b['light']}")
+    sp = sc.get("speaker")
+    if sc.get("kind") == "talk" and sp in ref_ids:
+        parts.append(f"The person from image {ref_ids.index(sp) + 1} speaks toward the {speaker_side(story, sp)} side of the frame, "
+                     "the face in three-quarter view, lips slightly parted.")
+    if place_image:
+        parts.append(f"The place is the place shown in image {place_image}, with nobody else in it: {place} "
+                     f"Time: {sc.get('time') or b['time']} Light: {b['light']}")
+    else:
+        parts.append(f"The place: {place} Time: {sc.get('time') or b['time']} Light: {b['light']}")
     parts.append("All the people are fully in frame with their faces visible (front or three-quarter). The hands are not visible or relaxed.")
     parts.append(style_keep(story))
     parts.append(people_sentence(len(people)))
     return " ".join(parts)[:1990]
+
+
+def place_card_prompt(story: dict, pid: str) -> str:
+    """장소 그림: 사람이 없는 그 장소 한 장 (장면 그림 레시피). 새로 그리는 컷마다 자리가 남으면 함께 넣어 배경을 맞춘다
+    (11-20 승인 시험 N1·N2 는 부엌 그림을 함께 넣었다)"""
+    b = story["bible"]
+    place = next((p["look"] for p in b["places"] if p["id"] == pid), "")
+    return (f"An empty establishing view of this place with nobody in it: {place} Time: {b['time']} Light: {b['light']} "
+            "Eye-level camera, the whole space visible, calm and still. There is no person, no animal and no figure in the picture. No text.")
 
 
 def style_convert_prompt(key: str, who: str) -> str:

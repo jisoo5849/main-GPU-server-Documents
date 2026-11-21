@@ -15,7 +15,10 @@ RECIPE_DIR = os.path.join(os.path.dirname(__file__), "recipes")
 ACTIONS = {"image", "i2v", "t2v", "edit", "music",       # music: 긴 영상의 배경음악 (ACE-Step, docs/long-video-design.md 7절)
            "voice", "voice_clone", "talk",               # 대사 영상(11-19): 목소리 설계·목소리 복제(Qwen3-TTS), 대사 소리로 입 맞춤(LTX-2.3 IA2V)
            "scene_image",                                # 대사 영상의 장면 그림 (Qwen-Image 2512, 인물 라이브러리의 반실사 회화체와 같은 계열)
-           "edit_ref", "i2v_end"}                        # 장면 잇기(11-20, docs/scene-chaining-design.md): 그림 여러 장 편집, 끝 키프레임 가이드가 붙은 긴 영상 클립
+           "edit_ref", "i2v_end",                        # 장면 잇기(11-20, docs/scene-chaining-design.md): 그림 여러 장 편집, 끝 키프레임 가이드가 붙은 긴 영상 클립
+           "compose_ref"}                                # 기준 그림으로 새로 그리기(11-20): 같은 편집 모델이지만 빈 잠재에서 그린다 (그림 1의 배치가 남지 않는다)
+# 그림 여러 장을 글 노드 image1~3 에 넣는 레시피. edit_ref 는 그림 1을 고치고, compose_ref 는 그림 1~3을 기준으로 새로 그린다
+REF_ACTIONS = {"edit_ref", "compose_ref"}
 # 대사 영상의 부품: 화질·엔진을 따지지 않고 action 마다 하나를 고른다 (음악과 같다)
 PART_ACTIONS = {"music", "voice", "voice_clone", "talk", "scene_image"}
 # 글이 영상·이미지 모델의 positive 로 가지 않는 레시피(목소리)는 부정 자리도 없다: negative_source "none"
@@ -326,8 +329,10 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
     # V6 첫 화면·편집 대상·참고 그림·끝 프레임 자리
     e = []
     action = recipe.get("action")
+    # 새로 그리기(compose_ref)는 그림 1을 글 노드에만 넣는다. 잠재로 들어가면 그림 1의 배치·사람이 그대로 남는다 (11-20 요청 9089e3c7)
+    edit_in = [("TextEncodeQwenImageEdit", "image1")] + ([] if action == "compose_ref" else [("VAEEncode", "pixels")])
     for name, cls_in in (("first_frame", [("", "start_image"), ("LTXVImgToVideoInplace", "image")]),
-                         ("edit_image", [("TextEncodeQwenImageEdit", "image1"), ("VAEEncode", "pixels")])):
+                         ("edit_image", edit_in)):
         for s in slots_of(recipe, name):
             n = prompt.get(str(s.get("node")), {})
             if n.get("class_type") != "LoadImage":
@@ -342,25 +347,40 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
                 for cls, inp in cls_in:
                     if (cls, inp) not in hits:
                         e.append(f"inject.{name} 의 이미지가 {cls or '노드'} 의 {inp} 입력에 닿지 않습니다")
-                if action == "edit_ref":      # 그림 여러 장 편집은 긍정·부정 글 노드 모두에 닿아야 한다 (한쪽만 이어지면 두 조건이 어긋난다)
+                if action in REF_ACTIONS:     # 그림 여러 장 편집은 긍정·부정 글 노드 모두에 닿아야 한다 (한쪽만 이어지면 두 조건이 어긋난다)
                     for tid in _encode_nodes(prompt):
                         if not _reaches_at(prompt, str(s["node"]), tid, "image1"):
                             e.append(f"inject.edit_image 의 이미지가 글 노드 {tid} 의 image1 입력에 닿지 않습니다")
+                if action == "compose_ref" and reaches(prompt, str(s["node"]), "VAEEncode", "pixels"):
+                    e.append("compose_ref 레시피의 그림 1이 VAEEncode 로 잠재에 들어갑니다 (빈 잠재에서 새로 그려야 합니다)")
+    if action == "compose_ref":       # 샘플러의 잠재는 빈 잠재여야 하고, 그 크기가 width·height 자리여야 한다 (영상 비율로 그린다)
+        sams = [nid for nid, n in prompt.items() if n.get("class_type") == "KSampler"]
+        if len(sams) != 1:
+            e.append(f"compose_ref 레시피는 KSampler 가 하나여야 합니다 (지금 {len(sams)}개)")
+        for sid in sams:
+            lat = (prompt[sid].get("inputs") or {}).get("latent_image")
+            lnode = prompt.get(str(lat[0]), {}) if is_link(lat) else {}
+            if lnode.get("class_type") not in EMPTY_LATENTS:
+                e.append(f"compose_ref 레시피의 KSampler {sid} 의 latent_image 가 빈 잠재 노드가 아닙니다 ({lnode.get('class_type')})")
+            else:
+                for dim in ("width", "height"):
+                    if not any(str(x.get("node")) == str(lat[0]) and x.get("input") == dim for x in slots_of(recipe, dim)):
+                        e.append(f"compose_ref 레시피는 빈 잠재 {lat[0]} 의 {dim} 이 inject.{dim} 이어야 합니다")
     if action in ("i2v", "i2v_end", "talk") and not slots_of(recipe, "first_frame"):
         e.append(f"{action} 레시피는 inject.first_frame 이 필요합니다")
-    # 참고 그림(edit_ref): ref_image → image2, ref_image2 → image3, 글 노드 모두에
+    # 참고 그림(edit_ref·compose_ref): ref_image → image2, ref_image2 → image3, 글 노드 모두에
     for name, inp in (("ref_image", "image2"), ("ref_image2", "image3")):
-        if slots_of(recipe, name) and action != "edit_ref":
-            e.append(f"inject.{name} 은 edit_ref 레시피에서만 쓸 수 있습니다")
-        if action == "edit_ref" and not slots_of(recipe, name):
-            e.append(f"edit_ref 레시피는 inject.{name} 이 필요합니다")
+        if slots_of(recipe, name) and action not in REF_ACTIONS:
+            e.append(f"inject.{name} 은 edit_ref·compose_ref 레시피에서만 쓸 수 있습니다")
+        if action in REF_ACTIONS and not slots_of(recipe, name):
+            e.append(f"{action} 레시피는 inject.{name} 이 필요합니다")
         for s in slots_of(recipe, name):
             if prompt.get(str(s.get("node")), {}).get("class_type") != "LoadImage":
                 e.append(f"inject.{name} 노드는 LoadImage 여야 합니다")
-            elif action == "edit_ref":
+            elif action in REF_ACTIONS:
                 encs = _encode_nodes(prompt)
                 if not encs:
-                    e.append("edit_ref 레시피에 TextEncodeQwenImageEdit 계열 글 노드가 없습니다")
+                    e.append(f"{action} 레시피에 TextEncodeQwenImageEdit 계열 글 노드가 없습니다")
                 for tid in encs:
                     if not _reaches_at(prompt, str(s["node"]), tid, inp):
                         e.append(f"inject.{name} 의 이미지가 글 노드 {tid} 의 {inp} 입력에 닿지 않습니다")
@@ -391,7 +411,7 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
             e.append("inject.audio 노드는 LoadAudio 여야 합니다")
     if action in ("talk", "voice_clone") and not slots_of(recipe, "audio"):
         e.append(f"{action} 레시피는 inject.audio 가 필요합니다")
-    if action in ("edit", "edit_ref") and not slots_of(recipe, "edit_image"):
+    if action in ("edit", "edit_ref", "compose_ref") and not slots_of(recipe, "edit_image"):
         e.append(f"{action} 레시피는 inject.edit_image 가 필요합니다")
     add("V6", e)
 
