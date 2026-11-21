@@ -75,7 +75,7 @@ LONG_RESUME_MAX = 5            # 허브가 다시 시작될 때 긴 영상을 �
 DISSOLVE_SECONDS = 0.6     # 이어 만든 장면 사이의 디졸브 길이(초) [추정 값, 메인 시험 전]
 LONG_SCENE_KEYS = ("plan", "scene_prompt", "image_rel", "first_from", "prompt", "ko", "profile", "settings", "frame_known",
                    "frame_people", "no_chain", "clip_rel", "clip_sha", "last_rel", "check_rel", "seed", "seconds", "violations",
-                   "edit_rel", "first_people", "seam", "chain_rel", "end_rel", "end_att", "end_fail")
+                   "edit_rel", "first_people", "seam", "chain_rel", "end_rel", "end_att", "end_fail", "layout_rel")
 # 장면 잇기 (11-20, docs/scene-chaining-design.md)
 CHAIN_EDIT_SECONDS = 17       # 고쳐 잇기·끝 키프레임 편집 한 장(그림 2~3장) 실행 시간(초). 11-20 메인 실측 12~17초
 # 대사 영상 (11-19, docs/short-film-dialogue-design.md 12절)
@@ -89,6 +89,9 @@ STILL_TRIES = 3            # 장면 그림·편집 그림·인물 기준 그림:
 # 기준 그림으로 새로 그린 첫 화면(compose_ref): 처음 + 다시 네 번. 11-20 메인 시험 N1~N3 에서 씨앗 2개 중 1~2개가 맞았다
 # (베스 둘·앞치마 색, 니키 모자 빠짐). 한 장 약 17초 + 검사 약 18초라, 인물이 틀린 채 영상을 만드는 것보다 싸다
 COMPOSE_TRIES = 5
+# 구도 그림(①)은 인물이 없어 싸고 메인 실험에서 형상 수가 늘 맞았다(9/9): 처음 + 다시 두 번. ③(세 번째 사람부터)도 같다
+LAYOUT_TRIES = 3
+FINISH_TRIES = 3
 CLIP_TRIES = 2             # 장면 클립·입 맞춤 클립: 처음 + 다시 한 번 (한 번에 1~2분이라 적게)
 PICTURE_CHECK_SECONDS = 18    # 검사 한 장(시각 모델 qwen3-vl 8B) 시간(초). 11-20 메인 실측 13~19초
 # 고쳐 쓴 뒤에도 남으면 그 프롬프트로 영상을 만들지 않는 위반: 요청과 다른 장면(예시 베끼기)이다 (11-16 파일럿 요청)
@@ -931,9 +934,14 @@ class Director:
                 await store.event(ctx.turn["id"], "long_scene_redo", {"index": k, "chained": k != i})
             keep = ("plan", "scene_prompt") if (k == i or not work.get("chain")) else ()    # 뒤 장면의 계획표는 옛 첫 화면을 보고 쓴 것
             scenes[k] = {key: v for key, v in scenes[k].items() if key in keep}
-            for key in (f"L{k}i_pending", f"L{k}e_pending", f"L{k}v_pending"):
+            # 구도 그림·인물 입히기·③ 단계와 끝 키프레임(k)의 접수 정보도 비운다 (끝 키프레임을 안 비우면 옛 첫 화면의 끝 그림을 이어받았다)
+            stage_keys = [key for key in work if re.fullmatch(rf"L{k}(?:c|d|k|f\d+)_pending", str(key))]
+            for key in [f"L{k}i_pending", f"L{k}e_pending", f"L{k}v_pending"] + stage_keys:
                 if work.get(key):
                     work[key] = patch[key] = {"client_id": None, "attempt": int((work[key] or {}).get("attempt") or 0)}
+            for key in [key for key in work if re.fullmatch(rf"L{k}(?:c|d|f\d+)_done", str(key))]:      # 구도 그림 단계가 고른 그림
+                if work.get(key):
+                    work[key] = patch[key] = None
             for key in (f"{k}:image", f"{k}:clip", f"{k}:end"):          # 다시 만드는 장면의 남은 검사 문제는 이제 그 영상에 없다
                 left.pop(key, None)
         if left != (work.get("check_left") or {}):
@@ -1062,6 +1070,10 @@ class Director:
                 places = {v.scene_place(story, k) for k in range(n) if v.scene_people(story, k)} - {None}
                 total += len(places) * (DIALOGUE_CAST_SECONDS + DIALOGUE_PART_OVERHEAD + PICTURE_CHECK_SECONDS)
                 total += ppl * (CHAIN_EDIT_SECONDS + PICTURE_CHECK_SECONDS)
+                if settings.studio_ref_layout:
+                    # 구도 그림에서 그리기: 사람 장면마다 구도 그림 한 장(+검사), 세 사람 이상이면 한 명마다 한 장 더 [추정]
+                    extra = sum(max(0, len(v.scene_people(story, k)) - 2) for k in range(n))
+                    total += (ppl + extra) * (CHAIN_EDIT_SECONDS + PICTURE_CHECK_SECONDS)
             if not dlg:
                 total += len(v.anchor_ids(story)) * (DIALOGUE_CAST_SECONDS + DIALOGUE_PART_OVERHEAD + PICTURE_CHECK_SECONDS)
         elif settings.studio_picture_check:    # 장면마다 그림 한 장 + 클립 검사 프레임 한 장 (다시 만들면 더 걸린다)
@@ -1886,6 +1898,10 @@ class Director:
         if crec is not None:
             if not people:
                 return st             # 사람이 없는 장면(풍경 등): 장면 그림 (_long_scene). 앞 프레임의 사람을 이어받지 않는다
+            if settings.studio_ref_layout:
+                got = await self._layout_first_frame(ctx, work, scenes, i, st, crec)
+                if got is not False:  # False: 장소 그림이나 기준 그림이 없어 구도 그림에서 그릴 수 없다 → 기준 그림으로 바로 새로 그린다
+                    return got
             return await self._compose_first_frame(ctx, work, scenes, i, st, crec, ref_ids)
         erec = self.recipe_for("edit_ref")
         if erec is None:
@@ -1938,7 +1954,7 @@ class Director:
             return st                 # 기준 그림도 장소 그림도 없다: 장면 그림
         prompt = v.compose_prompt(story, i, ref_ids, place_n)
         _h, animals = self._scene_cast(story, i)
-        rule = checks.cut_rule(len(people), animals, self._scene_extras(story, i))
+        rule = checks.compose_rule(len(people), animals, self._scene_crowd(story, i))
         pend = f"L{i}e_pending"
         vsz = work["long_size"]
         # 크기는 영상 비율로 (그림 1 = 세로 기준 그림의 비율을 따르면 영상 첫 화면이 잘린다)
@@ -1954,36 +1970,183 @@ class Director:
         return st
 
     async def _compose_still(self, ctx: Ctx, work: dict, recipe: dict, i: int, pend: str, swork: dict, rule: dict,
-                             ref_ids: list[str]) -> dict | None:
-        """새로 그린 첫 화면을 검사하며 만든다. 사람 수가 틀리거나 인물이 기준 그림과 다르면(알아볼 소품이 없으면) 씨앗을 바꿔 다시 그린다.
-        다 틀리면 가장 나은 그림을 쓰고 남은 문제를 결과에 알린다. 검사 모델이 답하지 않으면 다시 그리지 않는다(알리기만). 취소면 None"""
+                             ref_ids: list[str], tag: str | None = None, what: str = "compose", key: str | None = "",
+                             tries: int = COMPOSE_TRIES, check_fn=None) -> dict | None:
+        """새로 그린 첫 화면(또는 그 중간 단계)을 검사하며 만든다. 사람 수가 틀리거나 인물이 기준 그림과 다르면(알아볼 소품이 없으면) 씨앗을
+        바꿔 다시 그린다(tries 번까지). 다 틀리면 가장 나은 그림을 쓰고 남은 문제를 결과에 알린다(key, 기본은 '<i>:image'. None 이면 알리지
+        않는다 — 다음 단계가 다시 검사하는 중간 그림). 검사 모델이 답하지 않으면(…:unchecked) 다시 그리지 않는다. check_fn(rel, attempt) 는
+        검사를 바꿀 때(구도 그림). 취소면 None"""
         story = work["story"]
+        tag = tag or f"L{i}e"
         best, best_why, best_seen = None, None, None
-        for check in range(1, COMPOSE_TRIES + 1):
+        for check in range(1, tries + 1):
             ctx.text = "장면 준비 중"
             try:
-                main = await self._dlg_job(ctx, recipe, f"L{i}e", pend, "장면 준비", swork, "scene", scene_phase=True, fresh=check > 1)
+                main = await self._dlg_job(ctx, recipe, tag, pend, "장면 준비", swork, "scene", scene_phase=True, fresh=check > 1)
             except StepError as e:
                 if best is None:
                     raise
-                await store.event(ctx.turn["id"], "picture_retry_failed", {"what": "compose", "index": i, "attempt": check, "code": e.code})
+                await store.event(ctx.turn["id"], "picture_retry_failed", {"what": what, "index": i, "attempt": check, "code": e.code})
                 break
             if main is None:
                 return None
             work[pend] = swork.get(pend)
-            why, seen = await self._compose_check(ctx, main["rel_path"], story, i, ref_ids, rule, check)
+            if check_fn is not None:
+                why, seen = await check_fn(main["rel_path"], check)
+            else:
+                why, seen = await self._compose_check(ctx, main["rel_path"], story, i, ref_ids, rule, check, what=what)
             if checks.better(best_why, why):
                 best, best_why, best_seen = main, why, seen
-            if not why or "cast:unchecked" in why:
+            if not why or any(str(w).endswith(":unchecked") for w in why):
                 break
-            if check < COMPOSE_TRIES:
-                await store.event(ctx.turn["id"], "picture_retry", {"what": "compose", "index": i, "attempt": check, "why": why})
-        await self._check_left(ctx, work, f"{i}:image", best_why)
-        return {**best, "seen": best_seen}
+            if check < tries:
+                await store.event(ctx.turn["id"], "picture_retry", {"what": what, "index": i, "attempt": check, "why": why})
+        if key is not None:
+            await self._check_left(ctx, work, key or f"{i}:image", best_why)
+        return {**best, "seen": best_seen, "why": best_why}
+
+    @staticmethod
+    def _scene_crowd(story: dict, i: int) -> bool:
+        """장면 글(동작·샷·장소)에 무리(행인·군중) 말이 있는가 (checks.CROWD_RE). 새로 그린 첫 화면의 사람 수만 이것으로 느슨하게 한다"""
+        sc = story["scenes"][i]
+        place = next((p.get("look") or "" for p in story["bible"]["places"] if p["id"] == sc.get("place")), "")
+        return bool(checks.CROWD_RE.search(" ".join([sc.get("action") or "", sc.get("shot") or "", place])))
+
+    async def _layout_first_frame(self, ctx: Ctx, work: dict, scenes: list, i: int, st: dict, crec: dict):
+        """장면 i 의 첫 화면을 구도 그림에서 그린다 (11-21 메인 실험, docs/reference-system-design.md 11절).
+        ① 장소 그림(Picture 1) + 구도 글 → 얼굴 없는 형상이 정확한 수·자리에 있는 구도 그림 (형상 수 검사, LAYOUT_TRIES)
+        ② 구도 그림(Picture 1) + 인물 기준 그림 2장까지(Picture 2·3) → 인물 입히기 (배경 문장 필수, 인물 검사, COMPOSE_TRIES)
+        ③ 세 번째 사람부터 한 명씩 (FINISH_TRIES). 마지막 단계만 사람 수를 정확히 세고 결과에 남은 문제를 알린다.
+        돌려주는 값: st, 취소면 None, 장소 그림이나 기준 그림이 없어 이 방식으로 그릴 수 없으면 False"""
+        turn, story = ctx.turn, work["story"]
+        v = _video()
+        casts = work.get("casts") or {}
+        people = v.scene_people(story, i)
+        if not people or any(not (casts.get(c) or {}).get("att") for c in people):
+            return False              # 기준 그림이 없는 사람은 형상으로 남는다 (닻 그림은 모든 사람에게 만든다: 드문 경우)
+        card = await self._place_card(ctx, work, v.scene_place(story, i))
+        if card is False:
+            return None
+        if not card:
+            return False
+        slots = v.layout_slots(story, i, people)
+        order = [s["id"] for s in slots]
+        n = len(order)
+        _h, animals = self._scene_cast(story, i)
+        crowd = self._scene_crowd(story, i)
+        final_rule = checks.compose_rule(n, animals, crowd)
+        # 중간 그림(② 뒤에 ③ 이 남았을 때, 마지막이 아닌 ③)에는 일부러 남긴 얼굴 없는 형상이 있다: 얼굴 이상·머리 없음으로 보지 않는다
+        mid_rule = checks.rule(None, skip=checks.LAYOUT_SKIP | (checks.ANIMAL_SKIP if animals else frozenset()))
+        vsz = work["long_size"]
+        size = list(recipes.default_size(crec, photo=(vsz[0], vsz[1])))
+
+        # ① 구도 그림
+        async def layout_check(rel: str, attempt: int):
+            return await self._layout_check(ctx, rel, story, i, n, animals, attempt)
+
+        async def run_layout():
+            pend = f"L{i}c_pending"
+            sw = {"prompt": v.layout_prompt(story, i, slots), "scene_att": card, "ref_atts": [], "size": size, pend: work.get(pend)}
+            return await self._compose_still(ctx, work, crec, i, pend, sw, checks.rule(None), [], tag=f"L{i}c", what="layout",
+                                             key=None, tries=LAYOUT_TRIES, check_fn=layout_check)
+
+        lay = await self._layout_stage(ctx, work, f"L{i}c_done", run_layout)
+        if lay is None:
+            return None
+        # ② 인물 입히기 (2명까지). 작업 표시는 d: 기준 그림으로 바로 그리는 길(e)의 옛 작업을 이어받지 않게
+        first, rest = order[:2], order[2:]
+
+        async def run_identity():
+            att0 = await self.deps.stage_image(ctx.env, ctx.user, turn, lay["rel_path"])
+            pend = f"L{i}d_pending"
+            sw = {"prompt": v.identity_prompt(story, i, slots, first, final=not rest), "scene_att": att0["id"],
+                  "ref_atts": [casts[c]["att"] for c in first], "size": size, pend: work.get(pend)}
+            return await self._compose_still(ctx, work, crec, i, pend, sw, mid_rule if rest else final_rule,
+                                             first if rest else order, tag=f"L{i}d", what="identity", key=None if rest else "")
+
+        cur = await self._layout_stage(ctx, work, f"L{i}d_done", run_identity)
+        if cur is None:
+            return None
+        # ③ 남은 사람 한 명씩
+        done = list(first)
+        for k, cid in enumerate(rest):
+            last = k == len(rest) - 1
+
+            async def run_finish(prev=cur, k=k, cid=cid, last=last, done_now=tuple(done)):
+                att_k = await self.deps.stage_image(ctx.env, ctx.user, turn, prev["rel_path"])
+                pend = f"L{i}f{k}_pending"
+                sw = {"prompt": v.finish_prompt(story, i, slots, cid, list(done_now), final=last), "scene_att": att_k["id"],
+                      "ref_atts": [casts[cid]["att"]], "size": size, pend: work.get(pend)}
+                return await self._compose_still(ctx, work, crec, i, pend, sw, final_rule if last else mid_rule,
+                                                 order if last else list(done_now) + [cid], tag=f"L{i}f{k}", what="finish",
+                                                 key="" if last else None, tries=FINISH_TRIES)
+
+            cur = await self._layout_stage(ctx, work, f"L{i}f{k}_done", run_finish)
+            if cur is None:
+                return None
+            done.append(cid)
+        att = await self.deps.stage_image(ctx.env, ctx.user, turn, cur["rel_path"])
+        st.update(first_att=att["id"], first_from="layout", edit_rel=cur["rel_path"], layout_rel=lay["rel_path"],
+                  scene_prompt=v.layout_description(story, i, slots),
+                  first_people=cur.get("seen") if not final_rule.get("more_ok") else None)
+        await self._save_scene(ctx, work, scenes, i, st)
+        await store.event(turn["id"], "layout_done", {"index": i, "people": n, "order": order, "passes": 1 + 1 + len(rest),
+                                                      "layout_why": lay.get("why"), "why": cur.get("why")})
+        return st
+
+    async def _layout_stage(self, ctx: Ctx, work: dict, key: str, run):
+        """구도 그림의 한 단계. 끝난 단계는 고른 그림을 work[key] 에 남긴다: 허브가 다시 시작해도 그 단계를 다시 검사하거나 다시 그리지 않고,
+        마지막으로 보낸 작업이 아니라 고른 그림으로 다음 단계를 잇는다 (11-21 검토). run() 은 _compose_still 의 결과(취소면 None)"""
+        done = work.get(key) or {}
+        if done.get("rel") and files.result_path(done["rel"]):
+            return {"rel_path": done["rel"], "why": done.get("why"), "seen": done.get("seen")}
+        main = await run()
+        if main is None:
+            return None
+        rec = {"rel": main["rel_path"], "why": main.get("why"), "seen": main.get("seen")}
+        work[key] = rec
+        await store.merge_work(ctx.turn["id"], {key: rec})
+        return main
+
+    async def _layout_check(self, ctx: Ctx, rel: str, story: dict, i: int, n: int, animals: int,
+                            attempt: int) -> tuple[list[str], int | None]:
+        """구도 그림 검사: 얼굴 없는 형상이 n 개인가(특징 줄 — 검사 모델이 형상을 사람으로 세지 않을 수 있다), 몸의 이상(얼굴 없음 제외), 화풍.
+        새로 그린 첫 화면 검사처럼 늘 돈다"""
+        v = _video()
+        neg = checks.style_negative(v.style_key(story))
+        expect = [checks.layout_trait(n)] + ([neg] if neg else [])
+        insp = await self._inspect_twice(ctx, rel, expect, "layout", i, attempt)
+        why = checks.layout_problems(insp, n, animals, style="style" if neg else "")
+        seen = insp.get("people") if isinstance(insp, dict) else None
+        seen = seen if isinstance(seen, int) and not isinstance(seen, bool) else None
+        if isinstance(insp, dict):
+            await store.event(ctx.turn["id"], "picture_check", {
+                "what": "layout", "index": i, "attempt": attempt, "file": files.split_rel(rel)[2], "people": seen, "want": n,
+                "why": why, "issues": [str(x.get("type")) for x in insp.get("issues") or [] if isinstance(x, dict)][:8]})
+        return why, seen
+
+    async def _inspect_twice(self, ctx: Ctx, rel: str, expect: list[str], what: str, i: int, attempt: int):
+        """시각 모델 검사를 한 번 더 물어 본다 (모델이 잠깐 실패해도 통과로 보지 않으려고). 둘 다 실패하면 None"""
+        owner, sub, name = files.split_rel(rel)
+        ip = str(ctx.turn.get("client_ip") or "")
+        ctx.text = "그림 검사 중"
+        await self.emit(ctx, True)
+        for _try in (1, 2):
+            try:
+                with self.deps.llm_context() as bag:
+                    ctx.bag = bag
+                    insp = await self._guard_llm(ctx, self.deps.inspect(ctx.user, ip, owner, name, sub, expect or None))
+                    for e in bag:
+                        await store.link_job(ctx.tid, e["job_id"], "inspect", e["purpose"])
+                return insp
+            except StepError as e:
+                await store.event(ctx.turn["id"], "picture_check", {"what": what, "index": i, "attempt": attempt,
+                                                                    "skipped": e.code, "detail": str(e.detail or "")[:200]})
+        return None
 
     async def _compose_check(self, ctx: Ctx, rel: str, story: dict, i: int, ids: list[str], rule: dict,
-                             attempt: int) -> tuple[list[str], int | None]:
-        """새로 그린 첫 화면 검사: 사람 수(cut_rule), 몸의 이상, 기준 그림을 넣은 인물마다 알아볼 소품(checks.sign_trait), 화풍.
+                             attempt: int, what: str = "compose") -> tuple[list[str], int | None]:
+        """새로 그린 첫 화면 검사: 사람 수(compose_rule 등 호출 쪽 기준), 몸의 이상, 기준 그림을 넣은 인물마다 알아볼 소품(checks.sign_trait), 화풍.
         일관성이 가장 중요해서(11-20 사용자) STUDIO_PICTURE_CHECK 와 상관없이 늘 돈다 (끝 프레임 검사와 같다)"""
         v = _video()
         chars = {c["id"]: c for c in story["bible"]["characters"]}
@@ -2005,14 +2168,14 @@ class Director:
                         await store.link_job(ctx.tid, e["job_id"], "inspect", e["purpose"])
                 break
             except StepError as e:
-                await store.event(ctx.turn["id"], "picture_check", {"what": "compose", "index": i, "attempt": attempt,
+                await store.event(ctx.turn["id"], "picture_check", {"what": what, "index": i, "attempt": attempt,
                                                                     "skipped": e.code, "detail": str(e.detail or "")[:200]})
         why = checks.cast_problems(insp, rule, ids, style="style" if neg else "")
         seen = insp.get("people") if isinstance(insp, dict) else None
         seen = seen if isinstance(seen, int) and not isinstance(seen, bool) else None
         if isinstance(insp, dict):
             await store.event(ctx.turn["id"], "picture_check", {
-                "what": "compose", "index": i, "attempt": attempt, "file": name, "people": seen, "want": rule.get("want"),
+                "what": what, "index": i, "attempt": attempt, "file": name, "people": seen, "want": rule.get("want"),
                 "more_ok": rule.get("more_ok"), "fewer_ok": rule.get("fewer_ok"), "why": why, "cast": ids,
                 "issues": [str(x.get("type")) for x in insp.get("issues") or [] if isinstance(x, dict)][:8]})
         return why, seen

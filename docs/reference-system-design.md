@@ -1,6 +1,7 @@
 # 레퍼런스 체계 설계: 화풍·인물·구도 (2026-11-21)
 
-> 상태: **설계만, 구현 전.** 9절의 메인 실험을 먼저 하고 결과에 따라 고친다.
+> 상태: **구현함(12절), 메인 실기기 확인 전.** 11-21 메인 실험(9절 R1~R6) 결과는 11절. 두 단계 방식은 사람 수·배치·장소를 지켰고,
+> ②에 배경 문장이 꼭 필요하며, 화풍 보드는 효과가 작아 기본 흐름에서 뺀다.
 > 앞선 설계: `docs/scene-chaining-design.md` (장면 잇기. 13절이 지금 구현된 '기준 그림으로 새로 그리기', PR #41).
 
 ## 0. 요약
@@ -96,6 +97,7 @@
 편집 모델은 Picture 1 의 내용을 지키려 한다. 11-20 에 앞 프레임을 Picture 1 로 넣었을 때 그 사람·배치가 남은 것이 이 성질이다
 (공식 시스템 지시문도 "원본과의 일관성 유지"를 요구한다 [확인 필요]). 오류의 원인이었던 이 성질을 거꾸로 쓴다:
 **정확한 수의 형상이 정확한 자리에 있는 C 를 Picture 1 로 두면, 사람 수와 배치를 붙잡는 쪽으로 작동**할 것으로 본다 [추정, R3].
+(11-21 실험: 사람 수와 자리는 지켜졌지만, 인물이 한 명이면 기준 그림의 단색 배경이 바탕을 이겼다. ②에 배경 문장을 넣어 고쳤다 — 11.1절)
 
 ### 3.3 단계 나누기
 
@@ -231,6 +233,9 @@
 
 ## 8. 바뀔 코드 (실험 뒤, 구현 순서)
 
+> 11-21 구현은 12절. 설정 이름은 `STUDIO_REF_LAYOUT`(기본 켜짐)이고, 화풍 보드(1번)는 실험 결과(11.1)에 따라 뺐으며,
+> 구도 명세(3번)는 LLM 대신 규칙으로, 이어짐 메모·색 맞추기(6·7번)는 아직이다.
+
 PR #41 의 새로 그리기 레시피, 인물 소품 검사, 장소 그림, 이어지는 샷 규칙은 그대로 쓰고, 그 위에 ① 단계와 화풍 보드를 더한다.
 
 1. 화풍 보드 등록: 라이브러리 `styles.<열쇠>.board`, `cast_lib.style_board(key)`, `studio-check` 가 파일을 확인.
@@ -261,3 +266,89 @@ PR #41 의 새로 그리기 레시피, 인물 소품 검사, 장소 그림, 이�
 - 네 명 이상 장면.
 - 사람 없는 장면: 장소 그림 그대로 쓸지, ①로 새 샷을 그릴지.
 - 화풍 LoRA 를 할지, 언제 할지, 학습 작업을 대기열에 어떻게 넣을지.
+
+## 11. 메인 실험 결과 (11-21)
+
+관리자 ComfyUI 화면에서 실행했다. 결과는 `admin/main/2026-11-21/refexp/`, 입력은 `refexp/`
+(화풍 보드 `board_A1`(숲·온실과 그 확대)·`board_A2`(A1 에서 숲 확대 대신 망토 질감), 구도 그림 사본 `C1_a`·`C2_a`·`C3_a`).
+그래프는 PR #41 의 `qwen_image_compose_ref` 그대로 (Lightning 4스텝, 1280×704), 장소 그림은 11-20 부엌 그림(`styleset/bg_kitchen.png`).
+한 장 약 12~15초.
+
+| 번호 | 무엇 | 결과 |
+|---|---|---|
+| R1 | 화풍 보드 누수 (보드 2종 × 씨앗 2, 보드 없이 장소 그림만 1) | 5/5 형상 2개·부엌 유지. 보드의 숲·온실·망토가 옮겨 그려지지 않았다. 그러나 보드 없는 것과 화풍 차이가 거의 없다 → ①의 화풍은 사실상 장소 그림이 실어 나른다 |
+| R1b | 화풍 보드로 장소 그림 그리기 (씨앗 2) | 사람 없음·누수 없음. 그러나 붓 터치가 옮겨지지 않고 평평한 일러스트가 됐다 → 배경 보드만으로는 화풍이 고정되지 않는다 (5.2절 확인) |
+| R2 | 형상 2개에 베스·제임스 입히기 (씨앗 3) | 3/3 얼굴·옷·좌우 대응이 맞음. 구도는 2/3 유지 (씨앗 b 는 카메라가 다가가 부엌이 바뀜) |
+| R2t | R2 씨앗 b + 배경 문장 | 구도가 유지됐다 |
+| R5 | "Picture N" vs "image N" (같은 씨앗) | 차이 없음 (씨앗 하나) |
+| R3 지금 방식 | 혼자 대사 컷: 베스 기준 그림 + 장소 그림, 장면 글에 니키 언급 (씨앗 3) | **3/3 베스가 둘** (말 상대를 복제). 11-21 스튜디오 시험의 2번째 시도와 같은 오류 |
+| R3 두 단계 | ① 형상 1개 구도 그림 → ② 베스 (씨앗 3) | 3/3 베스 한 명·인물 맞음. 그러나 **부엌이 사라지고 기준 그림의 단색 배경**이 됐다 (기준 그림이 바탕 그림을 이김) |
+| R3b | 같은 씨앗으로 고치는 법 | 디노이즈 0.75(구도 그림을 잠재로): 구도는 유지, 인물이 흐려짐(머리 모양·옷). 0.85·0.95: 단색 배경. 순서 바꿈(인물 1, 구도 2): 단색 배경. **배경 문장 추가: 성공** |
+| R3c | 배경 문장 + 씨앗 3개 더 | 3/3 성공 (씨앗 a 포함 4/4): 베스 한 명, 부엌·자리 유지, 화면 가운데 쪽 |
+| R6 | ②에 화풍 보드를 Picture 3 으로 (1명) | 더 나빠짐: 기준 그림 초상화와 거의 같은 그림 |
+| R4 | 세 사람: 지금 방식 vs ①→②→③ (씨앗 2) | 둘 다 2/2 인물이 맞음. 지금 방식은 부엌이 다른 장면과 다르고, 두 단계는 같은 부엌. 두 단계는 넓은 구도라 얼굴이 작고, 작은 형상 크기를 따라 니키가 인형처럼 보임 |
+
+### 11.1 설계에 반영할 것
+
+1. **②에 배경 문장이 꼭 필요하다:** "The background stays the same <장소> as in Picture 1, with <눈에 띄는 것>; it is not a plain studio background."
+   이 문장이 없으면 기준 그림(단색 배경의 초상화)이 바탕 그림을 이긴다. 3.2절의 "Picture 1 의 내용이 지켜진다"는 가정은 늘 맞지 않는다 (인물 한 명일 때 특히).
+   잠재를 구도 그림에서 시작하는 방법(디노이즈 < 1)은 인물을 흐리게 해 쓰지 않는다.
+2. **화풍 보드는 기본 흐름에서 뺀다:** 누수는 없지만 효과가 작고(R1·R1b), ②에 넣으면 해롭다(R6).
+   화풍은 같은 화풍으로 만든 장소 그림과 인물 기준 그림이 실어 나른다. 그래서 장소 그림을 화풍에 맞게 만드는 방법
+   (확정 컨셉아트 계열 그림을 편집해 만들기 — 11-20 부엌 그림처럼)과 화풍 LoRA(7절)가 더 중요해졌다.
+3. **지금 방식(PR #41)의 대사 컷은 위험하다:** 장면 글에 다른 인물이 나오면 3/3 복제가 났다. 두 단계로 바꾸기 전에도 바로 고칠 것:
+   새로 그린 첫 화면 검사의 사람 수가 장면 글의 mother·woman 같은 말(`checks.EXTRAS_RE`) 때문에 more_ok 가 되는 문제,
+   대사 컷 글에서 화면 밖 인물의 이름을 빼기.
+4. **①의 구도 글에 샷 크기를 더 분명히:** 혼자 대사 컷은 "medium close-up, head and shoulders large" 로도 미디엄 샷이 나왔다.
+   세 사람 넓은 장면은 얼굴이 작다. 샷 크기·인물 크기 지시를 강화하고, 아이 형상은 아이 키 정도로 적는다.
+5. **시간:** 컷마다 편집 한 번(약 13초)과 검사가 늘고, 세 사람이면 두 번 더. 같은 컷을 다섯 번 다시 그리는 것(11-21 스튜디오 베스 컷)보다 싸다.
+
+### 11.2 실험에 쓴 지시문 (구현의 출발점)
+
+① 화풍 보드 문장은 11.1-2 에 따라 뺀다. 장소 문장과 구도 문장은 그대로 쓴다.
+
+- ① 장소: `Picture 1 shows the place, a sunny family kitchen. Keep its architecture, window, cabinets, furniture and props, seen from a slightly different camera angle.`
+- ① 두 사람: `A new picture of this kitchen: a medium two-shot at eye level. Two faceless mannequin figures sit side by side at the wooden breakfast table: the figure on the left is slim and turned toward the right, the figure on the right is taller and turned toward the left. Each figure has a smooth blank head with no face and no hair, and plain matte light grey clothes, like an artist's mannequin. Both figures' heads and upper bodies are fully in frame, in the middle part of the picture. Warm amber morning sunlight from the window.` + 화풍 문장 + `Exactly 2 figures, no other figure or person.`
+- ① 한 사람: `… a medium close-up at eye level of one faceless mannequin figure sitting at the breakfast table, turned slightly toward the left, its head and shoulders large in the centre of the frame, the whole head inside the frame with some space above it. … The kitchen behind is softly out of focus.`
+- ① 세 사람: `… a medium-wide shot at eye level of a family breakfast. Three faceless mannequin figures sit around the wooden table: on the left a small child-sized figure turned toward the right, in the middle a slim adult figure facing the camera, on the right a taller adult figure turned toward the left. … All three heads and upper bodies are fully in frame and apart from each other.`
+- ② 두 사람: `Picture 1 is the layout. Keep exactly its camera angle, the kitchen, the table and props, the light, the painting style, and the two figures' positions, sizes and poses. Replace the faceless figure on the left with the woman in Picture 2: take only her face, hair, body and clothes, including <소품>. Replace the faceless figure on the right with the man in Picture 3: take only his face, hair and clothes, including <소품>. Take nothing else from Picture 2 or Picture 3.` + 배경 문장 + 표정·손 + 화풍 문장 + `Exactly 2 people, no other person, no reflection, no copy of anyone.`
+- ② 한 사람: 같은 짜임에 `She looks toward the left edge of the frame with a gentle, encouraging smile, lips slightly parted as if speaking, face in three-quarter view. The hands are not visible.` + 한 사람 문장(`video.ONE_PERSON`).
+- ③ 세 번째 인물: `Picture 1 is the picture to finish. Keep everything in Picture 1 exactly: the camera, the kitchen, the light, the painting style, the woman and the man. Replace only the small faceless figure on the left with the girl in Picture 2: take only her face, hair, body and clothes, including <소품>. Take nothing else from Picture 2.` + 배경 문장 + 화풍 문장 + `Exactly 3 people, …`
+- 화풍 문장: `A soft painted semi-realistic fantasy illustration with visible painterly brush texture, matte soft shading and natural proportions. Not a glossy 3D render, not a cartoon, not cel-shaded.`
+
+## 12. 구현 상태 (11-21)
+
+사용자: "구현 후 다시 수정 가능해?" → 설정으로 끄고 켤 수 있게 구현, 실험 결과(11.1)를 반영했다. **로컬, 커밋 전. 시험은 가짜 부품으로만, 메인 실기기 확인 전.**
+
+**구현함** (`STUDIO_REF_LAYOUT`, 기본 켜짐, `STUDIO_CHAIN` 이 켜져 있고 `qwen_image_compose_ref` 가 켜져 있을 때):
+- 감독 `director._layout_first_frame`: 사람이 나오는 새 컷(같은 샷이 이어지는 컷 말고)을 세 단계로 그린다.
+  - ① 구도 그림 (작업 표시 `L{i}c`): Picture 1 = 장소 그림, `video.layout_prompt` — 얼굴 없는 형상의 수·자리·키·방향·자세와 샷 크기만.
+    장면 글(동작)은 넣지 않는다(화면 밖 인물 이름 → 복제). 샷 글의 '뒤에서(from behind)' 같은 말은 빼고 얼굴 방향(정면·3/4)을 정한다. 검사 `checks.layout_problems`(형상 수를 특징 줄 `checks.layout_trait` 로,
+    얼굴 없음은 문제로 보지 않음), 세 번까지(`LAYOUT_TRIES`).
+  - ② 인물 입히기 (`L{i}d` — 기준 그림으로 바로 그리는 길의 `L{i}e` 와 섞이지 않게): Picture 1 = 구도 그림, Picture 2·3 = 형상 차례(왼쪽→오른쪽)의 앞 두 사람 기준 그림, `video.identity_prompt`
+    — 배경 문장(`video.background_sentence`) 필수, 대사 컷은 말하는 방향·감정만. 다섯 번까지.
+  - ③ 세 번째 사람부터 한 명씩 (`L{i}f{k}`): Picture 1 = 지금까지 그린 그림, Picture 2 = 그 사람 기준 그림, `video.finish_prompt`. 세 번까지.
+  - 사람 수는 마지막 단계만 정확히 센다(`checks.compose_rule`). 중간 그림은 인물 모습만 보고(남긴 형상의 얼굴 없음은 문제로 보지 않음,
+    `checks.LAYOUT_SKIP`) 결과 알림에 남기지 않는다.
+  - 끝난 단계는 고른 그림을 `work["L{i}c_done"]`·`L{i}d_done`·`L{i}f{k}_done` 에 남긴다: 허브가 다시 시작해도 그 단계를 다시 검사·다시
+    그리지 않고 고른 그림으로 잇는다. 첫 화면 설명(`scene_prompt`, 영상 글 쓰는 LLM 이 읽음)은 `video.layout_description`(그림 번호·형상 말 없음).
+  - 형상 차례: 한 사람은 가운데, 두 사람은 오른쪽을 보는 화자(`video.speaker_side`)를 왼쪽에 두어 마주 보게, 셋 이상은 장면에 나오는 차례.
+    키는 외형의 머리 구절로(`video.figure_size`: 열세 살 이하·아이 낱말이면 아이, dwarf·short 등이면 작은 사람 — 'short hair'·'tiny glasses' 는
+    보지 않음), 자세는 장면 글에서 가장 먼저 나오는 자세 동사, 없으면 같은 장소가 이어지는 앞 장면 가운데 이 사람이 나온 장면의 멈춘 자세
+    (`video.scene_pose`, 걷기·달리기는 물려받지 않음). 같은 인물이 두 번 적혀도 형상은 하나(`video.scene_people`).
+  - 장소 그림이 없거나(사람이 남아 버림 등) 기준 그림이 없는 사람이 있으면 기준 그림으로 바로 새로 그린다(13절의 PR #41 방식). 끄면 늘 그 방식.
+  - 장면 기록: `first_from = "layout"`, `layout_rel`(구도 그림), 사건 `layout_done`. 운영자 기록 화면에 "구도 그림에 인물을 입힘".
+  - 다시 만들기(`_long_reset`)는 새 단계의 접수 정보(`L{k}c|d|f{n}_pending`)와 고른 그림(`_done`), 끝 키프레임(`L{k}k_pending`, 예전부터
+    비우지 않아 옛 끝 그림을 이어받던 문제)도 비운다. 예상 시간에 구도 그림·③ 을 더했다.
+  - 11-21 여러 검토자 검토(세 관점 + 반박 확인)에서 확인된 지적 18건(겹친 것을 합쳐 10가지)을 위처럼 고쳤다.
+- 지금 방식(PR #41)도 함께 고침: 새로 그린 첫 화면의 사람 수를 `checks.compose_rule`(무리 말 `checks.CROWD_RE` 만 봐줌 — 복수 낱말
+  people·children·crowded 등은 군중으로 봄, mother·woman·girl 같은 한 사람 낱말은 보지 않음)로,
+  대사 컷 지시문에서 장면 글을 빼고 감정만.
+- 끝 프레임 검사 문장(`checks.cast_trait`): "몸 전체가 화면 안" → "얼굴 전체가 화면 안" (대사 클로즈업을 실패로 보던 문제).
+
+**아직 안 한 것**: 화풍 보드(11.1-2 에 따라 뺌), 장소 그림을 화풍에 맞게 만드는 방법(지금은 Qwen-Image 2512 글→그림),
+LLM 구도 명세(지금은 규칙), 이어짐 메모·색 맞추기, 화풍 LoRA.
+
+**메인에서 확인할 것**:
+- 11-21 영상(요청 e33b7def, 니키·베스·제임스 아침 식탁 30초)의 '다시 만들기'로 같은 구성안을 새 방식으로 만들어 컷마다 비교.
+- 검사 모델이 형상 수 특징 줄에 맞게 답하는지(형상을 사람으로 세는지), 대사 컷의 얼굴 크기, 세 사람 장면의 얼굴 크기, 걸린 시간.

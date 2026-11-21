@@ -109,6 +109,9 @@ class Settings:
     studio_picture_check = _bool("STUDIO_PICTURE_CHECK", True)
     # 장면 잇기 (11-20, docs/scene-chaining-design.md): 모든 장면의 첫 화면을 앞 장면 마지막 프레임을 고쳐 만든다. 편집 레시피가 꺼지면 예전 방식
     studio_chain = _bool("STUDIO_CHAIN", True)
+    # 구도 그림에서 그리기 (11-21, docs/reference-system-design.md 11절): 사람이 나오는 새 컷을 ① 얼굴 없는 형상의 구도 그림 → ② 인물 입히기
+    # (세 사람 이상이면 ③ 한 명씩)로 그린다. 끄면 기준 그림으로 바로 새로 그린다(PR #41 방식)
+    studio_ref_layout = _bool("STUDIO_REF_LAYOUT", True)
     studio_inspect = _env("STUDIO_INSPECT", "idle")            # on | idle | off
     studio_auto_reroll = _int("STUDIO_AUTO_REROLL", 0)
     studio_progress_min_interval_ms = _int("STUDIO_PROGRESS_MIN_INTERVAL_MS", 500)

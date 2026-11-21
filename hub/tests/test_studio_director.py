@@ -8,6 +8,7 @@ import copy
 import datetime
 import inspect
 import os
+import re
 import sys
 import tempfile
 import types
@@ -2977,9 +2978,11 @@ COMPOSE = recipes.load_all()["qwen_image_compose_ref"]
 CAST_MISS = {"ok": True, "issues": [], "traits": [{"present": False, "note": "no black umbrella"}], "people": 1}
 
 
-def compose_deps(fs, root, cls=None, **kw):
-    """새로 그리기 레시피까지 켠 장면 잇기. 검사 결과는 방금 접수한 작업으로 고른다: 장소 그림(P)은 사람 없음(place_people 로 바꿈),
+def compose_deps(fs, root, cls=None, layout=False, **kw):
+    """새로 그리기 레시피까지 켠 장면 잇기. layout 이면 구도 그림에서 그리기(STUDIO_REF_LAYOUT)도 켠다 (아니면 기준 그림으로 바로).
+    검사 결과는 방금 접수한 작업으로 고른다: 장소 그림(P)은 사람 없음(place_people 로 바꿈), 구도 그림(Lc)은 layout_seq 차례,
     새로 그린 첫 화면(Le)은 compose_seq 차례(비면 통과), 그 밖은 인물이 있는 통과"""
+    settings.studio_ref_layout = bool(layout)
     base = cls or LongDeps
 
     class ComposeDeps(base):
@@ -2992,16 +2995,22 @@ def compose_deps(fs, root, cls=None, **kw):
             tag = self.last_cid.rsplit("-", 1)[-1]
             if tag.startswith("P"):
                 return {"ok": True, "issues": [], "traits": [], "people": self.place_people}
+            if re.fullmatch(r"L\d+c\d+", tag) and self.layout_seq:
+                return self.layout_seq.pop(0)
             if tag.startswith("L") and "e" in tag and self.compose_seq:
                 r = self.compose_seq.pop(0)
                 if isinstance(r, Exception):
                     raise r
                 return r
-            return dict(GOOD_END)
+            n = self.people_for(tag) if self.people_for else None        # 여러 사람 장면: 그 단계에서 셀 사람 수
+            out = {**GOOD_END, "people": n} if n is not None else dict(GOOD_END)
+            if self.issues_for:
+                out["issues"] = [{"type": x} for x in self.issues_for(tag)]
+            return out
 
     deps = ComposeDeps(fs, root, **kw)
     deps.recs.update({EDITREF["id"]: EDITREF, LTXEND["id"]: LTXEND, COMPOSE["id"]: COMPOSE})
-    deps.last_cid, deps.compose_seq, deps.place_people = "", [], 0
+    deps.last_cid, deps.compose_seq, deps.place_people, deps.layout_seq, deps.people_for, deps.issues_for = "", [], 0, [], None, None
     return deps
 
 
@@ -3149,9 +3158,249 @@ async def t_compose_dialogue_film_draws_talk_scenes_with_the_speaker_first():
             p0, p1 = text_of(by["L0e1"]), text_of(by["L1e1"])
             assert "The person from image 1 is a short old dwarf herbalist" in p0 and "Exactly 2 people" in p0
             assert "speaks toward the" in p1 and "exactly one person" in p1
+            assert "She looks up and asks softly" not in p1          # 대사 컷은 장면 글을 넣지 않는다 (화면 밖 상대 복제, 11-21 R3)
             assert len([e for e in fs.events if e[0] == "place_card"]) == 1         # 한 장소에 한 장
         finally:
             settings.results_dir, settings.envs_dir, settings.studio_chain = old
+
+
+# ── 구도 그림에서 그리기 (11-21 메인 실험 반영): ① 얼굴 없는 형상의 구도 그림 → ② 인물 입히기 → ③ 세 번째 사람부터 ──
+THREE_STORY = copy.deepcopy(LONG_STORY)
+THREE_STORY["bible"]["characters"] += [{"id": "B", "look": "a twelve-year-old girl with two long black braids and a wine-red hat"},
+                                       {"id": "C", "look": "a calm neat woman around forty in a cream blouse"}]
+THREE_STORY["scenes"][0].update(characters=["A", "B", "C"], shot="medium wide shot", action="The family sits at the table and laughs.")
+LAYOUT_BAD = {"ok": True, "issues": [], "traits": [{"present": False, "note": "two figures"}], "people": 0}
+
+
+async def t_layout_draws_a_layout_then_puts_the_person_in():
+    old = (settings.results_dir, settings.studio_chain)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.studio_chain = root, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = compose_deps(fs, root, layout=True)
+            deps.layout_seq = [dict(LAYOUT_BAD)]           # 첫 구도 그림은 형상 수가 틀려 다시 그린다
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+            await d.pump(); await settle(d, 25)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            w = t["work"]
+            tags = tags_of(deps, t)
+            # 장소 그림(P0) → 구도 그림(L0c, 두 번째에 통과) → 인물 입히기(L0e) → 끝 키프레임 → 영상. 이어지는 둘째 장면은 끝 프레임 그대로
+            for must in ("C01", "P01", "L0c1", "L0c2", "L0d1", "L0k1", "L0v1", "L1v1", "P11", "L2c1", "L2d1", "L2k1", "L2v1"):
+                assert must in tags, (must, tags)
+            assert "L1c1" not in tags and "L1d1" not in tags and "L0c3" not in tags and "L0d2" not in tags, tags
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            by = {tags[k]: subs[k] for k in range(len(subs))}
+            assert all(recipe_of(by[x]) == COMPOSE["id"] for x in ("L0c1", "L0d1", "L2c1", "L2d1"))
+            inp = lambda att: fs.atts[att]["input_rel"]
+            cast_in = inp(w["casts"]["A"]["att"])
+            assert loads_of(by["L0c2"]) == {inp(w["places"]["P1"]["att"])}                     # ① 은 장소 그림 한 장
+            e0 = loads_of(by["L0d1"])
+            assert len(e0) == 2 and cast_in in e0 and inp(w["places"]["P1"]["att"]) not in e0  # ② 는 구도 그림 + 기준 그림
+            c0, e0t = text_of(by["L0c2"]), text_of(by["L0d1"])
+            assert "faceless mannequin figure" in c0 and c0.endswith("Exactly 1 figure, no other figure or person.") and "He walks" not in c0
+            assert e0t.startswith("Picture 1 is the layout.") and "The background stays exactly the place of Picture 1 (a wet city street)" in e0t
+            assert "Replace the faceless figure in the centre with the person in Picture 2" in e0t and "What happens: He walks." in e0t
+            lat = by["L0c1"][1]["prompt"]["44"]["inputs"]
+            assert (lat["width"], lat["height"]) == tuple(recipes.default_size(COMPOSE, photo=tuple(w["long_size"])))
+            sc = w["scenes"]
+            assert [x.get("first_from") for x in sc] == ["layout", "last", "layout"], sc
+            assert sc[0].get("layout_rel") and sc[2].get("layout_rel") and sc[0]["layout_rel"] != sc[0]["edit_rel"]
+            checks_ = [e[1] for e in fs.events if e[0] == "picture_check" and not e[1].get("skipped")]
+            lay = [e for e in checks_ if e["what"] == "layout"]
+            ide = [e for e in checks_ if e["what"] == "identity"]
+            assert [e["why"] for e in lay] == [["layout:figures"], [], []], lay
+            assert len(ide) == 2 and all(e["why"] == [] and e["cast"] == ["A"] and e["want"] == 1 for e in ide), ide
+            retry = [e[1] for e in fs.events if e[0] == "picture_retry"]
+            assert [r["what"] for r in retry] == ["layout"], retry
+            done = [e[1] for e in fs.events if e[0] == "layout_done"]
+            assert [x["index"] for x in done] == [0, 2] and all(x["passes"] == 2 for x in done)
+            assert not (w.get("check_left") or {}), w.get("check_left")
+            # 검사 모델에게는 형상 수를 특징 줄로 묻는다
+            exp = [c[1][3] for c in deps.calls if c[0] == "inspect" and c[1][3] and c[1][3][0].startswith("Exactly 1 faceless mannequin")]
+            assert len(exp) == 3
+        finally:
+            settings.results_dir, settings.studio_chain = old
+
+
+async def t_layout_three_people_puts_two_then_the_third():
+    old = (settings.results_dir, settings.studio_chain)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.studio_chain = root, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = compose_deps(fs, root, layout=True)
+            deps.people_for = lambda tag: 3 if re.match(r"L0(?:f|k|v)", tag) else None      # 첫 장면의 ③·끝 키프레임·클립은 세 사람
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(THREE_STORY), "approved": True}
+            await d.pump(); await settle(d, 30)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            w = t["work"]
+            tags = tags_of(deps, t)
+            for must in ("L0c1", "L0d1", "L0f01", "L2c1", "L2d1"):
+                assert must in tags, (must, tags)
+            assert "L2f01" not in tags, tags                                  # 한 사람 장면은 ③ 이 없다
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            by = {tags[k]: subs[k] for k in range(len(subs))}
+            inp = lambda cid: fs.atts[w["casts"][cid]["att"]]["input_rel"]
+            c0, e0, f0 = text_of(by["L0c1"]), text_of(by["L0d1"]), text_of(by["L0f01"])
+            assert "3 faceless mannequin figures, sitting: on the left a adult-sized figure" in c0 and "in the middle a child-sized figure" in c0
+            # ② 는 앞의 두 사람(A·B)만, 오른쪽 형상은 그대로. ③ 은 그 그림 + C 의 기준 그림
+            le = loads_of(by["L0d1"])
+            assert len(le) == 3 and {inp("A"), inp("B")} <= le and inp("C") not in le
+            assert "Keep the faceless figure on the right exactly as it is." in e0 and "Exactly 3 figures in total" in e0
+            lf = loads_of(by["L0f01"])
+            assert len(lf) == 2 and inp("C") in lf and not ({inp("A"), inp("B")} & lf)
+            assert f0.startswith("Picture 1 is the picture to finish.") and "on the right with the person in Picture 2, a calm neat woman" in f0
+            assert "Exactly 3 people in the picture" in f0
+            checks_ = [e[1] for e in fs.events if e[0] == "picture_check" and not e[1].get("skipped")]
+            ide = [e for e in checks_ if e["what"] == "identity" and e["index"] == 0]
+            fin = [e for e in checks_ if e["what"] == "finish"]
+            assert len(ide) == 1 and ide[0]["want"] is None and ide[0]["cast"] == ["A", "B"]        # 중간 그림은 사람 수를 세지 않는다
+            assert len(fin) == 1 and fin[0]["want"] == 3 and fin[0]["cast"] == ["A", "B", "C"] and fin[0]["more_ok"] is False
+            assert w["scenes"][0]["first_from"] == "layout"
+            assert [x["passes"] for x in (e[1] for e in fs.events if e[0] == "layout_done")] == [3, 2]
+        finally:
+            settings.results_dir, settings.studio_chain = old
+
+
+async def t_layout_without_a_place_card_draws_straight_from_the_references():
+    old = (settings.results_dir, settings.studio_chain)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.studio_chain = root, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = compose_deps(fs, root, layout=True)
+            deps.place_people = 1                   # 장소 그림에 사람이 남아 버린다 → 구도 그림을 그릴 바탕이 없다
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True}
+            await d.pump(); await settle(d, 30)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            tags = tags_of(deps, t)
+            assert not any(x.startswith(("L0c", "L2c")) for x in tags), tags
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            l0 = subs[tags.index("L0e1")]
+            assert loads_of(l0) == {fs.atts[t["work"]["casts"]["A"]["att"]]["input_rel"]}
+            assert [x.get("first_from") for x in t["work"]["scenes"]] == ["compose", "last", "compose"]
+        finally:
+            settings.results_dir, settings.studio_chain = old
+
+
+async def t_layout_dialogue_talk_scene_puts_the_speaker_in_the_centre():
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir, settings.studio_chain = os.path.join(root, "results"), os.path.join(root, "envs"), True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = compose_deps(fs, settings.results_dir, DialogueDeps, layout=True)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": dialogue_story(), "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            tags = tags_of(deps, t)
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            by = {tags[k]: subs[k] for k in range(len(subs))}
+            for k in range(4):
+                assert f"L{k}c1" in tags and f"L{k}d1" in tags, (k, tags)
+            w = t["work"]
+            inp = lambda cid: fs.atts[w["casts"][cid]["att"]]["input_rel"]
+            # 두 사람 장면: 오른쪽을 보는 첫 화자(푸토르 B)가 왼쪽 = 그림 2, 니키 A = 그림 3
+            e0 = text_of(by["L0d1"])
+            assert "on the left with the person in Picture 2, a short old dwarf herbalist" in e0 and "on the right with the person in Picture 3" in e0
+            assert {inp("A"), inp("B")} <= loads_of(by["L0d1"])
+            # 니키의 대사 컷: 가운데 한 형상, 걷던 장면을 이어 걷는 자세, 장면 글 없이 말하는 방향·감정
+            c1, e1 = text_of(by["L1c1"]), text_of(by["L1d1"])
+            assert "One child-sized faceless mannequin figure, standing" in c1 and "A new picture of this place: wide shot." in text_of(by["L0c1"]) and "fill most of the frame height" in c1
+            assert "speaks toward the left side of the frame with a hesitant expression" in e1 and "She looks up" not in e1
+            assert len([e for e in fs.events if e[0] == "place_card"]) == 1
+            talk = [c for c in subs if recipe_of(c) == TALK["id"]]
+            assert len(talk) == 2
+        finally:
+            settings.results_dir, settings.envs_dir, settings.studio_chain = old
+
+
+async def t_layout_middle_pass_keeps_the_blank_figure_without_retrying():
+    """세 사람 장면의 ② 에는 일부러 남긴 얼굴 없는 형상이 있다: 검사 모델이 그것을 얼굴 이상으로 답해도 다시 그리지 않는다 (11-21 검토)"""
+    old = (settings.results_dir, settings.studio_chain)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.studio_chain = root, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = compose_deps(fs, root, layout=True)
+            deps.people_for = lambda tag: 3 if re.match(r"L0(?:f|k|v)", tag) else None
+            deps.issues_for = lambda tag: ["face", "missing_head"] if tag.startswith("L0d") else []
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": copy.deepcopy(THREE_STORY), "approved": True}
+            await d.pump(); await settle(d, 30)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            tags = tags_of(deps, t)
+            assert [x for x in tags if x.startswith("L0d")] == ["L0d1"], tags
+            assert not [e for e in fs.events if e[0] == "picture_retry" and e[1]["what"] == "identity"]
+        finally:
+            settings.results_dir, settings.studio_chain = old
+
+
+async def t_layout_resume_uses_the_saved_stage_picture():
+    """허브가 다시 시작하면 끝난 단계는 고른 그림을 그대로 쓴다 (다시 검사·다시 그리기 없이, 11-21 검토)"""
+    old = (settings.results_dir, settings.studio_chain)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.studio_chain = root, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = compose_deps(fs, root, layout=True)
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            lay = deps._file("saved_layout.png")
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True, "L0c_done": {"rel": lay, "why": [], "seen": None}}
+            await d.pump(); await settle(d, 25)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            tags = tags_of(deps, t)
+            assert "L0c1" not in tags and "L0d1" in tags and "L2c1" in tags, tags
+            assert ("stage_image", lay) in deps.calls
+            w = t["work"]
+            assert w["scenes"][0]["layout_rel"] == lay and w["L0d_done"]["rel"] == w["scenes"][0]["edit_rel"]
+            assert w["L2c_done"]["rel"] == w["scenes"][2]["layout_rel"]
+            lay_checks = [e[1] for e in fs.events if e[0] == "picture_check" and e[1].get("what") == "layout" and e[1].get("index") == 0]
+            assert not lay_checks                                   # 남겨 둔 구도 그림은 다시 검사하지 않는다
+            # 첫 화면 설명은 그림 번호·형상 말 없이 (영상 글을 쓰는 LLM 이 읽는다)
+            sp = w["scenes"][0]["scene_prompt"]
+            assert "Picture" not in sp and "faceless" not in sp and "in the centre: a man in his forties" in sp
+        finally:
+            settings.results_dir, settings.studio_chain = old
+
+
+async def t_layout_reset_clears_stage_pictures_and_the_end_keyframe():
+    """장면 클립이 바뀌어 다시 만들면 구도 그림 단계의 고른 그림과 끝 키프레임 접수 정보도 비운다 (옛 끝 그림을 이어받던 문제, 11-21 검토)"""
+    old = (settings.results_dir, settings.studio_chain)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.studio_chain = root, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = compose_deps(fs, root, layout=True)
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            old_lay, old_key = deps._file("old_layout.png"), deps._file("old_keyframe.png")
+            t["state"] = "active"
+            t["work"] = {"story": copy.deepcopy(LONG_STORY), "approved": True, "long_size": [1280, 704], "chain": True,
+                         "L0c_done": {"rel": old_lay}, "L0d_done": {"rel": deps._file("old_first.png")},
+                         "L0k_pending": {"client_id": f"studio-{t['id']}-L0k1", "attempt": 1},
+                         "scenes": [{"clip_rel": deps._file("video_a.mp4"), "clip_sha": "0" * 64, "last_rel": deps._file("last_a.png"),
+                                     "end_rel": old_key, "plan": dict(FakeDeps.PLAN)}]}
+            fs.by_client[f"studio-{t['id']}-L0k1"] = {"prompt_id": "old-job"}          # 옛 끝 키프레임 작업을 이어받으면 안 된다
+            await d.recover(); await settle(d, 30)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            tags = tags_of(deps, t)
+            assert "L0c1" in tags and "L0d1" in tags and "L0k2" in tags, tags         # 새 구도 그림·새 첫 화면·새 끝 키프레임
+            s0 = t["work"]["scenes"][0]
+            assert s0["layout_rel"] != old_lay and s0["end_rel"] != old_key
+        finally:
+            settings.results_dir, settings.studio_chain = old
 
 
 async def main():

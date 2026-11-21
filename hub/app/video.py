@@ -1517,7 +1517,7 @@ def scene_people(story: dict, i: int) -> list[str]:
     """장면 i 에 나오는 사람 id (동물 아님). 말하는 사람이 characters 에 없어도 넣는다"""
     looks = {c["id"]: c["look"] for c in story["bible"]["characters"]}
     sc = story["scenes"][i]
-    ids = list(sc.get("characters") or [])
+    ids = list(dict.fromkeys(sc.get("characters") or []))       # 같은 id 가 두 번 적혀도 한 번 (구도 그림의 형상이 둘이 되지 않게)
     if sc.get("speaker") and sc["speaker"] not in ids:
         ids.append(sc["speaker"])
     return [c for c in ids if c in looks and not is_animal_look(looks[c])]
@@ -1603,7 +1603,9 @@ def compose_prompt(story: dict, i: int, ref_ids: list[str], place_image: int | N
     looks = {c["id"]: c["look"] for c in b["characters"]}
     place = next((p["look"] for p in b["places"] if p["id"] == sc["place"]), "")
     people = scene_people(story, i)
-    parts = [f"A new picture: {sc['shot']}. What happens: {sc['action']}"]
+    talk = sc.get("kind") == "talk" and sc.get("speaker") in ref_ids
+    # 대사 컷은 장면 글을 넣지 않는다: 화면 밖 상대(예: '니키를 보며')를 그려 넣어 사람이 둘이 됐다 (11-21 실험 R3, 3/3)
+    parts = [f"A new picture: {sc['shot']}." if talk else f"A new picture: {sc['shot']}. What happens: {sc['action']}"]
     for n, cid in enumerate(ref_ids, start=1):
         sig = signature_of(story, cid)
         parts.append(f"The person from image {n} is {_who(story, cid)}, with exactly the face, hair and clothes of image {n}"
@@ -1612,9 +1614,9 @@ def compose_prompt(story: dict, i: int, ref_ids: list[str], place_image: int | N
         if cid not in ref_ids:
             parts.append(f"The person {looks.get(cid, '')}")
     sp = sc.get("speaker")
-    if sc.get("kind") == "talk" and sp in ref_ids:
-        parts.append(f"The person from image {ref_ids.index(sp) + 1} speaks toward the {speaker_side(story, sp)} side of the frame, "
-                     "the face in three-quarter view, lips slightly parted.")
+    if talk:
+        parts.append(f"The person from image {ref_ids.index(sp) + 1} speaks toward the {speaker_side(story, sp)} side of the frame "
+                     f"with a {sc.get('emotion') or 'natural'} expression, the face in three-quarter view, lips slightly parted.")
     if place_image:
         parts.append(f"The place is the place shown in image {place_image}, with nobody else in it: {place} "
                      f"Time: {sc.get('time') or b['time']} Light: {b['light']}")
@@ -1633,6 +1635,229 @@ def place_card_prompt(story: dict, pid: str) -> str:
     place = next((p["look"] for p in b["places"] if p["id"] == pid), "")
     return (f"An empty establishing view of this place with nobody in it: {place} Time: {b['time']} Light: {b['light']} "
             "Eye-level camera, the whole space visible, calm and still. There is no person, no animal and no figure in the picture. No text.")
+
+
+# ── 구도 그림에서 그리기 (11-21 메인 실험, docs/reference-system-design.md 11절) ──
+# ① 장소 그림 + 구도 글 → 얼굴 없는 형상이 정확한 수·자리에 있는 구도 그림, ② 그 그림을 바탕(Picture 1)으로 인물 기준 그림(Picture 2·3)을
+# 입힌다, 세 사람 이상이면 ③ 한 명씩. 구도(사람 수·자리·카메라)는 ①이, 얼굴·옷은 기준 그림이 정한다
+_AGE_CHILD_RE = re.compile(r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|[1-9]|1[0-3])"
+                           r"[- ]years?[- ]old\b", re.I)
+_CHILD_NOUN_RE = re.compile(r"\b(?:girl|boy|child|kid|toddler|baby|schoolgirl|schoolboy)\b", re.I)
+_SHORT_RE = re.compile(r"\b(?:dwarf|dwarven|short|small|tiny|little)\b", re.I)
+# 외형의 머리 구절(사람 낱말·나이·체격)이 끝나는 곳: 첫 쉼표나 with·in·wearing·holding 앞. 그 뒤의 'short hair'·'tiny glasses'·
+# 'baby blue'·'holding her baby' 는 키가 아니다 (11-21 검토)
+_HEAD_CUT_RE = re.compile(r"[,;]|\b(?:with|in|wearing|holding|carrying|who|and)\b", re.I)
+_POSE_RES = (("sitting", re.compile(r"\b(?:sits?|sitting|seated)\b", re.I)),
+             ("walking", re.compile(r"\b(?:walks?|walking|strolls?|strolling|wanders?|wandering)\b", re.I)),
+             ("running", re.compile(r"\b(?:runs?|running|dashes|dashing|hurries|hurrying)\b", re.I)),
+             ("standing", re.compile(r"\b(?:stands?|standing|stood)\b", re.I)),
+             ("kneeling", re.compile(r"\b(?:kneels?|kneeling|crouch(?:es|ing)?)\b", re.I)),
+             ("lying down", re.compile(r"\b(?:lies|lying)\b", re.I)))
+_SIT_PLACE_RE = re.compile(r"\bat the (?:breakfast |dinner |kitchen |wooden )?(?:table|desk)\b|\bon (?:a|the) (?:bench|couch|sofa|chair|bed)\b",
+                           re.I)
+_STATIC_POSES = ("sitting", "standing", "kneeling", "lying down")
+
+
+def _head_phrase(look: str) -> str:
+    t = " ".join(str(look or "").split()[:14])
+    m = _HEAD_CUT_RE.search(t)
+    return t[:m.start()] if m else t
+
+
+def figure_size(look: str) -> str:
+    """구도 그림의 형상 키: 나이(열세 살 이하)나 머리 구절의 아이 낱말이면 아이, 머리 구절에 작은 키 낱말(dwarf·short …)이면 작은 사람"""
+    if _AGE_CHILD_RE.search(" ".join(str(look or "").split()[:14])) or _CHILD_NOUN_RE.search(_head_phrase(look)):
+        return "child-sized"
+    if _SHORT_RE.search(_head_phrase(look)):
+        return "short"
+    return "adult-sized"
+
+
+def _pose_cue(text: str) -> str | None:
+    """글에서 가장 먼저 나오는 자세 동사 (첫 화면은 그 동작의 시작: '걸어와 앉는다'는 걷기). 동사가 없으면 '식탁에·의자에' 같은 말로 앉음"""
+    best = None
+    for pose, rx in _POSE_RES:
+        m = rx.search(text or "")
+        if m and (best is None or m.start() < best[0]):
+            best = (m.start(), pose)
+    if best:
+        return best[1]
+    return "sitting" if _SIT_PLACE_RE.search(text or "") else None
+
+
+def scene_pose(story: dict, i: int) -> str:
+    """구도 그림의 자세. 이 장면 글(동작·샷)에 자세 단서가 있으면 그것, 없으면 같은 장소가 이어지는 앞 장면 가운데 이 장면 사람이 나온
+    가장 가까운 장면의 멈춘 자세(앉음·섬 등 — 식탁 장면의 대사 컷이 갑자기 서 있지 않게). 걷기·달리기는 순간 동작이라 물려받지 않고,
+    장소가 바뀌면 거기서 멈춘다. 그 밖에는 서 있음"""
+    scenes = story["scenes"]
+    sc = scenes[i]
+    cue = _pose_cue(" ".join([sc.get("action") or "", sc.get("shot") or ""]))
+    if cue:
+        return cue
+    people = set(scene_people(story, i))
+    for j in range(i - 1, -1, -1):
+        pv = scenes[j]
+        if pv.get("place") != sc.get("place"):
+            break
+        if people & set(scene_people(story, j)):
+            pc = _pose_cue(" ".join([pv.get("action") or "", pv.get("shot") or ""]))
+            if pc in _STATIC_POSES:
+                return pc
+    return "standing"
+
+
+def layout_slots(story: dict, i: int, ids: list[str]) -> list[dict]:
+    """구도 그림의 형상 차례(왼쪽→오른쪽)와 자리·크기·방향. 두 사람은 오른쪽을 보는 사람(speaker_side)을 왼쪽에 두어 마주 보게,
+    셋 이상은 장면에 나오는 차례대로. 돌려주는 값: [{"id", "pos", "size", "facing"}]"""
+    looks = {c["id"]: c["look"] for c in story["bible"]["characters"]}
+    ids = [c for c in ids if c in looks]
+    n = len(ids)
+    if n == 1:
+        return [{"id": ids[0], "pos": "in the centre", "size": figure_size(looks[ids[0]]),
+                 "facing": f"turned slightly toward the {speaker_side(story, ids[0])}"}]
+    if n == 2:
+        order = sorted(ids, key=lambda c: 0 if speaker_side(story, c) == "right" else 1)
+        if speaker_side(story, order[0]) == speaker_side(story, order[1]):
+            order = list(ids)
+        pos, face = ["on the left", "on the right"], ["turned toward the right", "turned toward the left"]
+    elif n == 3:
+        order = list(ids)
+        pos = ["on the left", "in the middle", "on the right"]
+        face = ["turned toward the right", "facing the camera", "turned toward the left"]
+    else:
+        order = list(ids)
+        nth = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh"]
+        pos = [f"{nth[k] if k < len(nth) else str(k + 1) + 'th'} from the left" for k in range(n)]
+        face = ["turned toward the others"] * n
+    return [{"id": c, "pos": pos[k], "size": figure_size(looks[c]), "facing": face[k]} for k, c in enumerate(order)]
+
+
+def _frame_hint(rank: int | None, n: int) -> str:
+    """샷 크기별 형상 크기 지시. 11-21 실험: 'medium close-up' 만으로는 미디엄 샷이 나와 얼굴이 작았다"""
+    if rank is not None and rank <= 1:
+        if n == 1:
+            return ("The head and shoulders are large and fill most of the frame height, the whole head inside the frame with a little "
+                    "space above it, in the middle part of the picture.")
+        return "The heads and shoulders are large, every head fully inside the frame."
+    if rank == 2:
+        return "The heads and upper bodies are fully in frame, in the middle part of the picture."
+    return "Every figure is fully in frame, apart from the others."
+
+
+_BACK_VIEW_RE = re.compile(r",?\s*\b(?:from behind|from the back|back view|rear view)\b", re.I)
+
+
+def _layout_shot(shot: str) -> str:
+    """구도 그림·첫 화면 설명에 쓰는 샷 글: '뒤에서' 같은 말을 뺀다 (얼굴이 보여야 기준 그림의 얼굴을 입히고 검사할 수 있다, 11-21 검토)"""
+    t = _BACK_VIEW_RE.sub("", str(shot or "")).strip(" ,")
+    return re.sub(r"\s{2,}", " ", t) or "medium shot"
+
+
+def _place_of(story: dict, i: int) -> str:
+    sc = story["scenes"][i]
+    return next((p["look"] for p in story["bible"]["places"] if p["id"] == sc.get("place")), "")
+
+
+def layout_prompt(story: dict, i: int, slots: list[dict]) -> str:
+    """① 구도 그림: Picture 1 = 장소 그림. 장면 글(동작)은 넣지 않는다 — 화면 밖 인물의 이름이 들어 있으면 그 사람을 그려 넣는다
+    (11-21 실험 R3: 혼자 대사 컷에 '니키를 보며'가 있자 3/3 베스가 둘). 형상 수·자리·방향·크기는 코드가 정한다"""
+    sc = story["scenes"][i]
+    b = story["bible"]
+    looks = {c["id"]: c["look"] for c in b["characters"]}
+    n = len(slots)
+    pose = scene_pose(story, i)
+    place = _place_of(story, i).strip()
+    parts = [f"Picture 1 shows the place. Keep its architecture, furniture and props, seen from a slightly different camera angle: "
+             f"{place}{'' if place.endswith(('.', '!', '?')) else '.'}",
+             f"A new picture of this place: {_layout_shot(sc['shot'])}."]
+    if n == 1:
+        s = slots[0]
+        parts.append(f"One {s['size']} faceless mannequin figure, {pose}, {s['facing']}, {s['pos']} of the frame.")
+    else:
+        parts.append(f"{n} faceless mannequin figures, {pose}: " + "; ".join(f"{s['pos']} a {s['size']} figure {s['facing']}" for s in slots) + ".")
+    parts.append("Each figure has a smooth blank head with no face and no hair, and plain matte light grey clothes, like an artist's mannequin.")
+    parts.append("Every head is turned toward the camera or in three-quarter view; no figure is seen from behind.")
+    parts.append(_frame_hint(shot_rank(sc.get("shot") or ""), n))
+    for cid in dict.fromkeys(sc.get("characters") or []):
+        if cid in looks and is_animal_look(looks[cid]):
+            parts.append(f"Also in the picture: {looks[cid]}")
+    parts.append(f"Time: {sc.get('time') or b['time']} Light: {b['light']}")
+    parts.append(style_keep(story))
+    parts.append(f"Exactly {n} figure{'s' if n != 1 else ''}, no other figure or person.")
+    return " ".join(parts)[:1990]
+
+
+def background_sentence(story: dict, i: int) -> str:
+    """② ③ 에 꼭 넣는 배경 문장. 빼면 기준 그림(단색 배경의 초상화)이 바탕 그림을 이긴다 (11-21 실험 R3: 3/3 단색 배경, 넣으면 4/4)"""
+    place = " ".join(_place_of(story, i).split()[:28]).rstrip(" ,;.")
+    return f"The background stays exactly the place of Picture 1 ({place}); it is not a plain studio background."
+
+
+def _put_sentence(story: dict, slot: dict, n: int) -> str:
+    sig = signature_of(story, slot["id"])
+    return (f"Replace the faceless figure {slot['pos']} with the person in Picture {n}, {_who(story, slot['id'])}: take only the face, hair, "
+            f"body and clothes of Picture {n}" + (f", including the {', the '.join(sig)}" if sig else "") + ".")
+
+
+def _act_sentence(story: dict, i: int, slots: list[dict]) -> str:
+    """표정·동작. 대사 컷은 말하는 방향과 감정만 (장면 글에 화면 밖 인물이 나와 그 사람을 그려 넣지 않게), 그 밖의 장면은 장면 글"""
+    sc = story["scenes"][i]
+    sp = sc.get("speaker")
+    slot = next((s for s in slots if s["id"] == sp), None)
+    if sc.get("kind") == "talk" and slot:
+        mood = sc.get("emotion") or "natural"
+        return (f"The person {slot['pos']} speaks toward the {speaker_side(story, sp)} side of the frame with a {mood} expression, "
+                "the face in three-quarter view, lips slightly parted.")
+    return f"What happens: {sc['action']}"
+
+
+def identity_prompt(story: dict, i: int, slots: list[dict], put: list[str], final: bool) -> str:
+    """② 구도 그림(Picture 1)의 형상에 인물을 입힌다. put = 이번에 입힐 인물 id (Picture 2·3 차례, 2명까지).
+    final 이 아니면 남은 형상은 그대로 두라고 쓴다 (③ 이 한 명씩 입힌다)"""
+    by = {s["id"]: s for s in slots}
+    parts = ["Picture 1 is the layout. Keep exactly its camera, framing, the place, the light, the painting style, and every figure's "
+             "position, size and pose."]
+    for n, cid in enumerate(put, start=2):
+        parts.append(_put_sentence(story, by[cid], n))
+    if not final:
+        for s in slots:
+            if s["id"] not in put:
+                parts.append(f"Keep the faceless figure {s['pos']} exactly as it is.")
+    parts.append("Take nothing else from " + ("Picture 2 or Picture 3." if len(put) > 1 else "Picture 2."))
+    parts.append(background_sentence(story, i))
+    parts.append(_act_sentence(story, i, slots))
+    parts.append("Every face is visible, front or three-quarter. The hands are not visible or relaxed.")
+    parts.append(style_keep(story))
+    parts.append(people_sentence(len(slots)) if final else f"Exactly {len(slots)} figures in total, no other person.")
+    return " ".join(parts)[:1990]
+
+
+def finish_prompt(story: dict, i: int, slots: list[dict], cid: str, done: list[str], final: bool) -> str:
+    """③ 세 번째 사람부터 한 명씩: Picture 1 = 지금까지 그린 그림, Picture 2 = 그 사람의 기준 그림. done = 이미 입힌 인물 id"""
+    by = {s["id"]: s for s in slots}
+    parts = ["Picture 1 is the picture to finish. Keep everything in Picture 1 exactly: the camera, the place, the light, the painting "
+             "style and the people already in it.", "Replace only one figure. " + _put_sentence(story, by[cid], 2),
+             "Take nothing else from Picture 2."]
+    if not final:
+        for s in slots:
+            if s["id"] not in done and s["id"] != cid:
+                parts.append(f"Keep the faceless figure {s['pos']} exactly as it is.")
+    parts.append(background_sentence(story, i))
+    parts.append("Every face is visible, front or three-quarter.")
+    parts.append(style_keep(story))
+    parts.append(people_sentence(len(slots)) if final else f"Exactly {len(slots)} figures in total, no other person.")
+    return " ".join(parts)[:1990]
+
+
+def layout_description(story: dict, i: int, slots: list[dict]) -> str:
+    """구도 그림에서 그린 첫 화면의 설명. 영상 글을 쓰는 LLM 이 '첫 화면을 만든 글'로 읽으므로, 그림 번호·형상 같은 중간 단계 말 없이
+    샷·자리별 인물·동작·장소만 쓴다 (세 사람 장면에 ② 의 '형상은 그대로' 글이 넘어가던 문제, 11-21 검토)"""
+    sc = story["scenes"][i]
+    b = story["bible"]
+    looks = {c["id"]: c["look"] for c in b["characters"]}
+    who = "; ".join(f"{s['pos']}: {str(looks.get(s['id'], '')).rstrip(' .')}" for s in slots)
+    return (f"{_layout_shot(sc['shot'])}. {who}. What happens: {sc['action']} The place: {_place_of(story, i)} "
+            f"Time: {sc.get('time') or b['time']} Light: {b['light']}")[:1990]
 
 
 def style_convert_prompt(key: str, who: str) -> str:
