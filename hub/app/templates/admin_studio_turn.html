@@ -34,7 +34,7 @@
   <div><b>{{ d.long.title }}</b> · {{ d.long.seconds }}초 · 장면 {{ d.long.scenes|length }}개</div>
   <div class="muted">{{ d.long.logline }}</div>
   <details><summary>설정집·배경음악</summary><pre style="white-space:pre-wrap;">{{ pretty({"bible": d.long.bible, "music": d.long.music}) }}</pre></details>
-  {% for s in d.long.scenes %}<details><summary>장면 {{ s.index }} · {{ s.seconds }}초{% if s.continues %} · 이어짐{% endif %} · {{ s.ko }}{% if s.clip_rel %} · 클립 있음{% endif %}{% if s.first_from %} · 첫 화면: {{ "앞 장면 마지막 프레임" if s.first_from == "last" else ("앞 프레임을 고침" if s.first_from == "edit" else "장면 이미지") }}{% endif %}{% if s.seam %} · 이음: {{ s.seam }}{% endif %}{% if s.end_fail %} · 끝 프레임 인물 확인 실패{% endif %}</summary>
+  {% for s in d.long.scenes %}<details><summary>장면 {{ s.index }} · {{ s.seconds }}초{% if s.continues %} · 이어짐{% endif %} · {{ s.ko }}{% if s.clip_rel %} · 클립 있음{% endif %}{% if s.first_from %} · 첫 화면: {{ "앞 장면 마지막 프레임" if s.first_from == "last" else ("앞 프레임을 고침" if s.first_from == "edit" else ("기준 그림으로 새로 그림" if s.first_from == "compose" else "장면 이미지")) }}{% endif %}{% if s.seam %} · 이음: {{ s.seam }}{% endif %}{% if s.end_fail %} · 끝 프레임 인물 확인 실패{% endif %}</summary>
     <div class="muted">카메라: {{ s.shot }} · 동작: {{ s.action }} · 소리: {{ s.sound }}</div>
     {% if s.plan %}<pre style="white-space:pre-wrap;">{{ pretty(s.plan) }}</pre>{% endif %}
     {% if s.scene_prompt %}<div class="muted">장면 이미지 글</div><pre style="white-space:pre-wrap;">{{ s.scene_prompt }}</pre>{% endif %}

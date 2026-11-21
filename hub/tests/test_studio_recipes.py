@@ -120,8 +120,9 @@ assert R.user_folder("bob", 3) == "bob" and R.user_folder("Bob Kim", 3) == "u3" 
 assert R.prefix_value({"suffix": "video"}, "bob", 3, "0123456789abcdef") == "bob/01234567/video"
 
 # ── 장면 잇기(11-20): 새 action·자리·optional 자리 ──
-for a in ("edit_ref", "i2v_end"):
+for a in ("edit_ref", "i2v_end", "compose_ref"):
     assert a in R.ACTIONS and a not in R.PART_ACTIONS
+assert R.REF_ACTIONS == {"edit_ref", "compose_ref"}
 for n in ("ref_image", "ref_image2", "end_frame", "last_index"):
     assert n in R.SLOT_NAMES
 PROFILES = {"wan22_i2v_long", "wan22_t2v_long", "ltx25_i2v_long"}
@@ -131,7 +132,7 @@ for rid, r in rs.items():
     assert R.recipe_ok(rp), (rid, [x for x in rp if not x["ok"]])
     R.build(r, R.sample_values(r))
 assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music", "voice", "voice_clone", "talk",
-                                              "scene_image", "edit_ref", "i2v_end"}
+                                              "scene_image", "edit_ref", "i2v_end", "compose_ref"}
 
 # pick: edit_ref 는 edit 와 따로 고른다 (qwen_image_edit 은 그대로)
 assert R.pick(rs, set(), "edit", "fast")["id"] == "qwen_image_edit"
@@ -142,6 +143,9 @@ assert R.pick(rs, set(), "i2v_end", "fast", "ltx")["id"] == "ltx25_i2v_sound_end
 assert R.pick(rs, set(), "i2v_end", "high", "ltx")["id"] == "ltx23_dev_i2v_sound_quality_end"
 assert R.pick(rs, set(), "i2v_end", "fast") is None                      # wan 에는 끝 키프레임 레시피가 없다
 assert R.pick(rs, {"qwen_image_edit_ref"}, "edit_ref", "fast") is None
+assert R.pick(rs, set(), "compose_ref", "fast")["id"] == "qwen_image_compose_ref"
+assert R.pick(rs, set(), "compose_ref", "high")["id"] == "qwen_image_compose_ref_quality"
+assert R.pick(rs, {"qwen_image_compose_ref"}, "compose_ref", "fast") is None
 assert R.pick(rs, set(), "i2v", "fast", "ltx")["id"] == "ltx25_i2v_sound"    # 옛 i2v 는 그대로
 
 # edit_ref: 높음 변형은 가속 스위치만 끈다
@@ -217,6 +221,42 @@ assert not bad(R.check_recipe(rs["qwen_image_edit"]))                           
 x = copy.deepcopy(rs["qwen_image_edit"]); x["prompt"]["170:149"]["inputs"]["image1"] = ["42", 0]
 x["prompt"]["42"] = {"class_type": "LoadImage", "inputs": {"image": "a.png"}}
 assert "V9" in bad(R.check_recipe(x))
+
+# compose_ref(11-20 새 방식): edit_ref 와 같은 모델·글 노드인데 KSampler 가 빈 잠재(영상 크기)에서 그린다
+cr = rs["qwen_image_compose_ref"]
+assert cr["version"] == 1 and cr["estimate"]["gpu_seconds"] == 17
+assert set(cr["inject"]) == {"prompt", "edit_image", "ref_image", "ref_image2", "seed", "save_prefix", "width", "height"}
+assert cr["prompt"]["170:169"]["inputs"]["latent_image"] == ["44", 0] and cr["prompt"]["44"]["class_type"] == "EmptySD3LatentImage"
+assert not any(n["class_type"] == "VAEEncode" for n in cr["prompt"].values())
+assert rs["qwen_image_compose_ref_quality"]["prompt"]["170:168"]["inputs"]["value"] is False
+# 기준 그림 크기와 상관없이 영상 비율: 그림 1 사진 비율은 쓰지 않고 감독이 넘긴 크기 (기본은 1280×704)
+assert R.default_size(cr) == (1280, 704) and R.default_size(cr, aspect="portrait")[0] < R.default_size(cr, aspect="portrait")[1]
+for rid in ("qwen_image_compose_ref", "qwen_image_compose_ref_quality"):
+    r = rs[rid]
+    cv = {**ev, "width": 1280, "height": 704}
+    full = R.build(r, {**cv, "ref_image": "studio/u/b.png", "ref_image2": "studio/u/c.png"})
+    assert full["44"]["inputs"]["width"] == 1280 and full["44"]["inputs"]["height"] == 704 and not dangling(full)
+    for t in TEXTS:
+        assert full[t]["inputs"]["image1"] == ["170:160", 0] and full[t]["inputs"]["image2"] == ["42", 0] and full[t]["inputs"]["image3"] == ["43", 0]
+    one = R.build(r, cv)                                     # 기준 그림 한 장만 (한 사람 장면)
+    assert "42" not in one and "43" not in one and not dangling(one)
+    try:
+        R.build(r, {**cv, "width": 1000})                    # 16 단위가 아님
+        raise AssertionError("width 단위 검사")
+    except R.RecipeError:
+        pass
+# V6 (compose_ref): 잠재가 그림 1에서 오면(=고쳐 그리기) 거부, 크기 자리가 빈 잠재에 없으면 거부
+x = copy.deepcopy(cr); x["prompt"]["170:156"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["170:160", 0], "vae": ["170:146", 0]}}
+x["prompt"]["170:169"]["inputs"]["latent_image"] = ["170:156", 0]
+assert "V6" in bad(R.check_recipe(x))
+x = copy.deepcopy(cr); del x["inject"]["width"]
+assert "V6" in bad(R.check_recipe(x))
+x = copy.deepcopy(cr); x["prompt"]["170:149"]["inputs"]["image1"] = ["42", 0]
+assert "V6" in bad(R.check_recipe(x))
+x = copy.deepcopy(cr); del x["inject"]["ref_image"]
+assert "V6" in bad(R.check_recipe(x))
+x = copy.deepcopy(er); x["action"] = "compose_ref"                                  # 고쳐 그리는 그래프를 새로 그리기로 쓸 수 없다
+assert "V6" in bad(R.check_recipe(x))
 
 # i2v_end: 끝 프레임 가이드
 for rid, base_id in (("ltx25_i2v_sound_end", "ltx25_i2v_sound"), ("ltx23_dev_i2v_sound_quality_end", "ltx23_dev_i2v_sound_quality")):

@@ -2494,6 +2494,18 @@ def test_chain_cut_edit_prompt_uses_the_reference_for_faces():
     assert "a few seconds later" in ek and "faces visible" in ek and "none walking out of frame" in ek and "Exactly 2 people" in ek
     cp = video.compose_prompt(st, 1, ["A", "B"])
     assert "face, hair and clothes of image 1" in cp and "of image 2" in cp and "Exactly 2 people" in cp
+    assert cp.startswith("A new picture:") and "the place shown in image" not in cp
+    # 새로 그리기(11-20 승인): 알아볼 소품을 그림 글에 적고, 장소 그림을 넣었으면 그 번호를 적는다
+    st2 = _copy.deepcopy(st)
+    st2["bible"]["characters"][0]["signature"] = ["wine-red hat", "two black braids"]
+    cp2 = video.compose_prompt(st2, 1, ["A"], place_image=2)
+    assert "including the wine-red hat, the two black braids; this person appears once." in cp2
+    assert "The place is the place shown in image 2, with nobody else in it:" in cp2
+    assert video.signature_of(st2, "A") == ["wine-red hat", "two black braids"] and video.signature_of(st2, "B") == []
+    pid = st["scenes"][1]["place"]
+    assert video.scene_place(st, 1) == pid
+    pc = video.place_card_prompt(st, pid)
+    assert "nobody in it" in pc and "no person, no animal" in pc
     assert "anime" in video.style_convert_prompt("anime", "girl") and "live-action" in video.style_convert_prompt("photo", "man")
     assert "semi-realistic" in video.style_convert_prompt("semi", "girl")
 
