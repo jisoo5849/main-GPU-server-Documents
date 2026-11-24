@@ -721,9 +721,11 @@ PHYSICS_RE = re.compile(
 
 
 # 샷 크기 (작은 쪽부터). 이어지는 장면은 앞 장면 마지막 프레임에서 시작하므로 크기가 한 단계 넘게 뛰면 안 된다.
-# 11-18 3분 실측: 얼굴 클로즈업 → 이어서 '미디엄 와이드' 장면이라 디졸브 구간에서 큰 점프가 보였다. 긴 이름을 먼저 찾는다
+# 11-18 3분 실측: 얼굴 클로즈업 → 이어서 '미디엄 와이드' 장면이라 디졸브 구간에서 큰 점프가 보였다. 긴 이름을 먼저 찾는다.
+# 투샷(두 사람 대사 컷, 11-24)은 미디엄과 같은 크기. 'wide two-shot' 은 넓은 샷이라 wide 뒤에 둔다
 SHOT_SIZES = (("extreme close", 0), ("extreme wide", 5), ("medium close", 1), ("medium wide", 3), ("medium long", 3), ("close-up", 0),
-              ("close up", 0), ("closeup", 0), ("close shot", 0), ("full shot", 3), ("long shot", 4), ("wide", 4), ("medium", 2))
+              ("close up", 0), ("closeup", 0), ("close shot", 0), ("full shot", 3), ("long shot", 4), ("wide", 4),
+              ("two-shot", 2), ("two shot", 2), ("medium", 2))
 ACCESSORY_RE = re.compile(r"\b(?:glasses|spectacles|sunglasses|hats?|caps?|scarf|scarves|beards?|masks?|earrings?|necklaces?|gloves)\b", re.I)
 
 
@@ -963,13 +965,11 @@ def scene_seams(story: dict) -> list[str]:
     return [scene_seam(story, i) for i in range(1, len(story["scenes"]))]
 
 
-PHOTO_STYLE_RE = re.compile(r"photo[- ]?real|live[- ]action|photograph|cinematic live", re.I)
-
-
 def story_style(story: dict) -> str:
-    """사실적이지 않은 화풍 한 줄 (애니메이션 등). 사진·실사면 빈 글: 기존 영상 글은 그대로 쓴다"""
+    """사실적이지 않은 화풍 한 줄 (애니메이션 등). 사진·실사면 빈 글: 기존 영상 글은 그대로 쓴다.
+    실사 판정은 화풍 열쇠와 같은 함수(cast_lib.is_photo_style)로 한다 (11-24: 정규식이 둘이라 서로 어긋났다)"""
     st = _s(((story or {}).get("bible") or {}).get("style"))
-    return "" if not st or PHOTO_STYLE_RE.search(st) else st
+    return "" if not st or cast_lib.is_photo_style(st) else st
 
 
 def scene_notes(story: dict, i: int) -> str:
@@ -1052,10 +1052,10 @@ async def write_story(call, text: str, notes: str, seconds: float, rounds: int =
     """구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). 위반이 남아도 다듬어 쓸 수 있으면 돌려준다.
     known 은 요청에 이름이 나온 라이브러리 인물: 대사가 없는 영상도 같은 모습·그림체로 쓰게 한다 (11-20, 말투는 뺀다)"""
     count, n_min, n_max = story_counts(seconds)
-    system = STORY_SYSTEM.format(seconds=int(seconds), keys=", ".join(MUSIC_KEYS), count=count, n_min=n_min, n_max=n_max,
-                                 tolerance=story_tolerance(seconds)) + cast_lib.prompt_block(known, speech=False, by_id=True)
-    user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "")
     said = f"{text or ''} {notes or ''}"
+    system = STORY_SYSTEM.format(seconds=int(seconds), keys=", ".join(MUSIC_KEYS), count=count, n_min=n_min, n_max=n_max,
+                                 tolerance=story_tolerance(seconds)) + cast_lib.prompt_block(known, speech=False, by_id=True, text=said)
+    user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "")
     person_ok = bool(PERSON_REQ_RE.search(said)) or bool(STORY_PERSON_KO_RE.search(said))
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     best, problems, rnd = None, ["no answer"], 0
@@ -1080,8 +1080,9 @@ async def write_story(call, text: str, notes: str, seconds: float, rounds: int =
 
 
 async def storyboard(user, ip: str, username: str, slug: str, text: str, notes: str = "", seconds=None,
-                     dialogue: bool = False) -> dict:
-    """긴 영상 구성안 (감독이 계획 카드 전에 한 번). dialogue 면 대사 영상 구성안. 못 쓰면 PromptxError"""
+                     dialogue: bool = False, duo: bool | None = None) -> dict:
+    """긴 영상 구성안 (감독이 계획 카드 전에 한 번). dialogue 면 대사 영상 구성안. 못 쓰면 PromptxError.
+    duo 는 감독이 정한 '이 요청에서 두 사람 대사 컷을 만들 수 있는가' (대사 영상만, None 이면 설정 STUDIO_DUO_TALK)"""
     from . import llm
 
     text = clean_input(text)
@@ -1092,7 +1093,7 @@ async def storyboard(user, ip: str, username: str, slug: str, text: str, notes: 
     try:
         async with llm.llm_turn(user, ip, settings.expand_model, "video_story") as call:
             if dialogue:
-                story, left, rounds = await write_dialogue_story(call, text, notes, sec, known=known)
+                story, left, rounds = await write_dialogue_story(call, text, notes, sec, known=known, duo=duo)
             else:
                 story, left, rounds = await write_story(call, text, notes, sec, known=known)
     except llm.HelperBusy as e:
@@ -1119,6 +1120,20 @@ This film has spoken dialogue in Korean. The voices are recorded first, one fixe
 - Write about one line for every 8 to 12 seconds of film, in the order of the conversation. Let the speakers take turns naturally, and now and then cut to the listener's face (a "shot" close-up with no line).
 - The "seconds" of a talk scene is your guess of how long the line takes (the voices speak about 6 Korean characters per second, so about 1 second per 6 characters plus 1); the film follows the recorded voice later.
 - A talk scene never continues the previous scene and is never continued: "continues" is false for a talk scene and for the scene right after it."""
+# 두 사람 대화 장면 (11-24 메인 실측 X1·X6, STUDIO_DUO_TALK): 듣는 상대가 같은 장소에 있으면 두 사람을 한 화면(미디엄 투샷)에 두고
+# InfiniteTalk 두 화자로 말하는 사람 입만 맞춘다(듣는 사람은 입을 다물고 들었다). 혼자 말할 때만 지금처럼 클로즈업.
+# 카메라는 고정: 대사 영상 글의 삼각대 문장과 부딪히던 'very slowly pushing camera' 는 뺐다. 듣는 얼굴은 투샷 안에 보여 따로 컷하지 않는다
+DIALOGUE_EXTRA_DUO = """
+This film has spoken dialogue in Korean. The voices are recorded first, one fixed voice per character, and each speaking shot is lip-synced to its recorded line. Follow these extra rules:
+- Every character who speaks also has "name_ko" (the Korean name or role word, for example "니키" or "할아버지"), "voice" (an English description for a voice designer: age, gender, pitch, timbre, pace and manner, at most 40 words; never name a real person, actor or famous voice), "voice_ko" (a short Korean description of the voice) and "sample_ko" (two short Korean sentences, 20 to 40 characters in all, that this character would really say, in the character's own manner of speaking and age; it is recorded once to fix the voice).
+- Each scene also has "kind", "speaker", "listener", "line_ko" and "emotion":
+  - "talk": one character speaks one line, seen speaking on screen. When the person spoken to is in the same place (the normal case in a conversation), both are in the shot: "characters" is [speaker, listener], "speaker" is the speaker's id and "listener" is the other character's id. The shot is a "medium two-shot": both upper bodies fully in frame, the two turned toward each other with both faces in three-quarter view toward the camera, and a still camera. Only when nobody in the place is spoken to (thinking aloud, a phone call, speaking to the audience) is the speaker alone: "characters" is exactly [speaker], "listener" is "", and the shot is a close-up or medium close-up of the speaker, the face in three-quarter view, with a still camera. "action" describes the faces, the eyes and small head movements while speaking. Never three people in a talk scene.
+  - "shot": every other scene (the place, walking together, an insert, a reveal). It may carry a voice-over line, heard while the speaker is far away, seen from behind or off-screen: then "speaker" is that character and "line_ko" is the line; otherwise both are "". "listener" is "" in a shot scene.
+  - "line_ko": natural spoken Korean, one or two short sentences, at most 60 Korean characters. Never put the speaker's name in front of the line. Lines are spoken aloud, never read from a page: use the character's own manner of speaking, and let feeling show in the words, with interjections (허허, 어머, 아, 글쎄), a pause written as "...", a question mark or an exclamation mark where a person would use one. Vary the sentence length and the feeling from line to line; do not write every line in the same calm, explanatory tone.
+  - "emotion": how the line is said, in English (for example "calm and wise, slow"); "" when the scene has no line.
+- Write about one line for every 8 to 12 seconds of film, in the order of the conversation. Let the speakers take turns naturally; the listener's face is seen in the two-shot, so no separate listening shot is needed.
+- The "seconds" of a talk scene is your guess of how long the line takes (the voices speak about 6 Korean characters per second, so about 1 second per 6 characters plus 1); the film follows the recorded voice later.
+- A talk scene may continue the talk scene right before it only when both have the same two people in the same place (the conversation goes on in the same two-shot). Otherwise "continues" is false for a talk scene and for the scene right after a talk scene."""
 DIALOGUE_LINE_MAX = 80          # 대사 한 줄의 글자 수 상한 (규칙은 60, 넘어도 80 까지는 쓴다)
 # 대사 줄 수와 대화 (11-19 메인 첫 시험: "니키와 푸토르가 대화" 40초 요청의 구성안에 대사가 푸토르 한 줄뿐, 니키는 한마디도 없었다.
 # 규칙문에는 '8~12초마다 한 줄, 번갈아'를 적었지만 검사가 강제하지 않아 모델이 최소한만 썼다)
@@ -1142,15 +1157,72 @@ DIALOGUE_SCHEMA["properties"]["scenes"]["items"]["required"] += ["kind", "speake
 DIALOGUE_SCHEMA["properties"]["scenes"]["items"]["properties"].update(
     {"kind": {"type": "string", "enum": ["talk", "shot"]}, "speaker": {"type": "string"}, "line_ko": {"type": "string"},
      "emotion": {"type": "string"}})
+# 두 사람 대화 장면을 끈 때(STUDIO_DUO_TALK=false)는 예전 칸 그대로 (듣는 사람 칸 없음)
+DIALOGUE_SCHEMA_SOLO = json.loads(json.dumps(DIALOGUE_SCHEMA))
+DIALOGUE_SCHEMA["properties"]["scenes"]["items"]["required"] += ["listener"]
+DIALOGUE_SCHEMA["properties"]["scenes"]["items"]["properties"]["listener"] = {"type": "string"}
+
+
+def duo_rules(duo: bool | None = None) -> bool:
+    """구성안을 두 사람 대화 장면 규칙으로 쓰는가. duo 는 감독이 요청마다 정한 값: 두 사람 대사 컷을 실제로 만들 수 있는가
+    (설정·장면 잇기·두 화자 레시피·가로 영상, director._duo_ready). 못 만드는 요청을 두 사람 규칙으로 쓰면 투샷 첫 화면을 LTX 로
+    입 맞추거나(11-24 X2: 말하는 입이 거의 안 움직였다) 한 사람 첫 화면에 투샷 글이 붙는다 (11-24 검토). None 이면 설정(STUDIO_DUO_TALK)만 본다"""
+    return settings.studio_duo_talk if duo is None else bool(duo)
+
+
+def dialogue_extra(duo: bool | None = None) -> str:
+    """대사 영상 구성안 지시문 (두 사람 대화 장면 규칙 / 예전 혼자 클로즈업 규칙, duo_rules)"""
+    return DIALOGUE_EXTRA_DUO if duo_rules(duo) else DIALOGUE_EXTRA
+
+
+def dialogue_schema(duo: bool | None = None) -> dict:
+    return DIALOGUE_SCHEMA if duo_rules(duo) else DIALOGUE_SCHEMA_SOLO
+
+
 REAL_VOICE_RE = re.compile(r"\b(?:like|sounds? like|in the style of|imitat\w*|impersonat\w*)\s+(?:[A-Z][a-z]+\s?){1,3}\b")
 
 
-def dialogue_problems(data, seconds: float, person_ok: bool = True, exchange: bool = False) -> list[str]:
+def _same_talk_pair(prev, sc, pair: set) -> bool:
+    """앞 장면이 같은 두 사람·같은 장소의 대사 장면인가 (두 사람 대사 컷이 앞 컷을 같은 투샷으로 이어 갈 수 있는 조건)"""
+    if not isinstance(prev, dict) or _s(prev.get("kind")) != "talk" or len(pair) != 2:
+        return False
+    return {_s(c) for c in prev.get("characters") or []} == pair and _s(prev.get("place")) == _s(sc.get("place"))
+
+
+def _duo_talk_problems(i: int, sc: dict, prev, who: str, chars: dict) -> list[str]:
+    """두 사람 대화 장면 규칙(STUDIO_DUO_TALK)의 대사 장면 검사: 혼자면 [말하는 사람]·클로즈업까지, 듣는 사람이 있으면
+    [말하는 사람, 듣는 사람]·미디엄 투샷까지. 앞 컷을 잇는 것은 같은 두 사람·같은 장소의 대사 컷일 때만"""
+    p = []
+    got = [_s(c) for c in sc.get("characters") or []]
+    lis = _s(sc.get("listener"))
+    if lis and lis not in chars:
+        p.append(f'Scene {i}: "listener" "{lis}" is not in bible.characters.')
+    elif lis and lis == who:
+        p.append(f'Scene {i}: the "listener" must be the other character, not the speaker "{who}".')
+    pair = bool(lis) and lis in chars and lis != who and got == [who, lis]
+    if not pair and not (got == [who] and not lis):
+        p.append(f'Scene {i} is a talk scene: "characters" must be exactly ["{who}"] with "listener" "" when "{who}" speaks alone, '
+                 f'or ["{who}", "<listener id>"] with "listener" set to that id when "{who}" speaks to someone in the same place.')
+    rank = shot_rank(_s(sc.get("shot")))
+    if pair and (rank is None or rank > 3):
+        p.append(f"Scene {i} is a talk scene with a listener: the shot must be a medium two-shot that shows both upper bodies.")
+    elif not pair and (rank is None or rank > 2):
+        p.append(f"Scene {i} is a talk scene: the shot must be a close-up or a medium close-up of the speaker "
+                 "(or a medium two-shot when the listener is in the scene).")
+    if sc.get("continues") is True and not (pair and _same_talk_pair(prev, sc, {who, lis})):
+        p.append(f"Scene {i} is a talk scene, so it cannot continue the previous scene unless that scene is a talk scene "
+                 "with the same two people in the same place.")
+    return p
+
+
+def dialogue_problems(data, seconds: float, person_ok: bool = True, exchange: bool = False, duo: bool | None = None) -> list[str]:
     """대사 영상 구성안 검사: 긴 영상 검사 + 대사·목소리 규칙. 고칠 말을 영어로 돌려준다.
-    exchange 는 요청이 인물끼리의 대화일 때: 두 인물 이상이 번갈아 말하고, 말하는 인물마다 얼굴이 보이는 말하기 장면이 있어야 한다"""
+    exchange 는 요청이 인물끼리의 대화일 때: 두 인물 이상이 번갈아 말하고, 말하는 인물마다 얼굴이 보이는 말하기 장면이 있어야 한다.
+    duo 는 두 사람 대화 장면 규칙으로 보는가 (duo_rules)"""
     p = story_problems(data, seconds, person_ok)
     if not isinstance(data, dict):
         return p
+    duo_on = duo_rules(duo)
     bible = data.get("bible") if isinstance(data.get("bible"), dict) else {}
     chars = {_s(c.get("id")): c for c in bible.get("characters") or [] if isinstance(c, dict) and _s(c.get("id"))}
     scenes = data.get("scenes") if isinstance(data.get("scenes"), list) else []
@@ -1182,7 +1254,12 @@ def dialogue_problems(data, seconds: float, person_ok: bool = True, exchange: bo
             if who in chars:
                 order.append((i, who))
             lines += 1
-        if kind == "talk":
+        prev = scenes[i - 2] if i > 1 and isinstance(scenes[i - 2], dict) else None
+        if kind == "talk" and duo_on:
+            talks += 1
+            talk_by.add(who)
+            p += _duo_talk_problems(i, sc, prev, who, chars)
+        elif kind == "talk":
             talks += 1
             talk_by.add(who)
             if [_s(c) for c in sc.get("characters") or []] != [who]:
@@ -1192,8 +1269,7 @@ def dialogue_problems(data, seconds: float, person_ok: bool = True, exchange: bo
                 p.append(f'Scene {i} is a talk scene: the shot must be a close-up or a medium close-up of the speaker.')
             if sc.get("continues") is True:
                 p.append(f"Scene {i} is a talk scene, so it cannot continue the previous scene.")
-        prev = scenes[i - 2] if i > 1 and isinstance(scenes[i - 2], dict) else None
-        if prev is not None and _s(prev.get("kind")) == "talk" and sc.get("continues") is True:
+        if prev is not None and _s(prev.get("kind")) == "talk" and sc.get("continues") is True and not (duo_on and kind == "talk"):
             p.append(f"Scene {i} comes right after a talk scene, so it cannot continue it.")
     if not talks:
         p.append('The film needs talk scenes: write at least one "talk" scene with a spoken line.')
@@ -1234,8 +1310,9 @@ def dialogue_problems(data, seconds: float, person_ok: bool = True, exchange: bo
     return (rules + p)[:16]          # 줄 수·대화 규칙을 앞에 둔다: 다른 위반이 많아도 잘리지 않게
 
 
-def clean_dialogue_story(data, seconds: float) -> dict | None:
-    """대사 영상 구성안을 다듬는다: 긴 영상 다듬기 + 장면의 말하는 사람·대사, 인물의 이름·목소리. 대사가 하나도 없으면 None"""
+def clean_dialogue_story(data, seconds: float, duo: bool | None = None) -> dict | None:
+    """대사 영상 구성안을 다듬는다: 긴 영상 다듬기 + 장면의 말하는 사람·대사, 인물의 이름·목소리. 대사가 하나도 없으면 None.
+    duo 는 두 사람 대화 장면 규칙으로 다듬는가 (duo_rules): 아니면 대사 장면은 말하는 사람 혼자"""
     story = clean_story(data, seconds)
     if story is None:
         return None
@@ -1251,17 +1328,32 @@ def clean_dialogue_story(data, seconds: float) -> dict | None:
         sample = _s(rc.get("sample_ko"))        # 기준 소리가 말할 글: 한글이고 짧을 때만 쓴다 (아니면 voice_sample 이 기본 글을 쓴다)
         c["sample_ko"] = sample if HANGUL_RE.search(sample) and len(sample) <= SAMPLE_MAX else ""
     lines = 0
+    duo_on = duo_rules(duo)
     for i, (sc, rs) in enumerate(zip(story["scenes"], raw)):
         who, line = _s(rs.get("speaker")), _s(rs.get("line_ko"))[:DIALOGUE_LINE_MAX]
         ok = who in chars and bool(HANGUL_RE.search(line))
         talk = ok and _s(rs.get("kind")) == "talk"
         sc.update(kind="talk" if talk else "shot", speaker=who if ok else "", line_ko=line if ok else "",
-                  emotion=_s(rs.get("emotion"))[:120] if ok and not HANGUL_RE.search(_s(rs.get("emotion"))) else "")
-        if talk:
+                  emotion=_s(rs.get("emotion"))[:120] if ok and not HANGUL_RE.search(_s(rs.get("emotion"))) else "",
+                  listener="")
+        prev = story["scenes"][i - 1] if i > 0 else None
+        if talk and duo_on:
+            # 듣는 사람: 적힌 listener 가 설정집의 다른 인물이면 그 사람. 비었거나 틀렸어도 characters 에 다른 인물이 꼭 하나 있으면
+            # 그 사람을 듣는 사람으로 본다 (검사는 고쳐 쓰게 하고, 정리는 뜻을 살린다)
+            lis = _s(rs.get("listener"))
+            if not (lis in chars and lis != who):
+                others = [c for c in dict.fromkeys(_s(x) for x in rs.get("characters") or []) if c in chars and c != who]
+                lis = others[0] if len(others) == 1 else ""
+            sc["listener"] = lis
+            sc["characters"] = [who, lis] if lis else [who]
+            sc["continues"] = bool(sc["continues"] and lis and _same_talk_pair(prev, sc, {who, lis}))
+        elif talk:
             sc["characters"] = [who]
             sc["continues"] = False
             if i + 1 < len(story["scenes"]):
                 story["scenes"][i + 1]["continues"] = False
+        elif duo_on and prev is not None and prev.get("kind") == "talk":
+            sc["continues"] = False          # 대사 컷 바로 다음의 말 없는 장면은 잇지 않는다 (대사 컷 끝은 자르는 지점)
         lines += 1 if ok else 0
     if not lines:
         return None
@@ -1286,30 +1378,32 @@ def dialogue_count_rules(seconds: float, exchange: bool) -> str:
 
 
 async def write_dialogue_story(call, text: str, notes: str, seconds: float, rounds: int = 3,
-                               known: list | None = None) -> tuple[dict | None, list[str], int]:
-    """대사 영상 구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). known 은 요청에 이름이 나온 라이브러리 인물"""
+                               known: list | None = None, duo: bool | None = None) -> tuple[dict | None, list[str], int]:
+    """대사 영상 구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). known 은 요청에 이름이 나온 라이브러리 인물.
+    duo 는 감독이 정한 '두 사람 대사 컷을 만들 수 있는가' (None 이면 설정): 지시문·칸·검사·다듬기가 모두 같은 규칙을 쓴다"""
     count, n_min, n_max = story_counts(seconds)
     n_max = max(n_max, math.ceil(float(seconds) / 5))      # 말하는 장면은 짧다: 장면이 더 많아도 된다
     said = f"{text or ''} {notes or ''}"
     exchange = wants_exchange(said)
+    duo = duo_rules(duo)
     system = STORY_SYSTEM.format(seconds=int(seconds), keys=", ".join(MUSIC_KEYS), count=count, n_min=n_min, n_max=n_max,
-                                 tolerance=story_tolerance(seconds)) + DIALOGUE_EXTRA + dialogue_count_rules(seconds, exchange) \
-        + cast_lib.prompt_block(known)
+                                 tolerance=story_tolerance(seconds)) + dialogue_extra(duo) + dialogue_count_rules(seconds, exchange) \
+        + cast_lib.prompt_block(known, text=said)
     user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "")
     person_ok = True if PERSON_REQ_RE.search(said) or STORY_PERSON_KO_RE.search(said) else bool(re.search(r"대화|대사|말하", said))
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     best, problems, rnd = None, ["no answer"], 0
     for rnd in range(1, rounds + 1):
-        reply = await call({"messages": messages, "format": DIALOGUE_SCHEMA, "think": False, "options": {"temperature": 0.7}})
+        reply = await call({"messages": messages, "format": dialogue_schema(duo), "think": False, "options": {"temperature": 0.7}})
         content = (reply.get("message") or {}).get("content", "")
         try:
             data = parse_json_reply(content)
         except PromptxError as e:
             data, problems = None, [str(e)]
         else:
-            problems = [x for x in dialogue_problems(data, seconds, person_ok, exchange)
+            problems = [x for x in dialogue_problems(data, seconds, person_ok, exchange, duo=duo)
                         if not (x.startswith("Write ") and "scenes (you wrote" in x)]     # 장면 수는 대사 수를 따른다
-        story = clean_dialogue_story(data, seconds) if data is not None else None
+        story = clean_dialogue_story(data, seconds, duo=duo) if data is not None else None
         if story is not None and (best is None or len(problems) < len(best[1])):
             best = (story, problems)
         if not problems:
@@ -1365,6 +1459,66 @@ def speaker_side(story: dict, cid: str) -> str:
     """말하는 사람이 바라보는 화면 쪽. 대화하는 두 사람이 서로 마주 보게(180도 규칙) 첫 번째는 오른쪽, 두 번째는 왼쪽을 본다"""
     order = speakers_of(story)
     return "right" if (order.index(cid) if cid in order else 0) % 2 == 0 else "left"
+
+
+def _opposite(side: str) -> str:
+    return "left" if side == "right" else "right"
+
+
+def talk_pair(story: dict, i: int) -> list[str] | None:
+    """대사 장면 i 가 두 사람 대사 컷이면 [말하는 사람, 듣는 사람], 아니면 None. 설정과 상관없이 장면 모양만 본다
+    (구성안이 두 사람으로 짠 컷은 첫 화면도 두 사람이라, 설정을 나중에 꺼도 영상 글·검사는 두 사람 기준이어야 한다)"""
+    if not story.get("dialogue"):
+        return None
+    sc = story["scenes"][i]
+    sp = sc.get("speaker")
+    if sc.get("kind") != "talk" or not sp or len(sc.get("characters") or []) != 2:
+        return None
+    people = scene_people(story, i)
+    if len(people) != 2 or sp not in people:
+        return None          # 듣는 쪽이 동물이면 사람 한 명의 대사 컷이다
+    return [sp, next(c for c in people if c != sp)]
+
+
+def duo_talk(story: dict, i: int) -> bool:
+    """두 사람 대사 컷을 InfiniteTalk 두 화자 레시피로 만드는가: 대사 영상의 talk 장면이고 사람이 둘이고 설정(STUDIO_DUO_TALK)이 켜짐"""
+    return bool(settings.studio_duo_talk and talk_pair(story, i))
+
+
+def pair_facing(story: dict, a: str, b: str) -> dict[str, str]:
+    """대화하는 두 사람이 바라보는 화면 쪽. 같은 두 사람은 장면이 바뀌어도 좌우가 같아야 한다(180도 규칙, 오른쪽을 보는 사람이 왼쪽 자리).
+    말한 차례(speaker_side)가 서로 다르면 그대로. 같은 쪽이 되면(한 번도 말하지 않는 듣는 사람은 첫 화자와 같은 'right' 를 받고,
+    화자가 셋 이상이면 1번과 3번이 같다) 두 사람이 처음 함께 나오는 대사 컷의 말하는 사람이 제 쪽을 보고 상대는 반대쪽을 본다
+    (11-24 검토 C3: 등장 차례로 되돌아가 오른쪽 자리의 화자에게 '오른쪽으로 말한다'가 갈 수 있었다)"""
+    sa, sb = speaker_side(story, a), speaker_side(story, b)
+    if sa != sb:
+        return {a: sa, b: sb}
+    for k in range(len(story.get("scenes") or [])):
+        pr = talk_pair(story, k)
+        if pr and set(pr) == {a, b}:
+            side = speaker_side(story, pr[0])
+            return {pr[0]: side, pr[1]: _opposite(side)}
+    return {a: sa, b: _opposite(sa)}
+
+
+def _talks_together(story: dict, ids: list[str]) -> bool:
+    """이 두 사람이 영화 안에서 두 사람 대사 컷으로 함께 나오는가 (그러면 다른 두 사람 장면도 같은 좌우로 둔다)"""
+    want = set(ids)
+    return len(want) == 2 and any(set(talk_pair(story, k) or ()) == want for k in range(len(story.get("scenes") or [])))
+
+
+def facing_of(story: dict, i: int | None, cid: str) -> str:
+    """한 사람 컷(클로즈업·혼자 대사·기준 그림을 고친 첫 화면)에서 이 사람이 바라보는 화면 쪽. 두 사람 대사 컷에 나오는 사람은 그 쌍의
+    바라보는 쪽(pair_facing)을 따른다 — 장면 i 에서 가장 가까운 앞 투샷, 없으면 가장 가까운 뒤 투샷 (180도 규칙. 11-24 검토: 한 번도
+    말하지 않는 듣는 사람은 투샷에서 왼쪽을 보는데 바로 다음 클로즈업에서 speaker_side 대로 오른쪽을 봐 시선이 튀었다).
+    투샷에 나오지 않으면 speaker_side. i 가 None 이면(인물 기준 그림) 처음 나오는 투샷"""
+    n = len(story.get("scenes") or [])
+    order = range(n) if i is None else list(range(min(i, n - 1), -1, -1)) + list(range(i + 1, n))
+    for k in order:
+        pr = talk_pair(story, k)
+        if pr and cid in pr:
+            return pair_facing(story, pr[0], pr[1])[cid]
+    return speaker_side(story, cid)
 
 
 def cast_scene(story: dict, i: int) -> str | None:
@@ -1441,7 +1595,7 @@ def voice_ref_max_seconds(text: str) -> float:
 
 def cast_prompt(story: dict, cid: str) -> str:
     """인물 기준 그림 (Z-Image): 말하는 장면·혼자 나오는 가까운 장면은 모두 이 그림을 고쳐 만들어 얼굴을 맞춘다"""
-    side = speaker_side(story, cid)
+    side = facing_of(story, None, cid)
     return (f"Character reference portrait of one person: {_look(story, cid)} Head and shoulders, centered in a wide frame, "
             f"the face in three-quarter view turned toward the {side} side of the frame, a calm natural expression, mouth closed, "
             "hands not visible, a plain softly lit neutral background, soft even light, sharp detail on the face and clothing. "
@@ -1456,15 +1610,16 @@ ONE_PERSON = ("The picture shows exactly one person, alone, with empty backgroun
 
 def cast_edit_prompt(story: dict, i: int) -> str:
     """기준 그림을 장면 i 의 첫 화면으로 고치는 편집 지시 (Qwen 편집). 얼굴·옷은 그대로, 구도·표정·배경만 바꾼다.
-    바라보는 쪽은 '화면 밖의 누군가'가 아니라 화면 가장자리 너머로 쓴다 (11-20: '누군가'를 그려 넣어 사람이 둘이 됐다)"""
+    바라보는 쪽은 '화면 밖의 누군가'가 아니라 화면 가장자리 너머로 쓴다 (11-20: '누군가'를 그려 넣어 사람이 둘이 됐다).
+    그림은 늘 한 사람이라 투샷 글은 미디엄 클로즈업으로 (solo_shot: 두 사람 규칙으로 짠 대사 장면을 장면 잇기 없이 만들 때)"""
     sc = story["scenes"][i]
     b = story["bible"]
     cid = sc.get("speaker") if sc.get("kind") == "talk" else (sc.get("characters") or [""])[0]
-    side = speaker_side(story, cid)
+    side = facing_of(story, i, cid)
     place = next((p["look"] for p in b["places"] if p["id"] == sc["place"]), "")
     mood = sc.get("emotion") or "attentive and natural"
     talking = "lips slightly parted as if about to speak" if sc.get("kind") == "talk" else "listening quietly, lips closed"
-    return (f"Keep the same person from the image exactly: the same face, age, hair, clothing and colours. {sc['shot']}. "
+    return (f"Keep the same person from the image exactly: the same face, age, hair, clothing and colours. {solo_shot(sc['shot'])}. "
             f"The head is turned in three-quarter view toward the {side} side of the frame, the eyes looking past the edge of "
             f"the frame at nothing visible, a {mood} expression, {talking}. The background is now this place, softly out of focus: "
             f"{place} Time: {b['time']} Light: {b['light']} The hands are not visible. {ONE_PERSON}"
@@ -1484,13 +1639,50 @@ STYLE_KEEP = {
 }
 
 
+STILL_PROMPT_MAX = 1990  # 그림 편집·새로 그리기 지시문 상한 (이미지 확장 입력 2000자)
+STYLE_RAW_MAX = 200      # 정지 그림 지시문에 싣는 영화 화풍 원문(bible.style) 상한(자)
+STYLE_RAW_MIN = 80       # 지시문이 길면 화풍 원문을 이 길이까지 줄인다 (화풍 종류·선·채색은 앞쪽에 온다)
+
+
 def style_key(story: dict) -> str:
     """영화 화풍 열쇠: photo(실사)·semi(반실사)·anime(애니). 화풍 글에서 정한다 (cast_lib.style_key)"""
     return cast_lib.style_key(_s(((story or {}).get("bible") or {}).get("style")))
 
 
-def style_keep(story: dict) -> str:
-    return STYLE_KEEP.get(style_key(story), STYLE_KEEP["semi"])
+def style_raw(story: dict, limit: int = STYLE_RAW_MAX) -> str:
+    """영화 화풍 원문(bible.style)을 limit 자 이내로. 자를 때는 뒤쪽 절반 안의 쉼표 경계, 없으면 낱말 경계에서 (끝 문장부호는 뺀다).
+    비었으면 빈 글"""
+    st = " ".join(_s(((story or {}).get("bible") or {}).get("style")).split()).rstrip(" .")
+    if len(st) > limit:
+        cut = st[:limit]
+        comma = max(cut.rfind(","), cut.rfind(";"))
+        st = (cut[:comma] if comma >= limit // 2 else (cut.rsplit(" ", 1)[0] if " " in cut else cut)).rstrip(" ,;:.")
+    return st
+
+
+def style_keep(story: dict, raw_limit: int = STYLE_RAW_MAX) -> str:
+    """정지 그림(구도·인물 입히기·새로 그리기·끝 키프레임·고쳐 잇기) 지시문의 화풍 문장 = 영화 화풍 원문 + 열쇠 문장(STYLE_KEEP).
+    11-24: 열쇠 문장 셋만 실으니 수채·점토·3D 같은 화풍도 첫 화면 단계에서 반실사 문장으로 모였다 → 원문을 앞에 싣는다. 원문이 비면 열쇠 문장만"""
+    raw = style_raw(story, raw_limit)
+    key = STYLE_KEEP.get(style_key(story), STYLE_KEEP["semi"])
+    return (f"The art style of the whole film: {raw}. " if raw else "") + key
+
+
+def _with_style(parts: list[str], story: dict, tail: str, limit: int = STILL_PROMPT_MAX) -> str:
+    """앞 글(parts) + 화풍 문장(style_keep) + 끝 문장(정확한 사람·형상 수)을 limit 자 안에 넣는다. 넘치면 화풍 원문을 STYLE_RAW_MIN 까지
+    먼저 줄이고, 그래도 넘치면 앞 글의 끝을 문장 경계에서 자른다: 끝 문장이 잘리면 복제·지어낸 사람을 막지 못한다 (11-24, 원문을 실어 길어졌다)"""
+    head = " ".join(p for p in parts if p)
+    keep = style_keep(story)
+    over = len(head) + len(keep) + len(tail) + 2 - limit
+    raw = style_raw(story)
+    if over > 0 and raw:
+        keep = style_keep(story, max(STYLE_RAW_MIN, len(raw) - over))
+        over = len(head) + len(keep) + len(tail) + 2 - limit
+    if over > 0:
+        cut = head[:max(0, len(head) - over)]
+        end = cut.rfind(". ")
+        head = cut[:end + 1] if end >= len(cut) // 2 else (cut.rsplit(" ", 1)[0] if " " in cut else cut)
+    return " ".join(x for x in (head, keep, tail) if x)[:limit]
 
 
 def people_sentence(n: int) -> str:
@@ -1550,7 +1742,7 @@ def cut_edit_prompt(story: dict, i: int, ref_ids: list[str], seam: str | None = 
         parts.append("Redraw the same camera shot as image 1, the same moment and composition, with the same people in the same places, "
                      "with clean sharp detail on every face and the original light and colours.")
     elif seam == SEAM_JUMP:
-        parts.append("Cut to a new shot in a new place, built from image 1 only for the painting style and the people.")
+        parts.append("Cut to a new shot in a new place, built from image 1 only for the art style and the people.")
     else:
         parts.append("Cut to a new camera shot of the same moment in the same place, built from image 1.")
     parts.append(f"New shot: {sc['shot']}. What happens: {sc['action']}")
@@ -1560,15 +1752,21 @@ def cut_edit_prompt(story: dict, i: int, ref_ids: list[str], seam: str | None = 
     for cid in people:
         if cid not in ref_ids:
             parts.append(f"The person {looks.get(cid, '')} looks exactly as in image 1.")
+    pair = talk_pair(story, i)
+    if pair:
+        # 두 사람 대사 컷: 구도 그림·소리 자리와 같은 좌우 (오른쪽을 보는 사람이 왼쪽 자리), 듣는 사람은 입을 다문다
+        face_of = pair_facing(story, pair[0], pair[1])
+        sp_pos = "left" if face_of[pair[0]] == "right" else "right"
+        parts.append(f"The person {_who(story, pair[0])} is on the {sp_pos}, turned toward the {face_of[pair[0]]} side of the frame, "
+                     f"speaking; the person {_who(story, pair[1])} is on the {_opposite(sp_pos)}, turned toward the speaker, listening "
+                     "with lips closed and a soft smile; both faces in three-quarter view toward the camera.")
     if seam == SEAM_JUMP:
         parts.append(f"The place is now: {place} Time: {sc.get('time') or b['time']} Light: {b['light']}")
     else:
         parts.append(f"The place: {place} Light: {b['light']} The same light and colours as image 1.")
     parts.append("All the people are fully in frame with their faces visible (front or three-quarter) and all are already in frame in the "
                  "first moment. The hands are not visible or relaxed at the sides.")
-    parts.append(style_keep(story))
-    parts.append(people_sentence(len(people)))
-    return " ".join(parts)[:1990]
+    return _with_style(parts, story, people_sentence(len(people)))
 
 
 def end_keyframe_prompt(story: dict, i: int, ending: str = "") -> str:
@@ -1576,10 +1774,10 @@ def end_keyframe_prompt(story: dict, i: int, ending: str = "") -> str:
     인물은 모두 화면 안, 얼굴이 정면이나 3/4 로 보인다 (R2: 다음 장면은 이 끝에서 시작한다)"""
     people = scene_people(story, i)
     end = ending.strip().rstrip(".") or "everyone calm in the same frame, the camera settled"
-    return (f"The same camera shot a few seconds later, at the very end of this shot: {end}. Keep the same place, the same light and the "
-            "same people with exactly the same faces, hair and clothes as image 1; only the pose, the expression and a small camera move "
-            "change. All the people stay fully in frame, standing or sitting calmly, faces visible (front or three-quarter), none walking "
-            f"out of frame. The hands are relaxed. {style_keep(story)} {people_sentence(len(people))}")[:1990]
+    return _with_style([f"The same camera shot a few seconds later, at the very end of this shot: {end}. Keep the same place, the same light "
+                        "and the same people with exactly the same faces, hair and clothes as image 1; only the pose, the expression and a small "
+                        "camera move change. All the people stay fully in frame, standing or sitting calmly, faces visible (front or "
+                        "three-quarter), none walking out of frame. The hands are relaxed."], story, people_sentence(len(people)))
 
 
 def signature_of(story: dict, cid: str) -> list[str]:
@@ -1614,8 +1812,19 @@ def compose_prompt(story: dict, i: int, ref_ids: list[str], place_image: int | N
         if cid not in ref_ids:
             parts.append(f"The person {looks.get(cid, '')}")
     sp = sc.get("speaker")
-    if talk:
-        parts.append(f"The person from image {ref_ids.index(sp) + 1} speaks toward the {speaker_side(story, sp)} side of the frame "
+    pair = talk_pair(story, i)
+    if talk and pair:
+        # 두 사람 대사 컷 (구도 그림 없이 바로 그릴 때): 자리는 구도 그림·소리 자리와 같은 좌우 (오른쪽을 보는 사람이 왼쪽)
+        face_of = pair_facing(story, pair[0], pair[1])
+        lis = pair[1]
+        sp_pos = "left" if face_of[sp] == "right" else "right"
+        who_lis = f"the person from image {ref_ids.index(lis) + 1}" if lis in ref_ids else f"the person {_who(story, lis)}"
+        parts.append(f"The person from image {ref_ids.index(sp) + 1} is on the {sp_pos} and speaks toward the {face_of[sp]} side of the "
+                     f"frame with a {sc.get('emotion') or 'natural'} expression, the face in three-quarter view, lips slightly parted.")
+        parts.append(f"{who_lis[:1].upper()}{who_lis[1:]} is on the {_opposite(sp_pos)}, turned toward the speaker, and listens with lips "
+                     "closed and a soft smile. Both faces are in three-quarter view toward the camera.")
+    elif talk:
+        parts.append(f"The person from image {ref_ids.index(sp) + 1} speaks toward the {facing_of(story, i, sp)} side of the frame "
                      f"with a {sc.get('emotion') or 'natural'} expression, the face in three-quarter view, lips slightly parted.")
     if place_image:
         parts.append(f"The place is the place shown in image {place_image}, with nobody else in it: {place} "
@@ -1623,9 +1832,7 @@ def compose_prompt(story: dict, i: int, ref_ids: list[str], place_image: int | N
     else:
         parts.append(f"The place: {place} Time: {sc.get('time') or b['time']} Light: {b['light']}")
     parts.append("All the people are fully in frame with their faces visible (front or three-quarter). The hands are not visible or relaxed.")
-    parts.append(style_keep(story))
-    parts.append(people_sentence(len(people)))
-    return " ".join(parts)[:1990]
+    return _with_style(parts, story, people_sentence(len(people)))
 
 
 def place_card_prompt(story: dict, pid: str) -> str:
@@ -1707,15 +1914,22 @@ def scene_pose(story: dict, i: int) -> str:
 
 
 def layout_slots(story: dict, i: int, ids: list[str]) -> list[dict]:
-    """구도 그림의 형상 차례(왼쪽→오른쪽)와 자리·크기·방향. 두 사람은 오른쪽을 보는 사람(speaker_side)을 왼쪽에 두어 마주 보게,
-    셋 이상은 장면에 나오는 차례대로. 돌려주는 값: [{"id", "pos", "size", "facing"}]"""
+    """구도 그림의 형상 차례(왼쪽→오른쪽)와 자리·크기·방향. 두 사람은 오른쪽을 보는 사람(speaker_side)을 왼쪽에 두어 마주 보게
+    (두 사람 대사 컷을 함께하는 두 사람은 pair_facing: 듣는 사람은 말하는 사람의 반대쪽을 본다), 셋 이상은 장면에 나오는 차례대로.
+    감독이 두 사람 대사 컷의 소리 자리(왼쪽·오른쪽)도 이 차례로 정한다. 돌려주는 값: [{"id", "pos", "size", "facing"}]"""
     looks = {c["id"]: c["look"] for c in story["bible"]["characters"]}
     ids = [c for c in ids if c in looks]
     n = len(ids)
     if n == 1:
+        # 한 사람: 두 사람 대사 컷에 나오는 사람이면 그 투샷과 같은 쪽을 본다 (facing_of, 180도 규칙)
         return [{"id": ids[0], "pos": "in the centre", "size": figure_size(looks[ids[0]]),
-                 "facing": f"turned slightly toward the {speaker_side(story, ids[0])}"}]
-    if n == 2:
+                 "facing": f"turned slightly toward the {facing_of(story, i, ids[0])}"}]
+    if n == 2 and (talk_pair(story, i) or _talks_together(story, ids)):
+        # 두 사람 대사 컷을 함께하는 두 사람: 좌우를 둘의 바라보는 쪽(pair_facing)으로 정해 장면마다 같게 (180도 규칙)
+        face_of = pair_facing(story, ids[0], ids[1])
+        order = sorted(ids, key=lambda c: 0 if face_of[c] == "right" else 1)
+        pos, face = ["on the left", "on the right"], ["turned toward the right", "turned toward the left"]
+    elif n == 2:
         order = sorted(ids, key=lambda c: 0 if speaker_side(story, c) == "right" else 1)
         if speaker_side(story, order[0]) == speaker_side(story, order[1]):
             order = list(ids)
@@ -1732,8 +1946,12 @@ def layout_slots(story: dict, i: int, ids: list[str]) -> list[dict]:
     return [{"id": c, "pos": pos[k], "size": figure_size(looks[c]), "facing": face[k]} for k, c in enumerate(order)]
 
 
-def _frame_hint(rank: int | None, n: int) -> str:
-    """샷 크기별 형상 크기 지시. 11-21 실험: 'medium close-up' 만으로는 미디엄 샷이 나와 얼굴이 작았다"""
+def _frame_hint(rank: int | None, n: int, duo: bool = False) -> str:
+    """샷 크기별 형상 크기 지시. 11-21 실험: 'medium close-up' 만으로는 미디엄 샷이 나와 얼굴이 작았다.
+    duo(두 사람 대사 컷)의 미디엄 투샷도 머리 위 여유를 둔다 (11-24: 머리가 화면 맨 위에 붙은 첫 화면은 대사 영상에서 머리가 잘렸다)"""
+    if duo and rank == 2 and n == 2:
+        return ("Both heads and upper bodies are fully in frame, side by side in the middle part of the picture, with clear empty space "
+                "above the hair (about one tenth of the frame height); no head touches the top edge.")
     if rank is not None and rank <= 1:
         if n == 1:
             # 11-24 메인: 머리가 화면 맨 위에 붙은 첫 화면은 입 맞춤 영상에서 카메라가 내려가며 머리가 잘렸다 (7초 중 4초 얼굴 없음)
@@ -1772,21 +1990,24 @@ def layout_prompt(story: dict, i: int, slots: list[dict]) -> str:
     parts = [f"Picture 1 shows the place. Keep its architecture, furniture and props, seen from a slightly different camera angle: "
              f"{place}{'' if place.endswith(('.', '!', '?')) else '.'}",
              f"A new picture of this place: {_layout_shot(sc['shot'])}."]
+    duo = n == 2 and bool(talk_pair(story, i))
     if n == 1:
         s = slots[0]
         parts.append(f"One {s['size']} faceless mannequin figure, {pose}, {s['facing']}, {s['pos']} of the frame.")
+    elif duo:
+        # 두 사람 대사 컷: 서로 마주 보되 두 얼굴 모두 카메라 쪽 3/4 (입 맞춤이 두 입을 다 봐야 하고, 검사가 두 얼굴을 센다)
+        parts.append(f"2 faceless mannequin figures, {pose}, turned toward each other, both faces in three-quarter view toward the camera: "
+                     + "; ".join(f"{s['pos']} a {s['size']} figure {s['facing']}" for s in slots) + ".")
     else:
         parts.append(f"{n} faceless mannequin figures, {pose}: " + "; ".join(f"{s['pos']} a {s['size']} figure {s['facing']}" for s in slots) + ".")
     parts.append("Each figure has a smooth blank head with no face and no hair, and plain matte light grey clothes, like an artist's mannequin.")
     parts.append("Every head is turned toward the camera or in three-quarter view; no figure is seen from behind.")
-    parts.append(_frame_hint(shot_rank(sc.get("shot") or ""), n))
+    parts.append(_frame_hint(shot_rank(sc.get("shot") or ""), n, duo=duo))
     for cid in dict.fromkeys(sc.get("characters") or []):
         if cid in looks and is_animal_look(looks[cid]):
             parts.append(f"Also in the picture: {looks[cid]}")
     parts.append(f"Time: {sc.get('time') or b['time']} Light: {b['light']}")
-    parts.append(style_keep(story))
-    parts.append(f"Exactly {n} figure{'s' if n != 1 else ''}, no other figure or person.")
-    return " ".join(parts)[:1990]
+    return _with_style(parts, story, f"Exactly {n} figure{'s' if n != 1 else ''}, no other figure or person.")
 
 
 def background_sentence(story: dict, i: int) -> str:
@@ -1806,9 +2027,17 @@ def _act_sentence(story: dict, i: int, slots: list[dict]) -> str:
     sc = story["scenes"][i]
     sp = sc.get("speaker")
     slot = next((s for s in slots if s["id"] == sp), None)
+    if sc.get("kind") == "talk" and slot and len(slots) == 2 and talk_pair(story, i):
+        # 두 사람 대사 컷: 말하는 방향은 실제 자리에서 상대 쪽 (왼쪽 자리는 오른쪽으로), 듣는 사람은 입을 다물고 듣는다 (11-24 X1·X6)
+        mood = sc.get("emotion") or "natural"
+        other = next(s for s in slots if s["id"] != sp)
+        toward = "right" if slot is slots[0] else "left"
+        return (f"The person {slot['pos']} speaks toward the {toward} side of the frame with a {mood} expression, "
+                f"the face in three-quarter view, lips slightly parted. "
+                f"The person {other['pos']} listens with lips closed and a soft smile, looking at the speaker.")
     if sc.get("kind") == "talk" and slot:
         mood = sc.get("emotion") or "natural"
-        return (f"The person {slot['pos']} speaks toward the {speaker_side(story, sp)} side of the frame with a {mood} expression, "
+        return (f"The person {slot['pos']} speaks toward the {facing_of(story, i, sp)} side of the frame with a {mood} expression, "
                 "the face in three-quarter view, lips slightly parted.")
     return f"What happens: {sc['action']}"
 
@@ -1817,7 +2046,7 @@ def identity_prompt(story: dict, i: int, slots: list[dict], put: list[str], fina
     """② 구도 그림(Picture 1)의 형상에 인물을 입힌다. put = 이번에 입힐 인물 id (Picture 2·3 차례, 2명까지).
     final 이 아니면 남은 형상은 그대로 두라고 쓴다 (③ 이 한 명씩 입힌다)"""
     by = {s["id"]: s for s in slots}
-    parts = ["Picture 1 is the layout. Keep exactly its camera, framing, the place, the light, the painting style, and every figure's "
+    parts = ["Picture 1 is the layout. Keep exactly its camera, framing, the place, the light, the art style, and every figure's "
              "position, size and pose."]
     for n, cid in enumerate(put, start=2):
         parts.append(_put_sentence(story, by[cid], n))
@@ -1833,15 +2062,15 @@ def identity_prompt(story: dict, i: int, slots: list[dict], put: list[str], fina
     if rank is not None and rank <= 1:
         parts.append("Keep the head where it is in Picture 1, with clear empty space above the hair; do not move the head to the top edge "
                      "and do not enlarge the figure.")
-    parts.append(style_keep(story))
-    parts.append(people_sentence(len(slots)) if final else f"Exactly {len(slots)} figures in total, no other person.")
-    return " ".join(parts)[:1990]
+    elif len(slots) == 2 and talk_pair(story, i):
+        parts.append("Keep both heads where they are in Picture 1, with clear empty space above the hair; do not enlarge the figures.")
+    return _with_style(parts, story, people_sentence(len(slots)) if final else f"Exactly {len(slots)} figures in total, no other person.")
 
 
 def finish_prompt(story: dict, i: int, slots: list[dict], cid: str, done: list[str], final: bool) -> str:
     """③ 세 번째 사람부터 한 명씩: Picture 1 = 지금까지 그린 그림, Picture 2 = 그 사람의 기준 그림. done = 이미 입힌 인물 id"""
     by = {s["id"]: s for s in slots}
-    parts = ["Picture 1 is the picture to finish. Keep everything in Picture 1 exactly: the camera, the place, the light, the painting "
+    parts = ["Picture 1 is the picture to finish. Keep everything in Picture 1 exactly: the camera, the place, the light, the art "
              "style and the people already in it.", "Replace only one figure. " + _put_sentence(story, by[cid], 2),
              "Take nothing else from Picture 2."]
     if not final:
@@ -1850,9 +2079,7 @@ def finish_prompt(story: dict, i: int, slots: list[dict], cid: str, done: list[s
                 parts.append(f"Keep the faceless figure {s['pos']} exactly as it is.")
     parts.append(background_sentence(story, i))
     parts.append("Every face is visible, front or three-quarter.")
-    parts.append(style_keep(story))
-    parts.append(people_sentence(len(slots)) if final else f"Exactly {len(slots)} figures in total, no other person.")
-    return " ".join(parts)[:1990]
+    return _with_style(parts, story, people_sentence(len(slots)) if final else f"Exactly {len(slots)} figures in total, no other person.")
 
 
 def layout_description(story: dict, i: int, slots: list[dict]) -> str:
@@ -1876,20 +2103,89 @@ def style_convert_prompt(key: str, who: str) -> str:
     return base.format(who=who or "person", kind=kinds.get(key, kinds["semi"])) + ONE_PERSON
 
 
+# 대사 컷 샷 글의 카메라 움직임 말 (영상 글 끝의 삼각대 문장과 부딪힌다, 11-24)
+CAMERA_MOVE_WORD_RE = re.compile(r"\b(?:push(?:es|ed|ing)?|dolly|dollies|dollying|zoom(?:s|ed|ing)?|pan(?:s|ned|ning)?"
+                                 r"|tilt(?:s|ed|ing)?|track(?:s|ed|ing)?)\b", re.I)
+# 움직임 구: 앞의 이음말(with·as·while·and·or)과 꾸밈말('the camera slowly …'), 뒤의 방향 말까지 한 덩어리로 지운다
+_CAMERA_MOVE_PHRASE_RE = re.compile(r"(?:\b(?:with|as|while|and|or)\s+)?"
+                                    r"(?:\b(?:a|an|the|very|slow|slowly|gentle|gently|subtle|slight|steady|smooth|camera)\s+)*"
+                                    + CAMERA_MOVE_WORD_RE.pattern
+                                    + r"(?:[- ](?:in|out|forward|back|up|down|left|right|closer|camera|move|movement|shot))*", re.I)
+# 움직임 구를 지운 뒤 끝에 매달린 말 ('… with a still or' 의 'with a still or', '… as the camera' 의 'as the camera')
+_DANGLING_TAIL_RE = re.compile(r"(?:\s+(?:with|as|while|and|or|to|into|toward|towards|a|an|the|camera|still|very|slow|slowly|"
+                               r"gentle|gently|subtle|slight|steady|smooth))+\s*$", re.I)
+
+
+def still_shot(shot: str) -> str:
+    """대사 컷의 샷 글에서 카메라 움직임(push in·pushing·dolly·zoom·pan·tilt·track)을 지운다. 쉼표로 나뉜 마디마다 움직임 구를 지우고,
+    끝에 매달린 이음말·관사를 다듬는다 (11-24 검토: 'Medium close-up of Beth with a still or very slowly pushing camera' 가
+    '… with a still or' 로 남았다). 움직임이 있던 마디는 샷 크기 말이 남을 때만 둔다('slow push-in toward her face' → 뺌).
+    남는 것이 없으면 빈 글"""
+    out = []
+    for p in re.split(r"[,;]", str(shot or "")):
+        p = p.strip()
+        if p and CAMERA_MOVE_WORD_RE.search(p):
+            p = re.sub(r"\s{2,}", " ", _CAMERA_MOVE_PHRASE_RE.sub(" ", p)).strip(" -,")
+            p = _DANGLING_TAIL_RE.sub("", " " + p).strip(" -,")
+            if shot_rank(p) is None:
+                p = ""
+        if p:
+            out.append(p)
+    return ", ".join(out)
+
+
+TWO_SHOT_RE = re.compile(r"\btwo[\s-]?shot\b", re.I)
+
+
+def solo_shot(shot: str) -> str:
+    """한 사람만 그리는 컷(기준 그림을 고친 첫 화면·혼자 대사 영상 글)의 샷 글: 투샷 글이면 말하는 사람 혼자의 미디엄 클로즈업으로.
+    두 사람 규칙으로 짠 대사 장면을 한 사람으로 만들 때(장면 잇기가 꺼짐·듣는 쪽이 동물) 'Medium two-shot … exactly one person'·
+    'Medium two-shot of one person alone' 처럼 어긋난 글이 되던 것을 막는다 (11-24 검토)"""
+    shot = str(shot or "")
+    return "Medium close-up" if TWO_SHOT_RE.search(shot) else shot
+
+
 def talk_prompt(story: dict, i: int) -> str:
-    """말하는 장면 영상 글 (LTX-2.3 IA2V). 다른 사람을 지어내지 않게 '화면에 혼자' 를 꼭 넣는다 (11-19 시범: 빼면 화면 밖 상대를 만들어 냄)"""
+    """말하는 장면 영상 글 (LTX-2.3 IA2V). 다른 사람을 지어내지 않게 '화면에 혼자' 를 꼭 넣는다 (11-19 시범: 빼면 화면 밖 상대를 만들어 냄).
+    샷 글의 카메라 움직임 말은 지운다 (11-24: 'very slowly pushing camera' 가 끝의 삼각대 문장과 부딪혔다).
+    두 사람 규칙으로 짠 대사 장면을 한 사람 첫 화면으로 만들 때(장면 잇기가 꺼짐)는 투샷 글을 혼자 크기로 바꾸고 장면 글(action)을 뺀다:
+    'She smiles at him' 처럼 화면 밖 상대를 가리켜 그 사람을 지어낸다 (11-19·11-21 R3, 11-24 검토)"""
     sc = story["scenes"][i]
     b = story["bible"]
     cid = sc.get("speaker") or (sc.get("characters") or [""])[0]
     place = next((p["look"] for p in b["places"] if p["id"] == sc["place"]), "")
-    return (f"{sc['shot']} of one person alone in the frame, no other people: {_look(story, cid)} {sc['action']} "
-            f"The person speaks toward the {speaker_side(story, cid)} edge of the frame, {sc.get('emotion') or 'natural'}, "
+    shot = solo_shot(still_shot(sc["shot"])) or "Close-up"
+    act = "" if talk_pair(story, i) else f"{sc['action']} "
+    return (f"{shot} of one person alone in the frame, no other people: {_look(story, cid)} {act}"
+            f"The person speaks toward the {facing_of(story, i, cid)} edge of the frame, {sc.get('emotion') or 'natural'}, "
             "and no one else ever enters the frame; "
             "the lips and jaw move clearly with the words, natural blinking, small head movements and calm breathing. "
             f"Behind, softly out of focus: {place} Time: {b['time']} Light: {b['light']}"
             + _style_line(story) + (" " + style_lock(story) if style_lock(story) else "")
             + " The camera is locked on a tripod and never moves: no tilt, no pan, no zoom, no push in. The person stays seated or "
               "standing in the same place and the face stays in the same position inside the frame the whole time.")[:3000]
+
+
+def duo_talk_prompt(story: dict, i: int, slots: list[dict]) -> str:
+    """두 사람 대사 컷 영상 글 (InfiniteTalk 두 화자, 11-24 메인 X1·X6). 두 사람을 자리와 외형으로 쓰고, 누가 누구에게 말하는지도 자리로 쓴다.
+    듣는 사람은 입을 다물고 듣기만 한다. 장면의 action 원문은 넣지 않는다: 화면 밖 인물 이름이 섞여 그 사람을 지어냈다 (11-21 실험 R3).
+    slots 는 layout_slots 차례(왼쪽, 오른쪽) — 감독이 소리 자리를 정한 것과 같은 차례"""
+    sc = story["scenes"][i]
+    b = story["bible"]
+    left, right = slots[0], slots[1]
+    sp_side = "left" if left["id"] == sc.get("speaker") else "right"
+    li_side = _opposite(sp_side)
+    shot = still_shot(_layout_shot(sc.get("shot") or "")) or "medium two-shot"
+    place = _place_of(story, i).strip()
+    parts = [f"{shot[:1].upper()}{shot[1:]} of two people in a conversation, both fully in frame the whole time.",
+             f"On the left: {_look(story, left['id'])} On the right: {_look(story, right['id'])}",
+             f"The person on the {sp_side} speaks to the person on the {li_side}, {sc.get('emotion') or 'natural'}: "
+             "the lips and jaw move clearly with the words.",
+             f"The person on the {li_side} only listens: the mouth stays closed, smiles and nods softly.",
+             "Natural blinking and small head movements.",
+             "The camera stays completely still.",
+             f"The place: {place}{'' if place.endswith(('.', '!', '?')) else '.'} Time: {sc.get('time') or b['time']} Light: {b['light']}"]
+    return (" ".join(parts) + _style_line(story) + (" " + style_lock(story) if style_lock(story) else ""))[:3000]
 
 
 def line_tokens(line: str) -> int:

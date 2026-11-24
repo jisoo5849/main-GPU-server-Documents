@@ -132,7 +132,7 @@ for rid, r in rs.items():
     assert R.recipe_ok(rp), (rid, [x for x in rp if not x["ok"]])
     R.build(r, R.sample_values(r))
 assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music", "voice", "voice_clone", "talk",
-                                              "scene_image", "edit_ref", "i2v_end", "compose_ref"}
+                                              "scene_image", "edit_ref", "i2v_end", "compose_ref", "talk_duo"}
 
 # pick: edit_ref 는 edit 와 따로 고른다 (qwen_image_edit 은 그대로)
 assert R.pick(rs, set(), "edit", "fast")["id"] == "qwen_image_edit"
@@ -306,7 +306,26 @@ assert "end_frame" not in rs["ltx25_i2v_sound"]["inject"] and not any(n["class_t
 # 대사 레시피 판 3: 마지막 프레임 출력과 last_index (판 4: 부정 글에 카메라 움직임·얼굴 잘림, 11-24)
 tk = rs["ltx23_ia2v_talk"]
 assert "camera tilting down" in tk["prompt"]["340:314"]["inputs"]["text"] and "head cut off" in tk["prompt"]["340:314"]["inputs"]["text"]
-assert tk["version"] == 4 and set(tk["outputs"]) == {"main", "check", "last"} and tk["outputs"]["last"]["node"] == "903"
+assert tk["version"] == 5 and set(tk["outputs"]) == {"main", "check", "last"} and tk["outputs"]["last"]["node"] == "903"
+# 판 5 (11-24): 끝 가이드. 첫 화면(340:334)을 1단계·2단계 모두 마지막 프레임(frame_idx -1, 강도 1.0)에 다시 넣는다 — 품질 end 레시피와 같은 배선
+tp5 = tk["prompt"]
+g5 = sorted(nid for nid, n in tp5.items() if n["class_type"] == "LTXVAddGuide")
+assert g5 == ["340:G1", "340:G2"], g5
+for g in g5:
+    gi = tp5[g]["inputs"]
+    assert gi["frame_idx"] == -1 and gi["strength"] == 1.0 and gi["image"] == ["340:334", 0] and gi["vae"] == ["340:317", 2]
+assert tp5["340:G1"]["inputs"]["latent"] == ["340:325", 0] and tp5["340:G1"]["inputs"]["positive"] == ["340:307", 0]
+assert tp5["340:326"]["inputs"]["video_latent"] == ["340:G1", 2] and tp5["340:315"]["inputs"]["positive"] == ["340:G1", 0]
+assert tp5["340:315"]["inputs"]["negative"] == ["340:G1", 1] and tp5["340:292"]["inputs"]["positive"] == ["340:G1", 0]
+assert tp5["340:295"]["inputs"]["samples"] == ["340:292", 2]                      # 1단계 뒤 가이드 프레임을 잘라 내고 키운다
+assert tp5["340:G2"]["inputs"]["latent"] == ["340:296", 0] and tp5["340:G2"]["inputs"]["positive"] == ["340:292", 0]
+assert tp5["340:287"]["inputs"]["video_latent"] == ["340:G2", 2] and tp5["340:290"]["inputs"]["negative"] == ["340:G2", 1]
+assert tp5["340:C2"]["class_type"] == "LTXVCropGuides" and tp5["340:C2"]["inputs"]["latent"] == ["340:311", 0]
+assert tp5["340:316"]["inputs"]["samples"] == ["340:C2", 2] and sum(1 for n in tp5.values() if n["class_type"] == "LTXVCropGuides") == 2
+assert sum(1 for n in tp5.values() if n["class_type"] == "LoadImage") == 1          # 새 그림 자리 없이 첫 화면을 다시 쓴다
+assert "판 5" in tk["source"]["changes"] and "6c7be6fe" in tk["source"]["changes"]
+band_nodes = {nid for b in tk["progress"]["bands"] for nid in b["nodes"]}
+assert {"340:G1", "340:G2", "340:C2"} <= band_nodes
 assert tk["inject"]["last_index"] == {"node": "902", "input": "batch_index", "type": "int", "min": 0, "max": 480}
 assert [s["suffix"] for s in tk["inject"]["save_prefix"]] == ["talk", "check_frame", "last_frame"]
 assert tk["prompt"]["902"]["inputs"]["image"] == tk["prompt"]["900"]["inputs"]["image"] and tk["prompt"]["903"]["inputs"]["images"] == ["902", 0]
@@ -328,4 +347,110 @@ except R.RecipeError:
 x = copy.deepcopy(tk); x["inject"]["save_prefix"] = x["inject"]["save_prefix"][:2]   # 저장 노드 903 의 prefix 가 빠짐
 assert "V7" in bad(R.check_recipe(x, PROFILES))
 print("ok studio_recipes scene chaining")
+
+# ── 두 사람 대사 컷 (11-24 메인 X1·X6): InfiniteTalk 두 화자 레시피 ──
+assert "talk_duo" in R.ACTIONS and "talk_duo" in R.PART_ACTIONS and "audio2" in R.SLOT_NAMES
+du = rs["wan21_infinitetalk_duo"]
+assert du["action"] == "talk_duo" and du["version"] == 1 and du["negative_source"] == "zero_out" and du["limits"]["max_run_seconds"] == 900
+assert set(du["inject"]) == {"prompt", "first_frame", "audio", "audio2", "seed", "frames", "width", "height", "save_prefix",
+                             "check_index", "last_index"}
+assert du["defaults"]["fps"] == 25 and set(du["outputs"]) == {"main", "check", "last"}
+assert "Apache-2.0" in du["source"]["license"] and "X1" in du["source"]["evidence"] and "X6" in du["source"]["evidence"]
+dp = du["prompt"]
+assert dp["400"]["class_type"] == "WanInfiniteTalkToVideo" and dp["400"]["inputs"]["mode"] == "two_speakers"
+assert (dp["400"]["inputs"]["width"], dp["400"]["inputs"]["height"]) == (848, 464)                 # 480p 모델 생성 크기는 고정
+assert du["fixed"]["gen_width"]["value"] == 848 and du["fixed"]["gen_height"]["value"] == 464
+# 좌우 반쪽 마스크: 마스크 1 = 왼쪽(x 0), 마스크 2 = 오른쪽(x 424)
+assert dp["400"]["inputs"]["mode.mask_1"] == ["33", 0] and dp["33"]["inputs"]["x"] == 0
+assert dp["400"]["inputs"]["mode.mask_2"] == ["34", 0] and dp["34"]["inputs"]["x"] == 424
+# 소리 자리: audio = 왼쪽 사람(20 → 화자 1), audio2 = 오른쪽 사람(21 → 화자 2)
+assert du["inject"]["audio"]["node"] == "20" and du["inject"]["audio2"]["node"] == "21"
+assert dp["22"]["inputs"]["audio"] == ["20", 0] and dp["400"]["inputs"]["audio_encoder_output_1"] == ["22", 0]
+assert dp["23"]["inputs"]["audio"] == ["21", 0] and dp["400"]["inputs"]["mode.audio_encoder_output_2"] == ["23", 0]
+# 출력 크기: 생성 뒤 ImageScale(lanczos, 가운데 자르기)로 영상 크기에 맞춘다. 검사·잇는 프레임은 키운 프레임에서
+assert du["inject"]["width"]["node"] == "95" and dp["95"]["class_type"] == "ImageScale" and dp["95"]["inputs"]["crop"] == "center"
+assert dp["900"]["inputs"]["image"] == ["95", 0] and dp["902"]["inputs"]["image"] == ["95", 0] and dp["91"]["inputs"]["fps"] == 25
+assert [s["suffix"] for s in du["inject"]["save_prefix"]] == ["talk", "check_frame", "last_frame"]
+dv = R.sample_values(du)
+assert dv["audio"] == dv["audio2"] == R.SAMPLE_AUDIO
+db = R.build(du, {**dv, "audio": "studio/bob/abcd/line_1.wav", "audio2": "studio/bob/abcd/silence.wav", "frames": 129,
+                  "width": 1280, "height": 704, "last_index": 98, "check_index": 64})
+assert db["20"]["inputs"]["audio"].endswith("line_1.wav") and db["21"]["inputs"]["audio"].endswith("silence.wav")
+assert db["400"]["inputs"]["length"] == 129 and (db["95"]["inputs"]["width"], db["95"]["inputs"]["height"]) == (1280, 704)
+assert db["902"]["inputs"]["batch_index"] == 98 and db["900"]["inputs"]["batch_index"] == 64 and not dangling(db)
+assert (db["400"]["inputs"]["width"], db["400"]["inputs"]["height"]) == (848, 464)
+for k, val in (("frames", 126), ("frames", 505), ("audio2", "../x.wav"), ("audio2", None)):      # 25fps 의 5초+1 = 126 은 4n+1 이 아니다
+    try:
+        R.build(du, {**dv, k: val})
+        raise AssertionError(f"{k}={val!r} 거부")
+    except R.RecipeError:
+        pass
+# 프레임 수: 초 × fps + 1 이상인 가장 작은 4n+1 (25fps 는 초 × 25 + 1 이 4n+1 이 아닐 때가 있다)
+assert [R.frames_for(du, s) for s in (4, 5, 6, 7, 20)] == [101, 129, 153, 177, 501]
+assert R.frames_for(du, 7.4) == 189 and all((R.frames_for(du, s) - 1) % 4 == 0 for s in range(3, 21))
+assert R.frames_for(rec, 5) == 81 and R.frames_for(tk, 4) == 97                    # 16fps·24fps 는 그대로 (LTX 대사는 프레임 자리가 없다)
+# 레시피 고르기: 'talk' 는 그대로 LTX 대사, 'talk_duo' 는 두 화자 (action 이 달라 id 정렬에 끼어들지 않는다)
+assert R.pick(rs, set(), "talk")["id"] == "ltx23_ia2v_talk" and R.pick(rs, set(), "talk", "high")["id"] == "ltx23_ia2v_talk"
+assert R.pick(rs, set(), "talk_duo")["id"] == "wan21_infinitetalk_duo" and R.pick(rs, {"wan21_infinitetalk_duo"}, "talk_duo") is None
+# V10: 모델 파일 찾기가 ModelPatchLoader.name(InfiniteTalk 패치)·오디오 인코더까지 본다
+from app import promptops  # noqa: E402
+names = {m["name"] for m in promptops.find_models(dp)}
+assert {"wan2.1_infiniteTalk_multi_fp16.safetensors", "wav2vec2-chinese-base_fp16.safetensors",
+        "Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors", "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors"} <= names
+# V6: 소리 자리가 바뀌어 이어지면(왼쪽 소리가 화자 2로) 거부, 자리가 빠지거나 LoadAudio 가 아니면 거부, 두 화자 모드가 아니면 거부
+x = copy.deepcopy(du); x["prompt"]["22"]["inputs"]["audio"] = ["21", 0]; x["prompt"]["23"]["inputs"]["audio"] = ["20", 0]
+assert "V6" in bad(R.check_recipe(x))
+x = copy.deepcopy(du); del x["inject"]["audio2"]
+assert "V6" in bad(R.check_recipe(x))
+x = copy.deepcopy(du); x["inject"]["audio2"]["node"] = "30"; x["inject"]["audio2"]["input"] = "image"
+assert "V6" in bad(R.check_recipe(x))
+x = copy.deepcopy(du); x["prompt"]["400"]["inputs"]["mode"] = "single_speaker"; del x["fixed"]["two_speakers"]
+assert "V6" in bad(R.check_recipe(x))
+x = copy.deepcopy(du); x["prompt"]["400"]["inputs"]["start_image"] = ["405", 0]                     # 첫 화면이 영상 노드에 안 닿음
+assert "V6" in bad(R.check_recipe(x))
+x = copy.deepcopy(du); del x["inject"]["first_frame"]
+assert "V6" in bad(R.check_recipe(x))
+x = copy.deepcopy(tk); x["inject"]["audio2"] = {"node": "276", "input": "audio", "type": "input_audio"}   # audio2 는 talk_duo 에서만
+assert "V6" in bad(R.check_recipe(x))
+
+
+def v6_msg(r):
+    return next((c["msg"] for c in R.check_recipe(r) if c["id"] == "V6"), "")
+
+
+# 검사 분기마다 그 분기만 걸리는 사례 (11-24 검토: 다른 오류가 함께 나서 분기를 지워도 V6 가 떴다). 오류 글까지 본다
+assert v6_msg(du) == ""
+x = copy.deepcopy(du); del x["prompt"]["400"]["inputs"]["start_image"]
+x["prompt"]["999"] = {"class_type": "WanImageToVideo", "inputs": {"start_image": ["30", 0]}}    # 첫 화면이 다른 노드의 start_image 에만
+m = v6_msg(x); assert "start_image" in m and "400" in m, m
+x = copy.deepcopy(du); x["prompt"]["23"]["inputs"]["audio"] = ["90", 0]          # 왼쪽 소리가 이어 붙인 소리를 거쳐 화자 2 에도 닿음
+m = v6_msg(x); assert "다른 화자 입력" in m, m
+x = copy.deepcopy(du); x["prompt"]["21"]["class_type"] = "VHS_LoadAudio"
+m = v6_msg(x); assert "inject.audio2 노드는 LoadAudio" in m, m
+x = copy.deepcopy(du); x["prompt"]["400b"] = copy.deepcopy(x["prompt"]["400"])
+m = v6_msg(x); assert "노드가 하나여야" in m, m
+# 감독의 전제(왼쪽 사람 = audio = 마스크 1, defaults.fps 로 계산한 프레임)가 레시피와 어긋나면 거부
+x = copy.deepcopy(du); x["prompt"]["400"]["inputs"]["mode.mask_1"], x["prompt"]["400"]["inputs"]["mode.mask_2"] = ["34", 0], ["33", 0]
+m = v6_msg(x); assert "mode.mask_1" in m and "왼쪽 반" in m and "mode.mask_2" in m, m
+x = copy.deepcopy(du); x["prompt"]["35"]["inputs"]["width"] = 300                # 오른쪽 조각이 반이 아님
+m = v6_msg(x); assert "조각(SolidMask)" in m and "424" in m, m
+x = copy.deepcopy(du); x["prompt"]["91"]["inputs"]["fps"] = 16
+m = v6_msg(x); assert "CreateVideo 91 fps(16)" in m and "defaults.fps(25)" in m, m
+x = copy.deepcopy(du); del x["inject"]["frames"]["step"]
+m = v6_msg(x); assert "step 4·offset 1" in m, m
+x = copy.deepcopy(du); x["inject"]["frames"] = {"node": "95", "input": "width", "type": "int", "min": 256, "max": 1536, "step": 4, "offset": 1}
+m = v6_msg(x); assert "inject.frames" in m and "length" in m, m
+x = copy.deepcopy(du); x["prompt"]["779"] = {"class_type": "LoadAudio", "inputs": {"audio": "example.wav"}}
+assert "V9" in bad(R.check_recipe(x))
+x = copy.deepcopy(du); x["prompt"]["400"]["inputs"]["width"] = 832                                   # 고정한 생성 크기와 다름
+assert "V2" in bad(R.check_recipe(x))
+# V11: 점이 든 입력 이름(mode.audio_encoder_output_2·mode.mask_1)은 첫 마디(mode)가 노드 입력에 있으면 통과
+info = {ct: {"input": {"required": {k.split(".")[0]: None for n in dp.values() if n["class_type"] == ct for k in n["inputs"]}}}
+        for ct in {n["class_type"] for n in dp.values()}}
+errs, warns = R.check_object_info(dp, info)
+assert errs == [] and warns == [], (errs, warns)
+info["WanInfiniteTalkToVideo"]["input"]["required"].pop("mode")
+errs, _w = R.check_object_info(dp, info)
+assert any("mode.audio_encoder_output_2" in e for e in errs) and any("mode.mask_1" in e for e in errs)
+print("ok studio_recipes duo talk")
 print("ok studio_recipes")

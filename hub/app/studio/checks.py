@@ -5,7 +5,7 @@
 (한 장 9~19초). 사용자: 입 모양은 중요하지 않고 물리적인 오류·편집 오류·화풍 고정만 본다.
 
 사람 수 기준 (11-20 검토에서 고침):
-- 한 사람 그림(인물 기준 그림·기준 그림을 고친 첫 화면·입 맞춤 클립)은 정확히 1명.
+- 한 사람 그림(인물 기준 그림·기준 그림을 고친 첫 화면·입 맞춤 클립)은 정확히 1명. 두 사람 대사 컷(11-24)의 클립은 정확히 2명.
 - 긴 영상의 장면 그림은 설정집 인물(되풀이해 나오는 사람)만 알아서, 한 장면에만 나오는 행인·상인·군중이 빠져 있다. 그래서 가까운
   장면만 정확히, 미디엄은 빠진·겹친 사람만, 넓은 장면은 세지 않는다. 동물 인물이 있으면 사람 수와 팔다리 수를 보지 않는다
   (동물을 사람으로 셀지 정해져 있지 않고, 다리 넷이 '팔다리 더함'으로 잡힌다).
@@ -24,6 +24,8 @@ ANIMAL_SKIP = frozenset({"extra_limb", "floating_limb", "missing_head"})
 # 가슴 아래가 잘린 클로즈업의 '팔다리 떠 있음'은 오탐이다 (11-24 메인: 베스 클로즈업 첫 화면을 다섯 번 다시 그렸다). 입 맞춤 클립도 같다
 CLOSE_SKIP = frozenset({"floating_limb"})
 TALK_SKIP = frozenset({"face"}) | CLOSE_SKIP
+# 두 사람 대사 컷(미디엄 투샷, 11-24): 얼굴 이상은 입 맞춤과 같이 보지 않고, 클로즈업 오탐 예외(CLOSE_SKIP)는 해당 없다 (허리까지 보인다)
+DUO_TALK_SKIP = frozenset({"face"})
 # 장면 글에 이런 말이 있으면 설정집 인물 말고도 사람이 나오는 장면이다 (행인·상인·군중)
 EXTRAS_RE = re.compile(
     r"\b(?:crowds?|people|passers?-?by|pedestrians?|shoppers?|customers?|vendors?|merchants?|villagers?|townsfolk|students?|"
@@ -46,7 +48,7 @@ CROWD_COUNT = 3           # 첫 화면의 사람이 이보다 많으면 클립�
 
 
 def style_trait(style: str) -> str:
-    """검사 모델에게 볼 화풍 한 줄 (사실적이지 않은 화풍만 준다: 사진 화풍은 따로 보지 않는다)"""
+    """검사 모델에게 볼 화풍 한 줄 (사실적이지 않은 화풍만 준다. 실사 영화는 감독이 style_negative('photo') 를 따로 넣는다, 11-24)"""
     style = str(style or "").strip().rstrip(".")
     return f"The whole picture is in this art style: {style}" if style else ""
 
@@ -111,9 +113,13 @@ def scene_rule(humans: int, animals: int, rank: int | None, extras: bool) -> dic
     return rule(None)                      # 넓은 장면: 작게 그려진 사람·행인 때문에 세지 않는다 (몸의 이상·화풍만 본다)
 
 
-def clip_rule(first_people: int | None, animals: int, talk: bool = False) -> dict:
+def clip_rule(first_people: int | None, animals: int, talk: bool = False, duo: bool = False, crowd: bool = False) -> dict:
     """클립 가운데 프레임의 기준. first_people 은 그 클립의 첫 화면에서 센 사람 수 (모르면 None).
-    입 맞춤 클립은 한 사람이 그대로 있어야 한다 (첫 화면이 이미 한 사람으로 검사됐다)"""
+    입 맞춤 클립은 한 사람이 그대로 있어야 한다 (첫 화면이 이미 한 사람으로 검사됐다).
+    두 사람 대사 컷(talk·duo)은 두 사람 아래로는 안 된다: 듣는 사람이 사라져도 다시 만든다 (fewer_ok 거짓, 11-24).
+    crowd 는 장면 글에 무리 말이 있을 때: 첫 화면 기준(compose_rule)처럼 더 많아도 된다 (배경 행인이 첫 화면부터 있어 다시 만들어도 같다)"""
+    if talk and duo:
+        return rule(2, more_ok=crowd, skip=DUO_TALK_SKIP | (ANIMAL_SKIP if animals else frozenset()))
     skip = (ANIMAL_SKIP if animals else frozenset()) | (TALK_SKIP if talk else frozenset())
     if talk and not animals:
         if isinstance(first_people, int) and not isinstance(first_people, bool) and 1 < first_people <= CROWD_COUNT:

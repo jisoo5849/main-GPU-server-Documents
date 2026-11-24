@@ -16,17 +16,23 @@ ACTIONS = {"image", "i2v", "t2v", "edit", "music",       # music: 긴 영상의 
            "voice", "voice_clone", "talk",               # 대사 영상(11-19): 목소리 설계·목소리 복제(Qwen3-TTS), 대사 소리로 입 맞춤(LTX-2.3 IA2V)
            "scene_image",                                # 대사 영상의 장면 그림 (Qwen-Image 2512, 인물 라이브러리의 반실사 회화체와 같은 계열)
            "edit_ref", "i2v_end",                        # 장면 잇기(11-20, docs/scene-chaining-design.md): 그림 여러 장 편집, 끝 키프레임 가이드가 붙은 긴 영상 클립
-           "compose_ref"}                                # 기준 그림으로 새로 그리기(11-20): 같은 편집 모델, 출력 크기는 빈 잠재의 width·height (앞 프레임은 그림에 넣지 않는다)
+           "compose_ref",                                # 기준 그림으로 새로 그리기(11-20): 같은 편집 모델, 출력 크기는 빈 잠재의 width·height (앞 프레임은 그림에 넣지 않는다)
+           "talk_duo"}                                   # 두 사람 대사 컷(11-24): InfiniteTalk 두 화자. 소리 자리 둘(왼쪽 audio·오른쪽 audio2), 말하지 않는 쪽은 무음
 # 그림 여러 장을 글 노드 image1~3 에 넣는 레시피. edit_ref 는 그림 1을 고치고, compose_ref 는 그림 1~3을 기준으로 새로 그린다
 REF_ACTIONS = {"edit_ref", "compose_ref"}
 # 대사 영상의 부품: 화질·엔진을 따지지 않고 action 마다 하나를 고른다 (음악과 같다)
-PART_ACTIONS = {"music", "voice", "voice_clone", "talk", "scene_image"}
+PART_ACTIONS = {"music", "voice", "voice_clone", "talk", "scene_image", "talk_duo"}
 # 글이 영상·이미지 모델의 positive 로 가지 않는 레시피(목소리)는 부정 자리도 없다: negative_source "none"
 NO_NEGATIVE_ACTIONS = {"voice", "voice_clone"}
 SLOT_TYPES = {"string", "int", "float", "bool", "input_image", "input_audio", "prefix"}
 SLOT_NAMES = {"prompt", "first_frame", "edit_image", "seed", "frames", "seconds", "width", "height", "check_index", "save_prefix",
               "duration", "bpm", "keyscale", "audio", "voice_instruct", "max_tokens", "ref_text", "x_vector",
-              "ref_image", "ref_image2", "end_frame", "last_index"}
+              "ref_image", "ref_image2", "end_frame", "last_index", "audio2"}
+AUDIO_SLOT_NAMES = ("audio", "audio2")
+# 두 사람 대사 레시피(talk_duo)의 영상 노드: 소리 자리마다 닿아야 하는 입력 (왼쪽 사람 = audio → 1, 오른쪽 사람 = audio2 → 2).
+# 노드는 두 소리를 '왼쪽 먼저, 오른쪽 다음'으로 이어 붙인다 (11-24 메인 X6·X9). 바뀌어 이어지면 엉뚱한 사람의 입이 움직인다
+DUO_NODE = "WanInfiniteTalkToVideo"
+DUO_AUDIO_INPUTS = {"audio": "audio_encoder_output_1", "audio2": "mode.audio_encoder_output_2"}
 # 값이 없으면 그래프에서 빼도 되는(optional) 이미지 자리는 참고 그림뿐이다. 첫 화면·편집 대상·끝 프레임이 빠지면 그래프가 깨진다
 OPTIONAL_OK_SLOTS = {"ref_image", "ref_image2"}
 IMAGE_SLOT_NAMES = ("first_frame", "edit_image", "ref_image", "ref_image2", "end_frame")
@@ -223,6 +229,61 @@ def _slot_ok(prompt: dict, slot, where: str, errs: list):
         errs.append(f"{where}: optional 은 input_image 자리에만 쓸 수 있습니다")
 
 
+def _duo_problems(recipe: dict, prompt: dict) -> list[str]:
+    """V6 의 두 사람 대사 레시피(talk_duo) 검사: 영상 노드 하나(두 화자 모드), 첫 화면이 그 노드의 start_image 에,
+    소리 자리 둘이 정해진 화자 입력에 (왼쪽 audio → audio_encoder_output_1, 오른쪽 audio2 → mode.audio_encoder_output_2, 바뀌지 않게).
+    감독은 '왼쪽 사람 = audio = 마스크 1' 과 'defaults.fps 로 계산한 frames·last_index' 를 전제로 하므로(11-24 검토) 마스크 1·2 가
+    생성 화면의 왼쪽 반·오른쪽 반인지, frames 자리가 그 노드의 length(4n+1)인지, CreateVideo fps 가 defaults.fps 인지도 본다"""
+    e = []
+    nodes = [nid for nid, n in prompt.items() if n.get("class_type") == DUO_NODE]
+    if len(nodes) != 1:
+        return [f"talk_duo 레시피는 {DUO_NODE} 노드가 하나여야 합니다 (지금 {len(nodes)}개)"]
+    nid = nodes[0]
+    ins = prompt[nid].get("inputs") or {}
+    if ins.get("mode") != "two_speakers":
+        e.append(f"talk_duo 레시피의 {DUO_NODE} 는 mode 가 two_speakers 여야 합니다")
+    # 마스크: 1 = 왼쪽 반(MaskComposite x 0), 2 = 오른쪽 반(x = 생성 너비의 반). 바뀌면 대사가 듣는 사람의 입을 움직인다
+    width = ins.get("width")
+    half = width // 2 if isinstance(width, int) and not isinstance(width, bool) and width > 0 else None
+    if half is None:
+        e.append(f"talk_duo 레시피의 {DUO_NODE} {nid} 의 width 는 숫자(생성 너비)여야 합니다")
+    for key, side, want_x in (("mode.mask_1", "왼쪽", 0), ("mode.mask_2", "오른쪽", half)):
+        src = ins.get(key)
+        comp = prompt.get(str(src[0]), {}) if is_link(src) else {}
+        cin = comp.get("inputs") or {}
+        if comp.get("class_type") != "MaskComposite" or want_x is None or cin.get("x") != want_x:
+            e.append(f"{DUO_NODE} {nid} 의 {key} 는 생성 화면의 {side} 반(MaskComposite x={want_x})이어야 합니다")
+            continue
+        piece = prompt.get(str(cin["source"][0]), {}) if is_link(cin.get("source")) else {}
+        if piece.get("class_type") == "SolidMask" and half is not None and (piece.get("inputs") or {}).get("width") != half:
+            e.append(f"{DUO_NODE} {nid} 의 {key} 조각(SolidMask)의 너비가 생성 너비의 반({half})이 아닙니다")
+    # 프레임 수: frames 자리 = 이 노드의 length, 4n+1 (감독이 recipes.frames_for 로 올림한다)
+    fr = slots_of(recipe, "frames")
+    f0 = fr[0] if len(fr) == 1 and isinstance(fr[0], dict) else {}
+    if not (str(f0.get("node")) == nid and f0.get("input") == "length" and f0.get("step") == 4 and f0.get("offset") == 1):
+        e.append(f"talk_duo 레시피의 inject.frames 는 {DUO_NODE} {nid} 의 length 에 step 4·offset 1 (4n+1) 이어야 합니다")
+    # fps: 감독은 defaults.fps 로 프레임 수·잇는 프레임 번호를 계산한다. 영상 노드의 fps 가 다르면 길이·자르는 지점이 어긋난다
+    fps = (recipe.get("defaults") or {}).get("fps")
+    for cid, n in prompt.items():
+        if n.get("class_type") == "CreateVideo" and (n.get("inputs") or {}).get("fps") != fps:
+            e.append(f"talk_duo 레시피의 CreateVideo {cid} fps({(n.get('inputs') or {}).get('fps')})가 defaults.fps({fps})와 다릅니다")
+    for s in slots_of(recipe, "first_frame"):
+        if prompt.get(str(s.get("node")), {}).get("class_type") == "LoadImage" and not _reaches_at(prompt, str(s["node"]), nid, "start_image"):
+            e.append(f"inject.first_frame 의 이미지가 {DUO_NODE} {nid} 의 start_image 에 닿지 않습니다")
+    for name, inp in DUO_AUDIO_INPUTS.items():
+        sl = slots_of(recipe, name)
+        if not sl:
+            e.append(f"talk_duo 레시피는 inject.{name} 이 필요합니다")
+        other = [x for k, x in DUO_AUDIO_INPUTS.items() if k != name][0]
+        for s in sl:
+            node = str(s.get("node"))
+            if not _reaches_at(prompt, node, nid, inp):
+                e.append(f"inject.{name} 의 소리가 {DUO_NODE} {nid} 의 {inp} 에 닿지 않습니다")
+            if _reaches_at(prompt, node, nid, other):
+                e.append(f"inject.{name} 의 소리가 다른 화자 입력 {other} 에도 닿습니다 (왼쪽·오른쪽이 바뀝니다)")
+    return e
+
+
 def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
     """V1·V2·V4·V5·V6·V7·V8·V13. [{"id": "V1", "ok": bool, "level": "error"|"warn", "msg": str}]"""
     res = []
@@ -367,8 +428,12 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
                 for dim in ("width", "height"):
                     if not any(str(x.get("node")) == str(lat[0]) and x.get("input") == dim for x in slots_of(recipe, dim)):
                         e.append(f"compose_ref 레시피는 빈 잠재 {lat[0]} 의 {dim} 이 inject.{dim} 이어야 합니다")
-    if action in ("i2v", "i2v_end", "talk") and not slots_of(recipe, "first_frame"):
+    if action in ("i2v", "i2v_end", "talk", "talk_duo") and not slots_of(recipe, "first_frame"):
         e.append(f"{action} 레시피는 inject.first_frame 이 필요합니다")
+    if action == "talk_duo":
+        e += _duo_problems(recipe, prompt)
+    elif slots_of(recipe, "audio2"):
+        e.append("inject.audio2 는 talk_duo 레시피에서만 쓸 수 있습니다")
     # 참고 그림(edit_ref·compose_ref): ref_image → image2, ref_image2 → image3, 글 노드 모두에
     for name, inp in (("ref_image", "image2"), ("ref_image2", "image3")):
         if slots_of(recipe, name) and action not in REF_ACTIONS:
@@ -407,9 +472,10 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
         for s in slots_of(recipe, name):
             if isinstance(s, dict) and s.get("optional") and name not in OPTIONAL_OK_SLOTS:
                 e.append(f"inject.{name} 은 optional 일 수 없습니다 (참고 그림만 비울 수 있습니다)")
-    for s in slots_of(recipe, "audio"):
-        if prompt.get(str(s.get("node")), {}).get("class_type") != "LoadAudio":
-            e.append("inject.audio 노드는 LoadAudio 여야 합니다")
+    for name in AUDIO_SLOT_NAMES:
+        for s in slots_of(recipe, name):
+            if prompt.get(str(s.get("node")), {}).get("class_type") != "LoadAudio":
+                e.append(f"inject.{name} 노드는 LoadAudio 여야 합니다")
     if action in ("talk", "voice_clone") and not slots_of(recipe, "audio"):
         e.append(f"{action} 레시피는 inject.audio 가 필요합니다")
     if action in ("edit", "edit_ref", "compose_ref") and not slots_of(recipe, "edit_image"):
@@ -444,7 +510,7 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
 
     # V9 금지 노드 (파일만 보고)
     e = []
-    loads = {str(s["node"]) for name in ("first_frame", "edit_image", "audio", "ref_image", "ref_image2", "end_frame")
+    loads = {str(s["node"]) for name in ("first_frame", "edit_image", "audio", "audio2", "ref_image", "ref_image2", "end_frame")
              for s in slots_of(recipe, name)}
     for nid, n in prompt.items():
         ct = str(n.get("class_type", ""))
@@ -562,6 +628,18 @@ def build(recipe: dict, values: dict, input_dir: str | None = None) -> dict:
     return prompt
 
 
+def frames_for(recipe: dict, seconds: float) -> int:
+    """seconds 초를 담는 프레임 수 (defaults.fps). frames 자리에 단위(step·offset, Wan 은 4n+1)가 있으면 그 단위로 올림한다.
+    fps 16·24 는 초 × fps + 1 이 늘 4n+1 이지만 25fps(InfiniteTalk, 11-24)는 아닐 때가 있어 그대로 넣으면 build 가 거부한다"""
+    fps = int((recipe.get("defaults") or {}).get("fps") or 24)
+    n = int(math.ceil(float(seconds) * fps - 1e-6)) + 1
+    slot = (recipe.get("inject") or {}).get("frames")
+    if isinstance(slot, dict) and slot.get("step"):
+        step, off = int(slot["step"]), int(slot.get("offset") or 0)
+        n += (-(n - off)) % step
+    return n
+
+
 def size_for(w0: int, h0: int, area: int = 640 * 640, step: int = 16, max_side: int = 1024) -> tuple[int, int]:
     """사진 비율을 지키며 면적이 area 에 가깝고 step 의 배수인 (너비, 높이)"""
     ar = min(max(w0 / h0, 0.25), 4.0)
@@ -605,7 +683,7 @@ def sample_values(recipe: dict, frames: int | None = None) -> dict:
             "first_frame": SAMPLE_IMAGE, "edit_image": SAMPLE_IMAGE, "ref_image": SAMPLE_IMAGE, "ref_image2": SAMPLE_IMAGE,
             "end_frame": SAMPLE_IMAGE, "last_index": max(0, min(f * 3 // 4, 480)),
             "seconds": max(2, min(int(round(max(f - 1, 1) / int(d.get("fps") or 24))), 20)),
-            "bpm": 90, "keyscale": "C major", "audio": SAMPLE_AUDIO, "voice_instruct": "A calm adult voice.",
+            "bpm": 90, "keyscale": "C major", "audio": SAMPLE_AUDIO, "audio2": SAMPLE_AUDIO, "voice_instruct": "A calm adult voice.",
             "max_tokens": 512, "ref_text": "안녕하세요.", "x_vector": False}
     vals["save_prefix"] = [f"_check/00000000/{s['suffix']}" for s in slots_of(recipe, "save_prefix")]
     if "duration" in inj:      # 음악 길이는 자리가 둘(빈 잠재·글 인코더)이라 자리마다 같은 값

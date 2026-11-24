@@ -670,7 +670,7 @@ async def t_all_shipped_recipes_pass_checks_and_build():
         assert recipes.recipe_ok(rep), (rid, [x for x in rep if not x["ok"]])
         p = recipes.build(r, recipes.sample_values(r))
         assert D.negative_problem(r, p) is None, (rid, D.negative_problem(r, p))
-    assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music", "voice", "voice_clone", "talk", "scene_image", "edit_ref", "i2v_end", "compose_ref"}
+    assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music", "voice", "voice_clone", "talk", "scene_image", "edit_ref", "i2v_end", "compose_ref", "talk_duo"}
     # 4스텝 LoRA 는 레시피가 켠 채로 고정한다
     assert rs["wan22_t2v_14b_fast"]["prompt"]["128:129"]["inputs"]["value"] is True
     assert rs["qwen_image_edit"]["prompt"]["170:168"]["inputs"]["value"] is True
@@ -682,6 +682,8 @@ async def t_all_shipped_recipes_pass_checks_and_build():
     assert {a: d.recipe_for(a)["id"] for a in ("i2v", "t2v", "image", "edit")} == {
         "i2v": "wan22_i2v_14b_fast", "t2v": "wan22_t2v_14b_fast", "image": "zimage_turbo_t2i", "edit": "qwen_image_edit"}
     assert d.recipe_for("scene_image")["id"] == "qwen_image_2512_scene"
+    # 두 사람 대사 레시피는 따로 고른다: 혼자 대사 컷('talk')은 그대로 LTX
+    assert d.recipe_for("talk")["id"] == "ltx23_ia2v_talk" and d.recipe_for("talk_duo")["id"] == "wan21_infinitetalk_duo"
 
 
 async def t_new_seed_with_new_seconds_rewrites_prompt():
@@ -1876,10 +1878,30 @@ async def t_long_progress_shows_scene_and_step_next_to_the_percent():
     assert p["pct"] is None and p["band"] is None and p["text"] == "구성안 쓰는 중"     # % 없는 단계는 글만
 
 
-def t_scene_hint_follows_the_story_style():
+async def t_scene_hint_follows_the_story_style():
+    # (11-24: 예전에는 async 가 아니라 main 이 돌리지 않던 시험)
     assert D.Director.scene_hint({"bible": {}}) == D.Director.SCENE_HINT                 # 사진(기본)
     h = D.Director.scene_hint({"bible": {"style": "cel-shaded 3D with hand-drawn outlines"}})
     assert "cel-shaded 3D" in h and "Not a photograph" in h and "one still frame" in h
+    assert D.Director.scene_hint({"bible": {"style": "photorealistic cinematic live action"}}) == D.Director.SCENE_HINT
+    # 실사 판정은 화풍 열쇠와 같은 함수: 'semi-photorealistic' 은 반실사 (예전에는 여기서만 실사로 읽혔다)
+    assert "semi-photorealistic digital painting" in D.Director.scene_hint({"bible": {"style": "semi-photorealistic digital painting"}})
+
+
+async def t_scene_image_style_head_follows_the_recipe_and_the_style():
+    """11-24 화풍 일반화 S4: 장소·장면·인물 그림 앞머리. Qwen 2512 는 화풍 원문이 있으면 실사여도(반실사 회화체 성향이라 실사 영화의
+    장소 그림이 그림처럼 나올 수 있다), Z-Image 는 사실적이지 않은 화풍일 때만 붙인다. 편집 글에는 붙이지 않는다"""
+    sp = D.Director._scene_image_prompt
+    photo = {"bible": {"style": "photorealistic cinematic live action"}}
+    anime = {"bible": {"style": "2D anime film, clean cel-shaded line art."}}
+    assert sp(SCENE, photo, "IMG text") == "Photorealistic cinematic live action. IMG text"
+    assert sp(SCENE, anime, "IMG text") == "2D anime film, clean cel-shaded line art. IMG text"
+    assert sp(IMG, anime, "IMG text") == "2D anime film, clean cel-shaded line art. IMG text"
+    assert sp(IMG, photo, "IMG text") == "IMG text"                                      # 실사는 Z-Image 의 기본 그림
+    assert sp(SCENE, {"bible": {"style": ""}}, "IMG text") == "IMG text" and sp(IMG, {"bible": {}}, "IMG text") == "IMG text"
+    assert sp(EDITR, anime, "edit text") == "edit text"
+    already = "Photorealistic cinematic live action. IMG text"
+    assert sp(SCENE, photo, already) == already                                          # 이미 그 문장으로 시작하면 그대로
 
 
 async def t_long_video_empty_chained_frame_falls_back_to_a_scene_image():
@@ -2326,7 +2348,8 @@ async def t_dialogue_library_characters_use_their_reference_pictures_and_voice_f
             assert D.Director._scene_image_prompt(SCENE, {"bible": {"style": "x y z"}}, "IMG text").startswith("X y z. IMG")
             head = scene.split(". IMG")[0] + ". "
             assert D.Director._scene_image_prompt(SCENE, {"bible": {"style": head[:-2]}}, head + "IMG text") == head + "IMG text"   # 이미 그 문장으로 시작하면 그대로
-            assert D.Director._scene_image_prompt(IMG, {"bible": {"style": "x y z"}}, "IMG text") == "IMG text"                    # Z-Image 글은 그대로
+            # 11-24: Z-Image 글도 사실적이지 않은 화풍이면 앞머리를 붙인다 (예전에는 그대로 두었다. 실사는 t_scene_image_style_head_* 에서)
+            assert D.Director._scene_image_prompt(IMG, {"bible": {"style": "x y z"}}, "IMG text") == "X y z. IMG text"
             staged = [c[1] for c in deps.calls if c[0] == "stage_image"]
             assert "studio/_cast/niki.png" in staged and "studio/_cast/putor.png" in staged
             assert {c: t["work"]["casts"][c]["rel"] for c in ("A", "B")} == {"A": "studio/_cast/niki.png", "B": "studio/_cast/putor.png"}
@@ -2969,8 +2992,134 @@ async def t_chain_style_convert_makes_the_film_style_reference_once():
             assert edits and all("2D anime feature film" in " ".join(n["inputs"].get("prompt", "") for n in c[1]["prompt"].values()
                                                                       if isinstance(n["inputs"].get("prompt"), str)) for c in edits)
             assert all(t["work"]["casts"][c["id"]].get("converted") == "anime" for c in story["bible"]["characters"])
+            assert all(e["recipe"] == EDITR["id"] for e in conv)                       # 애니는 빠른 편집 그대로
         finally:
             settings.results_dir, settings.envs_dir, settings.studio_chain = old
+
+
+async def t_photo_film_converts_references_with_the_quality_edit_and_checks_them():
+    """11-24 화풍 일반화 S5·S6: 실사 영화는 반실사 기준 그림을 가속을 끈 편집(높음 판)으로 바꾸고(11-20 S6: Lightning 실사 변환은 그림 느낌이
+    남았다), 변환 그림은 알아볼 소품과 실사의 '아닌 것' 문장으로 늘 검사한다. 장면 클립·입 맞춤 클립 가운데 프레임도 실사 문장으로 본다
+    (예전에는 실사면 story_style 이 빈 글이라 화풍을 보지 않았다)"""
+    from app.studio import checks
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_picture_check)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir, settings.studio_chain = os.path.join(root, "results"), os.path.join(root, "envs"), True
+        settings.studio_picture_check = True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = chain_deps(fs, settings.results_dir, DialogueDeps)
+            deps.recs[HQ_EDIT["id"]] = HQ_EDIT
+            deps.inspect_result = dict(PASS)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            story = library_story(settings.results_dir)
+            story["bible"]["style"] = "photorealistic cinematic live action"
+            for c in story["bible"]["characters"]:
+                rel = f"studio/_cast/{c['id']}_semi.png"
+                os.makedirs(os.path.dirname(os.path.join(settings.results_dir, rel)), exist_ok=True)
+                with open(os.path.join(settings.results_dir, rel), "wb") as f:
+                    f.write(b"png")
+                c["refs"] = {"semi": rel}
+            story["bible"]["characters"][0]["signature"] = ["wine-red round-brimmed hat", "two long black braids"]
+            # 예상 시간: 실사 변환 두 장은 높음 판 추정식(빠른 편집이면 고쳐 잇기 편집 한 장만큼)
+            d2 = D.Director(deps, {k: v for k, v in deps.recs.items() if k != HQ_EDIT["id"]})
+            ctx = D.Ctx(t, USER, ENV, LTX)
+            ctx.long = {}
+            e_hq, e_fast = await d.estimate_long(ctx, copy.deepcopy(story)), await d2.estimate_long(ctx, copy.deepcopy(story))
+            assert e_hq - e_fast == 2 * (HQ_EDIT["estimate"]["gpu_seconds"] - D.CHAIN_EDIT_SECONDS), (e_hq, e_fast)
+            assert d._convert_recipe("anime")["id"] == EDITR["id"] and d._convert_recipe("photo")["id"] == HQ_EDIT["id"]
+            assert d2._convert_recipe("photo")["id"] == EDITR["id"]                    # 높음 판이 없으면 지금처럼 빠른 편집
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            conv = [e[1] for e in fs.events if e[0] == "cast_style_convert"]
+            assert len(conv) == 2 and all(e["style"] == "photo" and e["recipe"] == HQ_EDIT["id"] for e in conv), conv
+            rids = [recipe_of(c) for c in deps.calls if c[0] == "submit"]
+            assert rids.count(HQ_EDIT["id"]) == 2 and EDITR["id"] not in rids, rids
+            assert all(t["work"]["casts"][c["id"]].get("converted") == "photo" for c in story["bible"]["characters"])
+            neg = checks.style_negative("photo")
+            chars = {c["id"]: c for c in story["bible"]["characters"]}
+            ins = [c[1][3] for c in deps.calls if c[0] == "inspect"]
+            # 변환 그림 검사: 알아볼 소품(없으면 외형 앞부분) + 실사의 '아닌 것' 문장
+            assert [checks.sign_trait(chars["A"]["look"], chars["A"]["signature"]), neg] in ins, ins[:4]
+            assert [checks.cast_trait(chars["B"]["look"]), neg] in ins, ins[:4]
+            conv_checks = [e[1] for e in fs.events if e[0] == "picture_check" and e[1].get("what") == "convert"]
+            assert len(conv_checks) == 2 and all(e["why"] == [] and len(e["cast"]) == 1 for e in conv_checks), conv_checks
+            # 장면 클립(check_)·입 맞춤 클립(talkcheck_)의 가운데 프레임 검사도 실사 문장
+            by_file = {c[1][2]: c[1][3] for c in deps.calls if c[0] == "inspect"}
+            clip = [x for f, x in by_file.items() if f.startswith(("check_", "talkcheck_"))]
+            assert len(clip) == 4 and all(x == [neg] for x in clip), by_file
+        finally:
+            settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_picture_check = old
+
+
+async def t_photo_film_scene_images_and_clips_are_checked_for_the_photo_look():
+    """11-24 S5: 장면 잇기가 꺼진 실사 영화도 장면 그림·클립 가운데 프레임을 실사의 '아닌 것' 문장으로 본다.
+    Z-Image 장면 그림에는 실사 앞머리를 붙이지 않는다 (실사가 Z-Image 의 기본 그림)"""
+    from app.studio import checks
+    old = (settings.results_dir, settings.studio_chain, settings.studio_picture_check)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.studio_chain, settings.studio_picture_check = root, False, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = LongDeps(fs, root)
+            deps.inspect_result = dict(PASS)
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            story = copy.deepcopy(LONG_STORY)
+            story["bible"]["style"] = "photorealistic cinematic live action"
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 25)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            neg = checks.style_negative("photo")
+            by_file = {c[1][2]: c[1][3] for c in deps.calls if c[0] == "inspect"}
+            imgs = [x for f, x in by_file.items() if f.startswith("img_")]
+            clips = [x for f, x in by_file.items() if f.startswith("check_")]
+            assert len(imgs) == 2 and len(clips) == 3 and all(x == [neg] for x in imgs + clips), by_file
+            slot = IMG["inject"]["prompt"]
+            scene = [c[1]["prompt"][slot["node"]]["inputs"][slot["input"]] for c in deps.calls
+                     if c[0] == "submit" and recipe_of(c) == IMG["id"]]
+            assert len(scene) == 2 and all(x.startswith("IMG ") for x in scene), scene
+            # 실사가 아니면 '아닌 것' 문장을 더하지 않는다 (사실적이지 않은 화풍은 style_trait 가 원문으로 본다). 이미 있으면 한 번
+            assert D.Director._style_extra({"bible": {"style": "2D anime film"}}) == [] and D.Director._style_extra({"bible": {}}) == []
+            assert D.Director._style_extra({"bible": {"style": "photo-real film"}}, ["x", ""]) == ["x", neg]
+            assert D.Director._style_extra({"bible": {"style": "live action"}}, [neg]) == [neg]
+        finally:
+            settings.results_dir, settings.studio_chain, settings.studio_picture_check = old
+
+
+async def t_photo_film_place_card_and_portrait_get_the_style_head_and_the_photo_check():
+    """11-24 S4·S5: Qwen 2512 로 그리는 장소 그림·인물 기준 그림은 실사 영화여도 화풍 앞머리를 붙이고(반실사 회화체 성향),
+    장소 그림 검사도 실사의 '아닌 것' 문장으로 본다"""
+    from app.studio import checks
+    old = (settings.results_dir, settings.studio_chain, settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.studio_chain = root, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = compose_deps(fs, root)
+            deps.recs[SCENE["id"]] = SCENE
+            story = copy.deepcopy(LONG_STORY)
+            story["bible"]["style"] = "photorealistic cinematic live action"
+            story["bible"]["characters"][0]["library"] = "guest"        # 라이브러리 인물이 나오는 영화: 장면·장소·인물 그림은 Qwen 2512
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 25)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            tags = tags_of(deps, t)
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            by = {tags[k]: subs[k] for k in range(len(subs))}
+            slot = SCENE["inject"]["prompt"]
+            text = lambda c: c[1]["prompt"][slot["node"]]["inputs"][slot["input"]]
+            assert recipe_of(by["P01"]) == SCENE["id"] and text(by["P01"]).startswith("Photorealistic cinematic live action. An empty establishing")
+            assert recipe_of(by["C01"]) == SCENE["id"] and text(by["C01"]).startswith("Photorealistic cinematic live action. Character reference")
+            neg = checks.style_negative("photo")
+            name = os.path.basename(t["work"]["places"]["P1"]["rel"])
+            assert [c[1][3] for c in deps.calls if c[0] == "inspect" and c[1][2] == name] == [[neg]]
+        finally:
+            settings.results_dir, settings.studio_chain, settings.studio_ref_layout = old
 
 
 # ── 기준 그림으로 새로 그리기 (11-20 사용자 승인: 컷마다 앞 프레임을 고치지 않고 기준 그림에서 새로 그린다) ──
@@ -3424,6 +3573,462 @@ async def t_layout_close_up_does_not_redraw_for_a_floating_limb_false_positive()
             assert not retry, retry          # (장면 0 의 두 사람 장면은 가짜 검사기가 1명으로 답해 다시 그리지만 이 시험과 상관없다)
         finally:
             settings.results_dir, settings.envs_dir, settings.studio_chain = old
+
+
+# ── 두 사람 대사 컷 (11-24 메인 X1·X6): 듣는 상대가 같은 장소면 투샷 + InfiniteTalk 두 화자, 말하지 않는 자리에 무음 ──
+DUO = recipes.load_all()["wan21_infinitetalk_duo"]
+
+
+def duo_story(on: bool = True):
+    """베스(A)가 제임스(B)에게 말하고(투샷), 제임스가 같은 투샷에서 이어 답하고, 베스가 혼잣말(클로즈업)을 한다"""
+    from app import video
+    raw = {
+        "title_ko": "생일 아침", "logline_ko": "베스와 제임스가 니키의 생일을 이야기한다.",
+        "bible": {"characters": [
+            {"id": "A", "look": "a calm neat woman around forty in a cream blouse and an apron", "name_ko": "베스",
+             "voice": "A warm Korean woman around forty, gentle.", "voice_ko": "따뜻한 엄마"},
+            {"id": "B", "look": "a tall lean man in his early forties in a blue cardigan", "name_ko": "제임스",
+             "voice": "A calm Korean man in his forties, low and friendly.", "voice_ko": "차분한 아빠"}],
+            "places": [{"id": "P1", "look": "a sunny cottage kitchen with a wooden table"}], "time": "morning", "light": "warm window light",
+            "style": "semi-realistic painterly 2.5D film look"},
+        "music": {"tags": "gentle instrumental, piano", "bpm": 72, "key": "D major", "ko": "잔잔한 피아노"},
+        "scenes": [
+            {"seconds": 10, "place": "P1", "characters": ["A", "B"], "continues": False, "shot": "wide shot",
+             "action": "They sit at the wooden table in the morning.", "sound": "birds", "ko": "아침 식탁", "kind": "shot",
+             "speaker": "", "listener": "", "line_ko": "", "emotion": ""},
+            {"seconds": 6, "place": "P1", "characters": ["A", "B"], "continues": False, "shot": "medium two-shot",
+             "action": "She smiles at him and talks about Niki.", "sound": "room tone", "ko": "베스가 말한다", "kind": "talk",
+             "speaker": "A", "listener": "B", "line_ko": "여보, 오늘 니키 생일이에요.", "emotion": "warm"},
+            {"seconds": 6, "place": "P1", "characters": ["B", "A"], "continues": True, "shot": "medium two-shot",
+             "action": "He nods and answers.", "sound": "room tone", "ko": "제임스가 답한다", "kind": "talk",
+             "speaker": "B", "listener": "A", "line_ko": "그래요? 케이크를 사 올게요.", "emotion": "surprised"},
+            {"seconds": 6, "place": "P1", "characters": ["A"], "continues": False, "shot": "close-up",
+             "action": "She thinks aloud.", "sound": "room tone", "ko": "베스의 혼잣말", "kind": "talk",
+             "speaker": "A", "listener": "", "line_ko": "니키가 좋아하겠지...", "emotion": "dreamy"}]}
+    old = settings.studio_duo_talk
+    settings.studio_duo_talk = on
+    try:
+        story = video.clean_dialogue_story(raw, 30)
+    finally:
+        settings.studio_duo_talk = old
+    assert story is not None
+    return story
+
+
+def duo_deps(fs, layout=True, with_duo=True):
+    deps = compose_deps(fs, settings.results_dir, DialogueDeps, layout=layout)
+    if with_duo:
+        deps.recs[DUO["id"]] = DUO
+    # 두 사람 장면(0·1·2)은 두 사람, 혼잣말 컷(3)은 한 사람으로 센다
+    deps.people_for = lambda tag: 2 if re.match(r"L[012]", tag) else None
+    return deps
+
+
+def prompt_text(call):
+    return " ".join(str(n["inputs"].get("text") or n["inputs"].get("value") or "") for n in call[1]["prompt"].values()
+                    if n.get("class_type") in ("CLIPTextEncode", "PrimitiveStringMultiline"))
+
+
+async def t_duo_talk_scene_uses_the_two_speaker_recipe_with_silence_on_the_other_side():
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check = True, True, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs)
+            # 첫 두 사람 클립은 듣는 사람이 사라졌다(1명) → 다시 만든다 (fewer_ok 거짓)
+            deps.people_for = lambda tag: 1 if tag == "L1w1" else (2 if re.match(r"L[012]", tag) else None)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            story = duo_story()
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            w = t["work"]
+            tags = tags_of(deps, t)
+            for must in ("L1c1", "L1d1", "L1w1", "L1w2", "L2w1", "L3c1", "L3d1", "L3v1"):
+                assert must in tags, (must, tags)
+            assert not any(x.startswith(("L1v", "L2v", "L2c", "L2d", "L3w")) for x in tags), tags     # 이어지는 투샷은 앞 클립 프레임 그대로
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            by = {tags[k]: subs[k] for k in range(len(subs))}
+            assert recipe_of(by["L1w2"]) == recipe_of(by["L2w1"]) == DUO["id"] and recipe_of(by["L3v1"]) == TALK["id"]
+            # 구도 그림: 첫 화자 베스(A)가 오른쪽을 봐서 왼쪽 자리, 서로 마주 보되 두 얼굴 모두 카메라 쪽. 인물 입히기: 말하는 방향과 듣는 사람
+            c1, d1 = text_of(by["L1c1"]), text_of(by["L1d1"])
+            assert "turned toward each other, both faces in three-quarter view toward the camera" in c1 and "Exactly 2 figures" in c1
+            assert "The person on the left speaks toward the right side of the frame with a warm expression" in d1
+            assert "The person on the right listens with lips closed and a soft smile" in d1 and "talks about Niki" not in d1
+            inp = lambda cid: fs.atts[w["casts"][cid]["att"]]["input_rel"]
+            assert {inp("A"), inp("B")} <= loads_of(by["L1d1"])
+            # 장면 1: 말하는 베스가 왼쪽 → audio(왼쪽 자리) = 대사, audio2(오른쪽 자리) = 무음. 25fps 4n+1, 자르는 지점의 프레임, 영상 크기로 키움
+            silence = files.turn_input_rel(USER["username"], USER["id"], t["id"], "silence.wav")
+            g1 = by["L1w2"][1]["prompt"]
+            assert g1["20"]["inputs"]["audio"] == w["lines"]["1"]["in_rel"] and g1["21"]["inputs"]["audio"] == silence
+            s1 = story["scenes"][1]["seconds"]
+            assert g1["400"]["inputs"]["length"] == recipes.frames_for(DUO, s1) and (g1["400"]["inputs"]["length"] - 1) % 4 == 0
+            assert (g1["95"]["inputs"]["width"], g1["95"]["inputs"]["height"]) == tuple(w["long_size"]) == (1280, 704)
+            assert (g1["400"]["inputs"]["width"], g1["400"]["inputs"]["height"]) == (848, 464)
+            assert g1["902"]["inputs"]["batch_index"] == min(int(round((max(D.TALK_MIN_SHOT, 2.6 + D.TALK_TAIL)) * 25)), g1["400"]["inputs"]["length"] - 1)
+            assert g1["900"]["inputs"]["batch_index"] == g1["400"]["inputs"]["length"] // 2
+            p1 = prompt_text(by["L1w2"])
+            assert "The person on the left speaks to the person on the right, warm" in p1 and "only listens" in p1
+            assert "alone in the frame" not in p1 and "talks about Niki" not in p1
+            # 장면 2: 제임스가 오른쪽에서 말한다 → 왼쪽 자리에 무음(앞에 온다), 오른쪽에 대사. 잇는 프레임도 무음만큼 늦게
+            g2 = by["L2w1"][1]["prompt"]
+            assert g2["20"]["inputs"]["audio"] == silence and g2["21"]["inputs"]["audio"] == w["lines"]["2"]["in_rel"]
+            assert g2["902"]["inputs"]["batch_index"] == min(int(round((max(D.TALK_MIN_SHOT, 2.6 + D.TALK_TAIL) + D.DUO_SILENCE) * 25)),
+                                                             g2["400"]["inputs"]["length"] - 1)
+            assert "The person on the right speaks to the person on the left, surprised" in prompt_text(by["L2w1"])
+            spath = files.input_path(ENV, silence)
+            assert spath and os.path.getsize(spath) == 44 + 2 * int(round(D.DUO_SILENCE * 48000))
+            # 혼잣말 컷은 그대로 LTX 혼자 대사
+            assert "alone in the frame, no other people" in prompt_text(by["L3v1"])
+            sc = w["scenes"]
+            assert sc[1]["duo"] is True and sc[1]["line_delay"] == 0.0 and sc[1]["first_from"] == "layout"
+            assert sc[2]["duo"] is True and sc[2]["line_delay"] == D.DUO_SILENCE and sc[2]["first_from"] == "last"
+            assert sc[1]["last_rel"] and sc[2]["seam"] == "continue" and "duo" not in sc[3] and "line_delay" not in sc[3]
+            starts = {e[1]["index"]: e[1] for e in fs.events if e[0] == "long_scene_start"}
+            dones = {e[1]["index"]: e[1] for e in fs.events if e[0] == "long_scene_done"}
+            assert starts[1].get("duo") is True and starts[2].get("duo") is True and "duo" not in starts[3] and "duo" not in starts[0]
+            assert dones[1].get("duo") is True and dones[2].get("duo") is True and "duo" not in dones[3]
+            # 검사: 두 사람 대사 컷은 정확히 두 사람 (듣는 사람이 사라진 첫 클립을 다시 만들었다), 혼잣말 컷은 한 사람
+            pc = [e[1] for e in fs.events if e[0] == "picture_check" and e[1].get("what") == "talk_clip" and not e[1].get("skipped")]
+            p_1 = [e for e in pc if e["index"] == 1]
+            assert [e["attempt"] for e in p_1] == [1, 2] and p_1[0]["want"] == 2 and p_1[0]["fewer_ok"] is False and p_1[0]["why"] == ["people:1/2"]
+            assert [e["want"] for e in pc if e["index"] == 3] == [1]
+            n2 = p_1[1]["file"].split("_")[1].split(".")[0]                     # 다시 만든 클립(검사를 통과한 것)을 쓴다
+            assert sc[1]["clip_rel"].endswith(f"video_{n2}.mp4"), (sc[1]["clip_rel"], p_1)
+            assert not [e for e in fs.events if e[0] == "duo_fallback"]
+            # 합치기: 오른쪽 사람이 말한 컷은 대사를 무음만큼 늦게 놓고 그만큼 더 길게 자른다. 이어지는 투샷은 디졸브
+            clips, lines, _m, _o, trims = [c[1] for c in deps.calls if c[0] == "assemble_dialogue"][0]
+            byshot = {x["shot"]: x for x in lines}
+            assert "delay" not in byshot[1] and byshot[2]["delay"] == D.DUO_SILENCE and "delay" not in byshot[3]
+            assert trims[0] is None and trims[1] == 3.5 and abs(trims[2] - 3.62) < 1e-9 and trims[3] == 3.5
+            assert deps.seam_kinds == ["cut", "continue", "cut"]
+        finally:
+            (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk,
+             settings.studio_picture_check) = old
+
+
+async def t_duo_talk_falls_back_to_ltx_when_off_missing_failing_or_without_chain():
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        try:
+            # ① 레시피가 꺼졌다: 첫 화면은 이미 두 사람 → LTX 대사로 내려가되 두 사람 영상 글·두 사람 검사, 이벤트로 남긴다
+            settings.studio_chain, settings.studio_duo_talk = True, True
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs, with_duo=False)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": duo_story(), "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            tags = tags_of(deps, t)
+            assert "L1v1" in tags and "L2v1" in tags and not any("w" in x for x in tags if x.startswith("L")), tags
+            fb = [e[1] for e in fs.events if e[0] == "duo_fallback"]
+            assert [(e["index"], e["reason"]) for e in fb] == [(1, "recipe_off"), (2, "recipe_off")], fb
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            by = {tags[k]: subs[k] for k in range(len(subs))}
+            assert recipe_of(by["L1v1"]) == TALK["id"] and "only listens" in prompt_text(by["L1v1"]) and "alone in the frame" not in prompt_text(by["L1v1"])
+            assert "duo" not in t["work"]["scenes"][1] and t["work"]["scenes"][2]["first_from"] == "last"
+            lines = [c[1] for c in deps.calls if c[0] == "assemble_dialogue"][0][1]
+            assert not any("delay" in x for x in lines)
+            # ② 두 화자 작업이 실패했다 (두 번): LTX 로 내려간다
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs)
+            orig = deps.submit
+
+            async def submit(env, user, body, ip):
+                if body["extra_data"]["studio"]["recipe"] == DUO["id"]:
+                    deps.outcome_seq = ["error"]
+                return await orig(env, user, body, ip)
+            deps.submit = submit
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": duo_story(), "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            tags = tags_of(deps, t)
+            assert tags.index("L1w1") < tags.index("L1w2") < tags.index("L1v1"), tags
+            fb = [e[1] for e in fs.events if e[0] == "duo_fallback"]
+            assert [(e["index"], e["reason"], e.get("code")) for e in fb] == [(1, "failed", "run_error"), (2, "failed", "run_error")], fb
+            assert "duo" not in t["work"]["scenes"][1] and "line_delay" not in t["work"]["scenes"][2]
+            # ③ 설정을 끄면 예전과 같다: 대사 컷은 말하는 사람 혼자(구성안 정리), 두 화자 레시피가 켜져 있어도 쓰지 않는다
+            settings.studio_duo_talk = False
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs)
+            deps.people_for = lambda tag: 2 if tag.startswith("L0") else None      # 대사 컷은 모두 한 사람
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            off = duo_story(on=False)
+            assert [s["characters"] for s in off["scenes"]][1:] == [["A"], ["B"], ["A"]] and not any(s["continues"] for s in off["scenes"])
+            t["work"] = {"story": off, "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            tags = tags_of(deps, t)
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            assert DUO["id"] not in [recipe_of(c) for c in subs] and not [e for e in fs.events if e[0] == "duo_fallback"]
+            talk = [c for c in subs if recipe_of(c) == TALK["id"]]
+            assert len(talk) == 3 and all("alone in the frame, no other people" in prompt_text(c) for c in talk)
+            assert "One adult-sized faceless mannequin figure" in text_of(subs[tags.index("L1c1")])
+            assert not any(e[1].get("duo") for e in fs.events if e[0] in ("long_scene_start", "long_scene_done"))
+            # ④ 장면 잇기가 꺼져 있으면 첫 화면이 기준 그림 한 장을 고친 한 사람 그림이다: 두 사람 영상으로 만들지 않는다
+            settings.studio_chain, settings.studio_duo_talk = False, True
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": duo_story(), "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            assert t["work"]["chain"] is False and DUO["id"] not in [recipe_of(c) for c in subs]
+            fb = [e[1] for e in fs.events if e[0] == "duo_fallback"]
+            assert [(e["index"], e["reason"]) for e in fb] == [(1, "solo_first_frame"), (2, "solo_first_frame")], fb
+            assert t["work"]["scenes"][1]["first_solo"] is True and t["work"]["scenes"][1]["first_from"] == "edit"
+            assert all("alone in the frame" in prompt_text(c) for c in subs if recipe_of(c) == TALK["id"])
+        finally:
+            settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk = old
+
+
+async def t_duo_talk_portrait_estimate_and_reset():
+    old = (settings.studio_chain, settings.studio_duo_talk)
+    settings.studio_chain, settings.studio_duo_talk = True, True
+    try:
+        fs = FakeStore(); fs.patch()
+        story = duo_story()
+        recs = {r["id"]: r for r in (LTX, TALK, EDITREF, COMPOSE, CLONE, VOICE, IMG, MUS)}
+        d0 = D.Director(FakeDeps(fs), dict(recs))
+        d1 = D.Director(FakeDeps(fs), {**recs, DUO["id"]: DUO})
+        t = dialogue_turn(fs)
+        ctx = D.Ctx(t, USER, ENV, LTX)
+        ctx.long = {}
+        # 예상 시간: 두 사람 대사 컷은 InfiniteTalk 추정식(25fps 4n+1 프레임)으로
+        e0, e1 = await d0.estimate_long(ctx, story), await d1.estimate_long(ctx, story)
+
+        def part(rec, frames):
+            est = rec["estimate"]
+            return float(est["gpu_seconds"]) * max(0.4, min(8.0, (frames / float(est["ref_frames"])) ** float(est["exponent"])))
+        want = sum(part(DUO, recipes.frames_for(DUO, story["scenes"][k]["seconds"])) - part(TALK, int(story["scenes"][k]["seconds"]) * 24 + 1)
+                   for k in (1, 2))
+        assert abs((e1 - e0) - want) <= 1.0, (e0, e1, want)
+        settings.studio_duo_talk = False
+        assert await d1.estimate_long(ctx, story) == e0                    # 설정을 끄면 두 사람 레시피를 셈하지 않는다
+        settings.studio_duo_talk = True
+        # 세로·정사각 영상은 실행처럼 두 화자 추정식을 쓰지 않는다 (11-24 검토: 추정은 두 화자, 실행은 LTX 로 어긋났다)
+        assert await d1.estimate_long(ctx, story, [704, 1280]) == await d0.estimate_long(ctx, story, [704, 1280])
+        assert await d1.estimate_long(ctx, story, [960, 960]) == await d0.estimate_long(ctx, story, [960, 960])
+        portrait = D.Ctx(t, USER, ENV, LTX)
+        portrait.long, portrait.spec = {}, {"aspect": "portrait"}
+        assert await d1.estimate_long(portrait, story) == await d0.estimate_long(portrait, story)     # 크기를 안 주면 비율 칸으로
+        assert await d1.estimate_long(ctx, story, [1280, 704]) == e1
+        # 장면 잇기가 꺼지면 첫 화면이 두 사람이 아니라 두 화자 레시피를 셈하지 않는다
+        settings.studio_chain = False
+        assert await d1.estimate_long(ctx, story) == await d0.estimate_long(ctx, story)
+        settings.studio_chain = True
+        # 세로·정사각 영상은 두 화자 레시피를 쓰지 않는다 (848×464 가로 생성을 가운데 자르면 두 사람이 잘린다)
+        assert d1._duo_recipe({"long_size": [704, 1280]}, story, 1) == (None, "portrait")
+        assert d1._duo_recipe({"long_size": [960, 960]}, story, 1) == (None, "portrait")
+        assert d1._duo_recipe({"long_size": [1280, 704]}, story, 1)[0]["id"] == DUO["id"]
+        assert d1._duo_recipe({"long_size": [1280, 704]}, story, 3) == (None, "off")             # 혼잣말 컷
+        assert d0._duo_recipe({"long_size": [1280, 704]}, story, 1) == (None, "recipe_off")
+        # 구성안을 두 사람 규칙으로 쓸지: 설정·장면 잇기·두 화자 레시피·가로 영상이 모두 맞을 때만
+        assert d1._duo_ready(ctx, [1280, 704]) and not d1._duo_ready(ctx, [704, 1280]) and not d1._duo_ready(ctx, [960, 960])
+        assert not d0._duo_ready(ctx, [1280, 704])
+        settings.studio_chain = False
+        assert not d1._duo_ready(ctx, [1280, 704])
+        settings.studio_chain, settings.studio_duo_talk = True, False
+        assert not d1._duo_ready(ctx, [1280, 704])
+        settings.studio_duo_talk = True
+        # 다시 만들기: 두 화자 작업의 접수 정보와 장면의 두 사람 표시(내려간 표시 포함)도 비운다
+        work = {"story": story, "chain": True, "L1w_pending": {"client_id": "studio-x-L1w1", "attempt": 2}}
+        t["work"] = dict(work)
+        scenes = [{"clip_rel": "a.mp4"}, {"clip_rel": "b.mp4", "duo": True, "line_delay": 0.12, "duo_failed": True}, {}, {}]
+        await d1._long_reset(ctx, work, scenes, 1)
+        assert work["L1w_pending"] == {"client_id": None, "attempt": 2} and scenes[1] == {}
+        assert "line_delay" in D.LONG_SCENE_KEYS and "duo" in D.LONG_SCENE_KEYS and "first_solo" in D.LONG_SCENE_KEYS
+        assert "duo_failed" in D.LONG_SCENE_KEYS
+    finally:
+        settings.studio_chain, settings.studio_duo_talk = old
+
+
+async def t_duo_story_rules_follow_what_the_request_can_make():
+    """11-24 검토: 구성안의 두 사람 규칙은 이 요청에서 두 사람 대사 컷을 실제로 만들 수 있을 때만 (설정·장면 잇기·두 화자 레시피·가로 영상).
+    못 만들면 혼자 규칙으로 써서 투샷 첫 화면이 LTX 로 가거나(X2: 입이 거의 안 움직임) 한 사람 첫 화면에 투샷 글이 붙지 않게 한다"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk, settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        settings.studio_chain, settings.studio_duo_talk = True, True
+        try:
+            async def written(aspect=None, with_duo=True):
+                fs = FakeStore(); fs.patch()
+                deps = duo_deps(fs, with_duo=with_duo)
+                d = D.Director(deps, dict(deps.recs))
+                t = dialogue_turn(fs)
+                if aspect:
+                    t["request"]["spec"]["aspect"] = aspect
+                await d.pump(); await settle(d, 10)
+                assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))
+                return [c[1].get("duo") for c in deps.calls if c[0] == "storyboard"], t
+            got, t = await written()
+            assert got == [True] and t["work"]["long_size"] == [1280, 704]
+            got, t = await written("portrait")
+            assert got == [False] and t["work"]["long_size"][0] < t["work"]["long_size"][1]
+            assert (await written(with_duo=False))[0] == [False]
+            settings.studio_chain = False
+            assert (await written())[0] == [False]
+        finally:
+            (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk,
+             settings.studio_ref_layout) = old
+
+
+async def t_duo_story_rendered_after_the_setting_was_turned_off_keeps_two_people():
+    """두 사람 규칙으로 쓰고 승인한 구성안을 STUDIO_DUO_TALK 를 끈 뒤 만들면: 첫 화면은 이미 두 사람이라 LTX 로 내려가되 영상 글·검사는
+    두 사람 기준이다 (talk_pair 는 설정과 상관없다). 내려간 까닭은 off (11-24 검토: 이 경로에 시험이 없었다)"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check,
+           settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check = True, True, True
+        try:
+            story = duo_story(on=True)
+            settings.studio_duo_talk = False
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            assert DUO["id"] not in [recipe_of(c) for c in subs]
+            fb = [e[1] for e in fs.events if e[0] == "duo_fallback"]
+            assert [(e["index"], e["reason"]) for e in fb] == [(1, "off"), (2, "off")], fb
+            tags = tags_of(deps, t)
+            by = {tags[k]: subs[k] for k in range(len(subs))}
+            p1 = prompt_text(by["L1v1"])
+            assert recipe_of(by["L1v1"]) == TALK["id"] and "only listens" in p1 and "alone in the frame" not in p1
+            pc = [e[1] for e in fs.events if e[0] == "picture_check" and e[1].get("what") == "talk_clip" and not e[1].get("skipped")]
+            assert {e["index"] for e in pc} >= {1, 2, 3}
+            assert all(e["want"] == 2 and e["fewer_ok"] is False for e in pc if e["index"] in (1, 2)), pc
+            assert [e["want"] for e in pc if e["index"] == 3] == [1]
+        finally:
+            (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk,
+             settings.studio_picture_check, settings.studio_ref_layout) = old
+
+
+async def t_duo_fallback_is_remembered_and_build_errors_fall_back_too():
+    """① 두 화자 레시피의 값 넣기 오류(submit)도 LTX 로 내려간다 (요청 전체가 실패하지 않게).
+    ② 내려간 것은 장면에 남는다(duo_failed): 허브가 LTX 작업 중에 다시 시작해도 실패한 두 화자 작업을 이어받아 새로 접수하지 않는다 (11-24 검토)"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk, settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        settings.studio_chain, settings.studio_duo_talk = True, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs)
+            broken = copy.deepcopy(DUO)
+            broken["inject"]["frames"]["max"] = 17                 # 장면 길이의 프레임 수를 넣지 못한다 → 값 넣기 오류
+            deps.recs[DUO["id"]] = broken
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": duo_story(), "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            fb = [e[1] for e in fs.events if e[0] == "duo_fallback"]
+            assert [(e["index"], e["reason"], e.get("code")) for e in fb] == [(1, "failed", "submit"), (2, "failed", "submit")], fb
+            sc = t["work"]["scenes"]
+            assert sc[1]["duo_failed"] is True and sc[2]["duo_failed"] is True and "duo" not in sc[1] and "duo_failed" not in sc[3]
+            tags = tags_of(deps, t)
+            assert "L1v1" in tags and "L2v1" in tags and not any(x.startswith(("L1w", "L2w")) for x in tags), tags
+            # 재시작: 내려간 표시가 남은 컷은 옛 두 화자 작업(L1w_pending)을 이어받지 않고 바로 LTX, 다시 알리지도 않는다
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": duo_story(), "approved": True, "scenes": [{}, {"duo_failed": True}, {}, {}],
+                         "L1w_pending": {"client_id": "studio-old-L1w2", "attempt": 2}}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            tags = tags_of(deps, t)
+            assert "L1v1" in tags and not any(x.startswith("L1w") for x in tags) and "L2w1" in tags, tags
+            assert not [e for e in fs.events if e[0] == "duo_fallback"]
+            sc = t["work"]["scenes"]
+            assert sc[1]["duo_failed"] is True and "duo" not in sc[1] and sc[2]["duo"] is True
+        finally:
+            (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk,
+             settings.studio_ref_layout) = old
+
+
+async def t_duo_clip_in_a_crowd_and_an_animal_listener_are_checked_like_their_first_frame():
+    """① 무리 말이 있는 장소의 투샷: 첫 화면이 배경 행인을 받아들였으니(compose_rule) 클립도 두 사람보다 많아도 된다 (줄면 다시 만든다).
+    ② 듣는 쪽이 동물인 대사 컷: 사람 한 명(LTX)이지만 동물이 첫 화면에 있어 사람 수·팔다리를 세지 않는다 (11-24 검토: 말하는 사람만 보고
+    정확히 1명을 셌다). 영상 글은 혼자 크기로, 동물을 가리키는 장면 글은 둔다"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check,
+           settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check = True, True, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs)
+            deps.people_for = lambda tag: 5 if tag.startswith(("L1w", "L2w")) else (2 if re.match(r"L[012]", tag) else None)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            story = duo_story()
+            story["bible"]["places"][0]["look"] = "a bustling market square full of people"
+            story["bible"]["characters"].append({"id": "D", "look": "a small white puppy with floppy ears"})
+            story["scenes"][3].update(characters=["A", "D"], listener="D", shot="medium two-shot", action="She smiles at the puppy.")
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            tags = tags_of(deps, t)
+            assert "L1w1" in tags and "L1w2" not in tags and "L3v1" in tags and "L3v2" not in tags, tags
+            pc = [e[1] for e in fs.events if e[0] == "picture_check" and e[1].get("what") == "talk_clip" and not e[1].get("skipped")]
+            p1 = [e for e in pc if e["index"] == 1]
+            assert len(p1) == 1 and p1[0]["want"] == 2 and p1[0]["more_ok"] is True and p1[0]["fewer_ok"] is False and p1[0]["why"] == []
+            assert [e["want"] for e in pc if e["index"] == 3] == [None]
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            p3 = prompt_text(subs[tags.index("L3v1")])
+            assert "Medium close-up of one person alone" in p3 and "She smiles at the puppy." in p3 and "two-shot" not in p3
+        finally:
+            (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk,
+             settings.studio_picture_check, settings.studio_ref_layout) = old
+
+
+async def t_style_convert_is_not_redrawn_when_the_check_model_does_not_answer():
+    """기준 그림 화풍 변환 검사(_compose_check)는 STUDIO_PICTURE_CHECK 와 상관없이 늘 돈다. 검사 모델이 답하지 않으면(cast:unchecked)
+    다시 그리지 않고 결과에 알린다: 실사 변환은 가속을 끈 높음 판이라 한 장에 몇 분 [추정] (11-24 검토: 이 멈춤에 시험이 없었다)"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_picture_check)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir, settings.studio_chain = os.path.join(root, "results"), os.path.join(root, "envs"), True
+        settings.studio_picture_check = False
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = chain_deps(fs, settings.results_dir, DialogueDeps)
+            deps.recs[HQ_EDIT["id"]] = HQ_EDIT
+            deps.inspect_result = None                            # 검사 모델이 답하지 않는다
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            story = library_story(settings.results_dir)
+            story["bible"]["style"] = "photorealistic cinematic live action"
+            for c in story["bible"]["characters"]:
+                rel = f"studio/_cast/{c['id']}_semi.png"
+                os.makedirs(os.path.dirname(os.path.join(settings.results_dir, rel)), exist_ok=True)
+                with open(os.path.join(settings.results_dir, rel), "wb") as f:
+                    f.write(b"png")
+                c["refs"] = {"semi": rel}
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            rids = [recipe_of(c) for c in deps.calls if c[0] == "submit"]
+            assert rids.count(HQ_EDIT["id"]) == 2, rids                       # 인물마다 한 번 (다시 그리지 않았다)
+            left = t["work"]["check_left"]
+            assert left.get("c0:portrait") == ["cast:unchecked"] and left.get("c1:portrait") == ["cast:unchecked"], left
+            assert not [e for e in fs.events if e[0] == "picture_retry" and e[1].get("what") == "convert"]
+        finally:
+            settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_picture_check = old
 
 
 async def main():

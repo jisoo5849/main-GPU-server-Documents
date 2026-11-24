@@ -118,6 +118,9 @@ class Settings:
     # 구도 그림에서 그리기 (11-21, docs/reference-system-design.md 11절): 사람이 나오는 새 컷을 ① 얼굴 없는 형상의 구도 그림 → ② 인물 입히기
     # (세 사람 이상이면 ③ 한 명씩)로 그린다. 끄면 기준 그림으로 바로 새로 그린다(PR #41 방식)
     studio_ref_layout = _bool("STUDIO_REF_LAYOUT", True)
+    # 두 사람 대화 장면 (11-24 메인 실측 X1·X6): 듣는 상대가 같은 장소에 있는 대사 컷은 두 사람을 한 화면(미디엄 투샷)에 두고
+    # InfiniteTalk 두 화자 레시피(talk_duo)로 말하는 사람 입만 맞춘다. 혼자 말하는 컷은 그대로 LTX. 끄면 예전처럼 말하는 사람 혼자 클로즈업
+    studio_duo_talk = _bool("STUDIO_DUO_TALK", True)
     studio_inspect = _env("STUDIO_INSPECT", "idle")            # on | idle | off
     studio_auto_reroll = _int("STUDIO_AUTO_REROLL", 0)
     studio_progress_min_interval_ms = _int("STUDIO_PROGRESS_MIN_INTERVAL_MS", 500)

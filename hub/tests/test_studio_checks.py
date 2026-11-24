@@ -166,6 +166,28 @@ def t_layout_problems_reads_the_figure_line_and_ignores_blank_faces():
     assert not checks.better(["style", "body:face"], ["layout:figures"])          # 형상 수가 틀린 것이 더 나쁘다
 
 
+def t_duo_talk_clip_needs_both_people():
+    """두 사람 대사 컷(11-24): 정확히 두 사람. 듣는 사람이 사라져도 다시 만든다(fewer_ok 거짓). 얼굴 이상은 입 맞춤처럼 보지 않고,
+    허리까지 보이는 미디엄 투샷이라 클로즈업 예외(팔다리 떠 있음)는 쓰지 않는다"""
+    r = checks.clip_rule(2, 0, talk=True, duo=True)
+    assert r["want"] == 2 and not r["fewer_ok"] and not r["more_ok"] and r["skip"] == checks.DUO_TALK_SKIP == frozenset({"face"})
+    assert checks.problems({"people": 1, "issues": [], "traits": []}, r) == ["people:1/2"]          # 듣는 사람이 빠졌다
+    assert checks.problems({"people": 3, "issues": [], "traits": []}, r) == ["people:3/2"]
+    assert checks.problems({"people": 2, "issues": [{"type": "face"}], "traits": []}, r) == []
+    assert checks.problems({"people": 2, "issues": [{"type": "floating_limb"}], "traits": []}, r) == ["body:floating_limb"]
+    assert checks.clip_rule(2, 1, talk=True, duo=True)["skip"] >= checks.ANIMAL_SKIP
+    # 무리 말이 있는 장소(첫 화면이 배경 행인을 받아들였다): 두 사람보다 많아도 되지만 줄어드는 것은 안 된다 (11-24 검토)
+    rc = checks.clip_rule(2, 0, talk=True, duo=True, crowd=True)
+    assert rc["want"] == 2 and rc["more_ok"] and not rc["fewer_ok"]
+    assert checks.problems({"people": 5, "issues": [], "traits": []}, rc) == []
+    assert checks.problems({"people": 1, "issues": [], "traits": []}, rc) == ["people:1/2"]
+    # 예전 대사 클립 기준은 그대로: 첫 화면에 둘이 남았으면 줄어드는 것은 봐준다, 혼자면 한 사람
+    old = checks.clip_rule(2, 0, talk=True)
+    assert old["want"] == 2 and old["fewer_ok"] and old["skip"] == checks.TALK_SKIP
+    assert checks.clip_rule(None, 0, talk=True)["want"] == 1 and checks.clip_rule(2, 0, duo=True)["want"] == 2   # talk 가 아니면 duo 는 뜻이 없다
+    assert checks.clip_rule(2, 0, duo=True)["fewer_ok"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("t_")]
     for t in tests:

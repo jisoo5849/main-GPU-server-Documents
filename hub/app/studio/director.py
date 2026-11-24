@@ -75,13 +75,18 @@ LONG_RESUME_MAX = 5            # 허브가 다시 시작될 때 긴 영상을 �
 DISSOLVE_SECONDS = 0.6     # 이어 만든 장면 사이의 디졸브 길이(초) [추정 값, 메인 시험 전]
 LONG_SCENE_KEYS = ("plan", "scene_prompt", "image_rel", "first_from", "prompt", "ko", "profile", "settings", "frame_known",
                    "frame_people", "no_chain", "clip_rel", "clip_sha", "last_rel", "check_rel", "seed", "seconds", "violations",
-                   "edit_rel", "first_people", "seam", "chain_rel", "end_rel", "end_att", "end_fail", "layout_rel")
+                   "edit_rel", "first_people", "seam", "chain_rel", "end_rel", "end_att", "end_fail", "layout_rel",
+                   "duo", "line_delay", "first_solo", "duo_failed")
 # 장면 잇기 (11-20, docs/scene-chaining-design.md)
 CHAIN_EDIT_SECONDS = 17       # 고쳐 잇기·끝 키프레임 편집 한 장(그림 2~3장) 실행 시간(초). 11-20 메인 실측 12~17초
 # 대사 영상 (11-19, docs/short-film-dialogue-design.md 12절)
 TALK_TAIL = 0.9            # 말하는 장면은 대사 끝 + 이만큼에서 자른다 (11-19 숲길: 대사가 끝난 뒤 IA2V 화면이 어두워짐)
 TALK_MIN_SHOT = 3.0
 TALK_PAD = 1.0             # 말하는 장면 길이 = 대사 길이 + 이만큼 (올림, 4~20초)
+# 두 사람 대사 컷(11-24, InfiniteTalk 두 화자): 말하지 않는 사람 자리에 넣는 무음 길이(초). 메인 X6 에서 0.12초 무음 자리의 사람은
+# 입을 다물고 들었다. 노드는 '왼쪽 소리 먼저, 오른쪽 다음'으로 이어 붙여서 오른쪽 사람이 말하면 대사가 이만큼 늦게 시작한다
+DUO_SILENCE = 0.12
+DUO_FALLBACK_CODES = {"run_error", "run_oom", "lost", "no_output", "run_timeout", "gpu_prepare", "submit"}   # 이렇게 실패하면 LTX 로 내려간다
 DIALOGUE_PART_OVERHEAD = 10   # 녹음·기준 그림·편집마다 실행 말고 더 걸리는 시간(초). 11-19 메인 시험: 편집 20초·기준 그림 7~14초·녹음 50~71초
 DIALOGUE_CAST_SECONDS = 15    # 인물 기준 그림 한 장(Z-Image 8스텝) 실행 시간(초). 11-19 메인 시험 7~14초
 # 그림·클립 자동 검사 (11-20, studio/checks.py, STUDIO_PICTURE_CHECK): 사람 수·몸의 이상·화풍이 틀리면 씨앗을 바꿔 다시 만든다
@@ -866,7 +871,7 @@ class Director:
         n = len(story["scenes"])
         ctx.long["n"] = n
         if not work.get("long_size"):
-            work["long_size"] = list(recipes.default_size(ctx.recipe, aspect=(ctx.spec or {}).get("aspect")))
+            work["long_size"] = self._long_size(ctx)
             await store.merge_work(turn["id"], {"long_size": work["long_size"]})
         if not work.get("approved"):
             await self._park_long(ctx, work)
@@ -936,7 +941,7 @@ class Director:
             scenes[k] = {key: v for key, v in scenes[k].items() if key in keep}
             # 구도 그림·인물 입히기·③ 단계와 끝 키프레임(k)의 접수 정보도 비운다 (끝 키프레임을 안 비우면 옛 첫 화면의 끝 그림을 이어받았다)
             stage_keys = [key for key in work if re.fullmatch(rf"L{k}(?:c|d|k|f\d+)_pending", str(key))]
-            for key in [f"L{k}i_pending", f"L{k}e_pending", f"L{k}v_pending"] + stage_keys:
+            for key in [f"L{k}i_pending", f"L{k}e_pending", f"L{k}v_pending", f"L{k}w_pending"] + stage_keys:
                 if work.get(key):
                     work[key] = patch[key] = {"client_id": None, "attempt": int((work[key] or {}).get("attempt") or 0)}
             for key in [key for key in work if re.fullmatch(rf"L{k}(?:c|d|f\d+)_done", str(key))]:      # 구도 그림 단계가 고른 그림
@@ -1011,6 +1016,24 @@ class Director:
             return False
         return now == sha
 
+    @staticmethod
+    def _long_size(ctx: Ctx) -> list:
+        """긴 영상의 크기 (영상 레시피의 면적, 비율 칸의 비율). 구성안을 쓰기 전에도 같은 값이라 두 사람 규칙을 정할 때도 쓴다"""
+        return list(recipes.default_size(ctx.recipe, aspect=(ctx.spec or {}).get("aspect")))
+
+    @staticmethod
+    def _wide(size) -> bool:
+        """가로 영상인가. 두 화자 레시피는 848×464 가로로 그려 영상 크기로 키운다: 세로·정사각은 가운데를 자르면 두 사람이 잘린다"""
+        size = size or [1280, 704]
+        return int(size[0]) > int(size[1])
+
+    def _duo_ready(self, ctx: Ctx, size) -> bool:
+        """이 요청에서 두 사람 대사 컷을 실제로 만들 수 있는가 (구성안을 두 사람 규칙으로 쓸지, video.duo_rules): 설정(STUDIO_DUO_TALK)이
+        켜졌고, 장면 잇기가 첫 화면을 두 사람으로 그릴 수 있고(_chain_ready), 두 화자 레시피가 켜졌고, 가로 영상이다.
+        못 만드는 요청은 예전 혼자 클로즈업 규칙으로 쓴다 — 투샷 첫 화면을 LTX 로 입 맞추면 말하는 입이 거의 안 움직였다 (11-24 X2)"""
+        return bool(settings.studio_duo_talk and self._chain_ready(ctx, {}) and self.recipe_for("talk_duo") is not None
+                    and self._wide(size))
+
     async def _write_story(self, ctx: Ctx, work: dict) -> dict:
         turn = ctx.turn
         ip = turn.get("client_ip") and str(turn["client_ip"]) or ""
@@ -1019,6 +1042,10 @@ class Director:
             ctx.stage, ctx.text = "story", "구성안 쓰는 중"
             await self.emit(ctx, True)
             extra = {"dialogue": True} if (turn.get("request") or {}).get("dialogue") else {}
+            if extra:
+                # 두 사람 대사 컷을 이 요청에서 실제로 만들 수 있을 때만 구성안을 두 사람 규칙으로 쓴다 (11-24 검토: 세로 영상·장면 잇기
+                # 꺼짐·두 화자 레시피 꺼짐이면 투샷 첫 화면이 LTX 로 가거나 한 사람 첫 화면에 투샷 글이 붙었다)
+                extra["duo"] = self._duo_ready(ctx, work.get("long_size") or self._long_size(ctx))
             r = await self._guard_llm(ctx, self.deps.storyboard(ctx.user, ip, ctx.env, text=ctx.req_text,
                                                                 seconds=(ctx.spec or {}).get("seconds"), **extra))
             for e in bag:
@@ -1034,8 +1061,9 @@ class Director:
         await store.merge_work(turn["id"], {"story": story})
         return work
 
-    async def estimate_long(self, ctx: Ctx, story: dict) -> int:
-        """긴 영상 완료까지 예상 시간(초) [추정]: 장면마다 LTX 실행(레시피 추정식) + 장면 이미지·LLM, 음악·합치기, 앞 줄"""
+    async def estimate_long(self, ctx: Ctx, story: dict, size=None) -> int:
+        """긴 영상 완료까지 예상 시간(초) [추정]: 장면마다 LTX 실행(레시피 추정식) + 장면 이미지·LLM, 음악·합치기, 앞 줄.
+        size 는 영상 크기 (없으면 레시피·비율 칸으로 정한 크기): 두 사람 대사 컷은 가로 영상에서만 두 화자 레시피로 만든다"""
         est = ctx.recipe.get("estimate") or {}
         own = float(est.get("gpu_seconds") or 60)
         ref = float(est.get("ref_frames") or 121)
@@ -1045,9 +1073,18 @@ class Director:
         dlg = bool(story.get("dialogue"))
         talk = self.recipe_for("talk") if dlg else None
         test = (talk or {}).get("estimate") or {}
-        for sc in story["scenes"]:
+        # 두 사람 대사 컷(11-24): InfiniteTalk 두 화자 레시피의 추정식(25fps). 장면 잇기로 첫 화면을 두 사람으로 그리고 가로 영상일 때만
+        # 쓴다 (실행의 _duo_recipe 와 같은 조건: 세로·정사각은 LTX 로 만든다)
+        duo = (self.recipe_for("talk_duo") if dlg and self._chain_ready(ctx, story) and self._wide(size or self._long_size(ctx))
+               else None)
+        dest = (duo or {}).get("estimate") or {}
+        for k, sc in enumerate(story["scenes"]):
             frames = int(sc["seconds"]) * fps + 1
-            if talk is not None and sc.get("kind") == "talk":      # 말하는 장면: 편집 한 번 + 입 맞춤, LLM 없음
+            if duo is not None and _video().duo_talk(story, k):
+                dframes = recipes.frames_for(duo, sc["seconds"])
+                dref, dexp = float(dest.get("ref_frames") or 301), float(dest.get("exponent") or 1.0)
+                total += float(dest.get("gpu_seconds") or 115) * max(0.4, min(8.0, (dframes / dref) ** dexp)) + 2 * DIALOGUE_PART_OVERHEAD
+            elif talk is not None and sc.get("kind") == "talk":      # 말하는 장면: 편집 한 번 + 입 맞춤, LLM 없음
                 tref, texp = float(test.get("ref_frames") or 145), float(test.get("exponent") or 1.0)
                 total += float(test.get("gpu_seconds") or 60) * max(0.4, min(8.0, (frames / tref) ** texp)) + 2 * DIALOGUE_PART_OVERHEAD
             else:
@@ -1065,6 +1102,16 @@ class Director:
             ppl = sum(1 for k in range(n) if v.scene_people(story, k))
             total += n * (CHAIN_EDIT_SECONDS + DIALOGUE_PART_OVERHEAD) + ppl * (CHAIN_EDIT_SECONDS + DIALOGUE_PART_OVERHEAD)
             total += (n + 2 * ppl) * PICTURE_CHECK_SECONDS
+            # 기준 그림 화풍 바꾸기 (11-24): 영화 화풍의 그림이 없고 반실사 그림만 있는 라이브러리 인물마다 편집 한 장 + 검사.
+            # 실사는 가속을 끈 높음 판이라 그 레시피의 추정식(약 5분 [추정]), 빠른 편집은 고쳐 잇기 편집 한 장만큼
+            key = v.style_key(story)
+            chars = {c["id"]: c for c in story["bible"]["characters"]}
+            conv = sum(1 for cid in v.anchor_ids(story) if cid in chars and self._cast_ref(chars[cid], key)[1])
+            erec = self._convert_recipe(key) if conv else None
+            if erec is not None:
+                run = (float((erec.get("estimate") or {}).get("gpu_seconds") or 60) if recipes.quality_of(erec) == "high"
+                       else CHAIN_EDIT_SECONDS)
+                total += conv * (run + DIALOGUE_PART_OVERHEAD + PICTURE_CHECK_SECONDS)
             if self.recipe_for("compose_ref") is not None:
                 # 새로 그리기: 장소마다 장소 그림 한 장(+검사), 첫 화면은 다시 그리는 때가 있어 사람 장면마다 평균 한 번 더 [추정]
                 places = {v.scene_place(story, k) for k in range(n) if v.scene_people(story, k)} - {None}
@@ -1096,7 +1143,7 @@ class Director:
                             "seam": _video().scene_seam(story, k)} for k, s in enumerate(story["scenes"])],
                 "music": (story.get("music") or {}).get("ko") or "", "size": work.get("long_size"),
                 "fps": recipe["defaults"].get("fps"), "quality": recipe.get("quality_label"),
-                "estimate_s": await self.estimate_long(ctx, story), "recipe_version": recipe["version"],
+                "estimate_s": await self.estimate_long(ctx, story, work.get("long_size")), "recipe_version": recipe["version"],
                 "ttl_hours": settings.studio_plan_ttl_hours, "attachment_ids": []}
         if story.get("dialogue"):        # 대사 영상: 목소리와 장면마다 대사를 카드에 보인다 (녹음 전에 대본을 확인하게)
             chars = {c["id"]: c for c in story["bible"]["characters"]}
@@ -1263,11 +1310,17 @@ class Director:
 
     @staticmethod
     def _scene_image_prompt(recipe: dict, story: dict, prompt: str) -> str:
-        """Qwen 장면 그림 글 맨 앞에 이야기의 그림체를 붙인다 (손으로 만들 때 쓴 \"Semi-realistic digital painting, 2.5D concept art…\" 앞머리와
-        같다). Qwen 은 앞쪽의 그림체 표현에 크게 좌우되므로 글 끝에 같은 문장이 이미 있어도 붙인다. 글이 이미 그 문장으로 시작하면 그대로.
-        Z-Image 글은 그대로"""
-        style = _video().story_style(story)
-        if recipe.get("action") != "scene_image" or not style:
+        """장면·장소·인물 그림 글 맨 앞에 이야기의 그림체를 붙인다 (손으로 만들 때 쓴 \"Semi-realistic digital painting, 2.5D concept art…\" 앞머리와
+        같다). 그림 모델은 앞쪽의 그림체 표현에 크게 좌우되므로 글 끝에 같은 문장이 이미 있어도 붙인다. 글이 이미 그 문장으로 시작하면 그대로.
+        - Qwen 2512(scene_image): 화풍 원문이 있으면 실사여도 붙인다 (11-24: 이 레시피는 '반실사 회화체' 성향이라 실사 영화의 장소 그림이
+          그림처럼 나올 수 있다)
+        - Z-Image(image): 사실적이지 않은 화풍일 때만 (그림체 문장을 글 끝에만 두면 어두운 장면이 사진풍으로 나왔다. 실사는 Z-Image 의 기본 그림)"""
+        act = recipe.get("action")
+        if act == "scene_image":
+            style = str(((story or {}).get("bible") or {}).get("style") or "").strip()
+        else:
+            style = _video().story_style(story) if act == "image" else ""
+        if not style:
             return prompt
         head = f"{style[:1].upper()}{style[1:].rstrip('.')}. "
         return prompt if prompt.lower().startswith(head.lower()[:40]) else head + prompt
@@ -1307,6 +1360,18 @@ class Director:
             "more_ok": r["more_ok"], "fewer_ok": r["fewer_ok"], "why": why,
             "issues": [str(x.get("type")) for x in (insp or {}).get("issues") or [] if isinstance(x, dict)][:8]})
         return why, seen
+
+    @staticmethod
+    def _style_extra(story: dict, extra: list[str] | None = None) -> list[str]:
+        """그림 검사의 기대 특징(extra)에 실사 영화의 화풍 문장(checks.style_negative('photo'))을 더한다 (이미 있으면 한 번).
+        실사는 story_style 이 빈 글이라 style_trait 가 없어, 장소·장면 그림·변환 그림·클립 가운데 프레임의 화풍을 보지 않았다
+        (11-20 S6: 그림 느낌이 남은 실사 변환 그림이 통과했다. 11-24)"""
+        out = [x for x in (extra or []) if x]
+        if _video().style_key(story) == "photo":
+            neg = checks.style_negative("photo")
+            if neg not in out:
+                out.append(neg)
+        return out
 
     @staticmethod
     def _scene_cast(story: dict, i: int) -> tuple[int, int]:
@@ -1367,6 +1432,7 @@ class Director:
         v = _video()
         rule = checks.scene_rule(humans, animals, v.shot_rank(story["scenes"][i].get("shot") or ""), self._scene_extras(story, i))
         style = v.story_style(story)
+        extra = self._style_extra(story)
         best, best_why, best_seen = None, None, None
         for check in range(1, STILL_TRIES + 1):
             ctx.text = "장면 준비 중"
@@ -1382,7 +1448,7 @@ class Director:
             if main is None:
                 return None
             work[pend] = swork.get(pend)
-            why, seen = await self._picture_check(ctx, main["rel_path"], rule, style, "scene_image", i, check)
+            why, seen = await self._picture_check(ctx, main["rel_path"], rule, style, "scene_image", i, check, extra=extra)
             if checks.better(best_why, why):
                 best, best_why, best_seen = main, why, seen
             if not why:
@@ -1503,6 +1569,7 @@ class Director:
         base = st.get("first_people") if isinstance(st.get("first_people"), int) else None
         rule = checks.clip_rule(base, animals)
         style = _video().story_style(story)
+        extra = self._style_extra(story)
         best, best_why = None, None
         for check in range(1, CLIP_TRIES + 1):
             ctx.text = "생성 대기"
@@ -1516,7 +1583,7 @@ class Director:
             if got is None:
                 return None
             work[pend] = swork.get(pend)
-            why, _seen = await self._picture_check(ctx, got.get("check_rel"), rule, style, "clip", i, check)
+            why, _seen = await self._picture_check(ctx, got.get("check_rel"), rule, style, "clip", i, check, extra=extra)
             if chain:
                 why = why + await self._end_check(ctx, got.get("last_rel"), story, i, "end_frame", check)
             if checks.better(best_why, why):
@@ -1821,19 +1888,34 @@ class Director:
             return None, refs["semi"]
         return c.get("ref"), None
 
+    def _convert_recipe(self, key: str) -> dict | None:
+        """기준 그림 화풍 변환에 쓸 편집 레시피. 실사는 가속을 끈 높음 판(qwen_image_edit_quality)이 있으면 그것을 먼저 쓴다
+        (11-20 S6: Lightning 실사 변환은 그림 느낌이 남았다). 없으면 지금처럼 빠른 편집 레시피"""
+        return (self.recipe_for("edit", "high") if key == "photo" else None) or self.recipe_for("edit")
+
     async def _style_convert(self, ctx: Ctx, work: dict, k: int, cid: str, src_rel: str, key: str):
-        """인물 기준 그림을 영화 화풍(애니·실사 등)으로 바꾼다 (편집 한 장 8초). 돌아오는 값: 그림 rel, 편집 레시피가 없으면 None, 취소면 False"""
-        erec = self.recipe_for("edit")
+        """인물 기준 그림을 영화 화풍(애니·실사 등)으로 바꾼다 (편집 한 장 8초, 실사 높음 판은 더 걸린다). 돌아오는 값: 그림 rel, 편집 레시피가
+        없으면 None, 취소면 False. 검사는 새로 그린 첫 화면처럼 STUDIO_PICTURE_CHECK 와 상관없이 늘 돈다(이 그림이 영화 내내 그 인물의 얼굴):
+        사람 수·몸, 알아볼 소품(checks.sign_trait), 화풍의 '아닌 것'(checks.style_negative) — 11-20 S6 실사 변환은 그림 느낌이 남아도 통과했다"""
+        erec = self._convert_recipe(key)
         if erec is None:
             return None
         v = _video()
+        story = work["story"]
         att = await self.deps.stage_image(ctx.env, ctx.user, ctx.turn, src_rel)
         pend = f"C{k}s_pending"
-        swork = {"prompt": v.style_convert_prompt(key, v._who(work["story"], cid)), "scene_att": att["id"], pend: work.get(pend)}
-        main = await self._dlg_still(ctx, work, erec, f"C{k}s", pend, "인물 준비", swork, "portrait", k, f"c{k}:portrait", cid)
+        swork = {"prompt": v.style_convert_prompt(key, v._who(story, cid)), "scene_att": att["id"], pend: work.get(pend)}
+        rule = checks.rule(None, skip=checks.ANIMAL_SKIP) if self._is_animal(story, cid) else checks.ONE
+
+        async def convert_check(rel: str, attempt: int):
+            return await self._compose_check(ctx, rel, story, k, [cid], rule, attempt, what="convert")
+
+        main = await self._dlg_still(ctx, work, erec, f"C{k}s", pend, "인물 준비", swork, "convert", k, f"c{k}:portrait", cid,
+                                     check_fn=convert_check)
         if main is None:
             return False
-        await store.event(ctx.turn["id"], "cast_style_convert", {"character": cid, "style": key, "rel": main["rel_path"]})
+        await store.event(ctx.turn["id"], "cast_style_convert", {"character": cid, "style": key, "rel": main["rel_path"],
+                                                                 "recipe": erec["id"]})
         return main["rel_path"]
 
     async def _chain_scene(self, ctx: Ctx, work: dict, scenes: list, i: int) -> dict | None:
@@ -1886,7 +1968,7 @@ class Director:
         ref_ids = v.pick_refs(story, i, have, limit=3 if (i == 0 or crec is not None) else 2)
         await store.event(turn["id"], "long_scene_start", {"index": i, "seconds": sc["seconds"], "chain": seam, "refs": ref_ids,
                                                            "cast": ref_ids[0] if ref_ids else None, "talk": sc.get("kind") == "talk",
-                                                           "compose": crec is not None})
+                                                           "compose": crec is not None, **({"duo": True} if v.duo_talk(story, i) else {})})
         # 끝 프레임이 인물 검사를 통과하지 못했거나(end_fail) 빈 프레임을 이어 받았던 장면은 그대로 잇지 않고 고쳐 잇는다
         keep = (i > 0 and seam == v.SEAM_CONTINUE and prev.get("last_rel") and not prev.get("end_fail") and not st.get("no_chain")
                 and bool(files.result_path(prev["last_rel"])))
@@ -2155,7 +2237,7 @@ class Director:
     async def _compose_check(self, ctx: Ctx, rel: str, story: dict, i: int, ids: list[str], rule: dict,
                              attempt: int, what: str = "compose") -> tuple[list[str], int | None]:
         """새로 그린 첫 화면 검사: 사람 수(compose_rule 등 호출 쪽 기준), 몸의 이상, 기준 그림을 넣은 인물마다 알아볼 소품(checks.sign_trait), 화풍.
-        일관성이 가장 중요해서(11-20 사용자) STUDIO_PICTURE_CHECK 와 상관없이 늘 돈다 (끝 프레임 검사와 같다)"""
+        일관성이 가장 중요해서(11-20 사용자) STUDIO_PICTURE_CHECK 와 상관없이 늘 돈다 (끝 프레임 검사와 같다). 기준 그림 화풍 변환도 이 검사"""
         v = _video()
         chars = {c["id"]: c for c in story["bible"]["characters"]}
         neg = checks.style_negative(v.style_key(story))
@@ -2219,7 +2301,7 @@ class Director:
 
         try:
             main = await self._dlg_still(ctx, work, img, f"P{k}", pend, "장소 준비", swork, "place", k, key, None, rule=checks.rule(0),
-                                         always=True)
+                                         extra=self._style_extra(story), always=True)
         except StepError as e:
             if e.code == "queue_wait":
                 raise
@@ -2324,10 +2406,11 @@ class Director:
 
     async def _dlg_still(self, ctx: Ctx, work: dict, recipe: dict, tag: str, pend: str, label: str, swork: dict, what: str,
                          index: int, key: str, cid: str | None = None, rule: dict | None = None,
-                         extra: list[str] | None = None, always: bool = False) -> dict | None:
+                         extra: list[str] | None = None, always: bool = False, check_fn=None) -> dict | None:
         """대사 영상의 그림 한 장(인물 기준 그림·기준 그림을 고친 첫 화면)을 검사하며 만든다. 둘 다 한 사람만 나와야 한다
         (인물이 동물이면 사람 수와 팔다리는 보지 않는다). 틀리면 씨앗을 바꿔 다시 만들고(STILL_TRIES), 다 틀리면 가장 나은 그림을 쓰고
-        남은 문제를 기억한다. 결과에 센 사람 수(seen)를 붙인다. 취소면 None"""
+        남은 문제를 기억한다. 결과에 센 사람 수(seen)를 붙인다. check_fn(rel, attempt) 는 검사를 바꿀 때(기준 그림 화풍 변환).
+        검사 모델이 답하지 않으면(…:unchecked) 다시 만들지 않는다. 취소면 None"""
         story = work["story"]
         style = _video().story_style(story)
         if rule is None:
@@ -2345,10 +2428,13 @@ class Director:
             if main is None:
                 return None
             work[pend] = swork.get(pend)
-            why, seen = await self._picture_check(ctx, main["rel_path"], rule, style, what, index, check, extra=extra, always=always)
+            if check_fn is not None:
+                why, seen = await check_fn(main["rel_path"], check)
+            else:
+                why, seen = await self._picture_check(ctx, main["rel_path"], rule, style, what, index, check, extra=extra, always=always)
             if checks.better(best_why, why):
                 best, best_why, best_seen = main, why, seen
-            if not why:
+            if not why or any(str(w).endswith(":unchecked") for w in why):
                 break
             if check < STILL_TRIES:
                 await store.event(ctx.turn["id"], "picture_retry", {"what": what, "index": index, "attempt": check, "why": why})
@@ -2417,7 +2503,9 @@ class Director:
 
     async def _dlg_scene(self, ctx: Ctx, work: dict, scenes: list, i: int) -> dict | None:
         """인물 한 명이 가까이 나오는 장면. 첫 화면은 기준 그림을 이 장면으로 고친 그림.
-        말하는 장면은 그 대사 소리로 입을 맞추고(IA2V), 듣는 얼굴 같은 장면은 긴 영상과 같은 길(계획표 → 영상 글 → LTX)로 만든다"""
+        말하는 장면은 그 대사 소리로 입을 맞추고(IA2V), 듣는 얼굴 같은 장면은 긴 영상과 같은 길(계획표 → 영상 글 → LTX)로 만든다.
+        두 사람 대사 컷(11-24, 장면 잇기가 첫 화면을 두 사람으로 그린 컷)은 InfiniteTalk 두 화자 레시피(talk_duo)로 말하는 사람 입만
+        맞춘다 (메인 X1·X6: 듣는 사람은 입을 다물고 들었다. X2: 같은 투샷을 LTX 로 하면 말하는 입이 거의 안 움직였다)"""
         turn, story = ctx.turn, work["story"]
         v = _video()
         sc = story["scenes"][i]
@@ -2427,7 +2515,8 @@ class Director:
         ctx.motion, ctx.has_fix = False, False
         if not st.get("first_att"):
             await store.event(turn["id"], "long_scene_start", {"index": i, "seconds": sc["seconds"], "chain": False, "cast": cid,
-                                                               "talk": sc.get("kind") == "talk"})
+                                                               "talk": sc.get("kind") == "talk",
+                                                               **({"duo": True} if v.duo_talk(story, i) else {})})
             cast = (work.get("casts") or {}).get(cid) or {}
             if not cast.get("att"):
                 raise StepError("no_image", f"장면 {i + 1}: 인물 기준 그림이 없습니다")
@@ -2443,6 +2532,8 @@ class Director:
                 att = await self.deps.stage_image(ctx.env, ctx.user, turn, main["rel_path"])
                 st.update(first_att=att["id"], first_from="edit", edit_rel=main["rel_path"], scene_prompt=swork["prompt"],
                           first_people=main.get("seen"))
+            if v.talk_pair(story, i):
+                st["first_solo"] = True       # 기준 그림 한 장을 고친 첫 화면은 한 사람이다: 두 사람 대사 컷으로 만들지 않는다
             await self._save_scene(ctx, work, scenes, i, st)
         if sc.get("kind") != "talk":
             return await self._long_scene(ctx, work, scenes, i)
@@ -2452,54 +2543,142 @@ class Director:
         line = (work.get("lines") or {}).get(str(i)) or {}
         if not self._dlg_has(ctx, line):
             raise StepError("gone", f"장면 {i + 1}의 대사 소리가 없습니다")
-        st["prompt"] = st.get("prompt") or v.talk_prompt(story, i)
-        fps = int(trec["defaults"].get("fps") or 24)
-        pend = f"L{i}v_pending"
-        swork = {"prompt": st["prompt"], "scene_att": st["first_att"], "audio_in": line["in_rel"],
-                 "settings": {"frames": int(sc["seconds"]) * fps + 1}, "size": list(work["long_size"]), pend: work.get(pend)}
-        # 잇는 프레임은 합칠 때 자르는 지점의 프레임이다 (클립 끝은 입 맞춤 모델이 대사 뒤에 어두워지는 구간, TALK_TAIL)
-        trim = max(TALK_MIN_SHOT, float(line.get("seconds") or 0) + TALK_TAIL)
-        swork["last_index"] = int(round(min(trim, float(sc["seconds"])) * fps))
         chain = bool(work.get("chain"))
         style = v.story_style(story)
-        rule = checks.clip_rule(st.get("first_people"), 1 if self._is_animal(story, cid) else 0, talk=True)
-        best, best_why = None, None
-        for check in range(1, CLIP_TRIES + 1):
-            ctx.text = "생성 대기"
-            try:
-                main = await self._dlg_job(ctx, trec, f"L{i}v", pend, "입 맞춤", swork, "generate", fresh=check > 1)
-            except StepError as e:
-                if best is None:
-                    raise
-                await store.event(turn["id"], "picture_retry_failed", {"what": "talk_clip", "index": i, "attempt": check, "code": e.code})
-                break
-            if main is None:
+        # 동물은 장면 인물로 센다: 두 사람 규칙은 듣는 쪽으로 동물도 받아([말하는 사람, 동물]) 첫 화면에 동물이 들어간다.
+        # 말하는 사람만 보면 고양이를 사람으로 세거나 다리를 팔다리 더함으로 잡아 클립을 헛되이 다시 만든다 (11-24 검토)
+        animals = self._scene_cast(story, i)[1]
+        pair = None if st.get("first_solo") else v.talk_pair(story, i)
+        if st.get("first_solo") and v.duo_talk(story, i):
+            await store.event(turn["id"], "duo_fallback", {"index": i, "reason": "solo_first_frame"})
+        trim = max(TALK_MIN_SHOT, float(line.get("seconds") or 0) + TALK_TAIL)
+        got, delay = None, 0.0
+        if pair:
+            # 두 사람이 보이는 첫 화면: 영상 글은 두 사람을 자리로 쓰고(혼자라고 쓰면 듣는 사람을 지운다), 검사는 정확히 두 사람
+            slots = v.layout_slots(story, i, v.scene_people(story, i))
+            st["prompt"] = st.get("prompt") or v.duo_talk_prompt(story, i, slots)
+            # 무리 말이 있는 장소는 첫 화면이 배경 행인을 받아들였다(compose_rule): 클립도 두 사람보다 많아도 된다 (줄어드는 것은 안 된다)
+            rule = checks.clip_rule(2, animals, talk=True, duo=True, crowd=self._scene_crowd(story, i))
+            failed = bool(st.get("duo_failed"))
+            drec, reason = (None, "failed") if failed else self._duo_recipe(work, story, i)
+            if drec is None:
+                if not failed:        # 앞에서 실패해 내려간 컷(재시작)은 이미 알렸다: LTX 작업을 이어받는다
+                    await store.event(turn["id"], "duo_fallback", {"index": i, "reason": reason})
+            else:
+                # 소리 자리는 구도 그림의 좌우(layout_slots): 말하는 사람 자리에 대사, 다른 자리에 짧은 무음
+                silence = await self._duo_silence(ctx)
+                right = sc.get("speaker") == slots[1]["id"]
+                delay = DUO_SILENCE if right else 0.0
+                fps = int(drec["defaults"].get("fps") or 25)
+                frames = recipes.frames_for(drec, sc["seconds"])
+                pend = f"L{i}w_pending"
+                swork = {"prompt": st["prompt"], "scene_att": st["first_att"],
+                         "audio_in": silence if right else line["in_rel"], "audio2_in": line["in_rel"] if right else silence,
+                         "settings": {"frames": frames}, "size": list(work["long_size"]),
+                         "last_index": min(int(round((trim + delay) * fps)), frames - 1), pend: work.get(pend)}
+                try:
+                    got = await self._talk_clip(ctx, work, story, i, drec, f"L{i}w", swork, rule, style, chain)
+                except StepError as e:
+                    if e.code not in DUO_FALLBACK_CODES:
+                        raise
+                    # 내려간 것을 남긴다: LTX 작업 중에 허브가 다시 시작해도 실패한 두 화자 작업을 이어받아 새로 접수하지 않게
+                    # (새 두 화자 작업이 되면 이미 접수한 LTX 작업이 버려진 채 GPU 를 쓴다, 11-24 검토). 다시 만들기(_long_reset)가 지운다
+                    st["duo_failed"] = True
+                    await self._save_scene(ctx, work, scenes, i, st)
+                    await store.event(turn["id"], "duo_fallback", {"index": i, "reason": "failed", "code": e.code,
+                                                                  "detail": str(e.detail or "")[:200]})
+                    got = False
+                if got is None:
+                    return None
+                if got:
+                    got = (*got, drec)
+                else:
+                    got, delay = None, 0.0
+        else:
+            st["prompt"] = st.get("prompt") or v.talk_prompt(story, i)
+            rule = checks.clip_rule(st.get("first_people"), animals, talk=True)
+        if got is None:
+            fps = int(trec["defaults"].get("fps") or 24)
+            pend = f"L{i}v_pending"
+            swork = {"prompt": st["prompt"], "scene_att": st["first_att"], "audio_in": line["in_rel"],
+                     "settings": {"frames": int(sc["seconds"]) * fps + 1}, "size": list(work["long_size"]), pend: work.get(pend)}
+            # 잇는 프레임은 합칠 때 자르는 지점의 프레임이다 (클립 끝은 입 맞춤 모델이 대사 뒤에 어두워지는 구간, TALK_TAIL)
+            swork["last_index"] = int(round(min(trim, float(sc["seconds"])) * fps))
+            got = await self._talk_clip(ctx, work, story, i, trec, f"L{i}v", swork, rule, style, chain)
+            if got is None:
                 return None
-            work[pend] = swork.get(pend)
-            main = {**main, "seed": swork.get("seed")}
-            why, _seen = await self._picture_check(ctx, self._output_rel(trec, main.get("outs"), "check"), rule, style, "talk_clip", i, check)
-            if chain and self._output_rel(trec, main.get("outs"), "last"):
-                why = why + await self._end_check(ctx, self._output_rel(trec, main.get("outs"), "last"), story, i, "end_frame", check)
-            if checks.better(best_why, why):
-                best, best_why = main, why
-            if not why:
-                break
-            if check < CLIP_TRIES:
-                await store.event(turn["id"], "picture_retry", {"what": "talk_clip", "index": i, "attempt": check, "why": why})
+            got = (*got, trec)
+        main, best_why, used = got
         await self._check_left(ctx, work, f"{i}:clip", best_why)
-        main = best
         try:
             _n, sha = await asyncio.to_thread(files.fingerprint, main["rel_path"])
         except OSError:
             sha = None
         st.update(clip_rel=main["rel_path"], clip_sha=sha, seed=main.get("seed"), seconds=sc["seconds"])
+        duo = used.get("action") == "talk_duo"
+        for k in ("duo", "line_delay"):
+            st.pop(k, None)
+        if duo:
+            st.update(duo=True, line_delay=delay)       # 합치기가 대사를 그만큼 늦게 놓고 그만큼 더 길게 자른다 (오른쪽 사람이 말할 때)
         if chain:
-            st["last_rel"] = self._output_rel(trec, main.get("outs"), "last")
+            st["last_rel"] = self._output_rel(used, main.get("outs"), "last")
             st.update(self._chain_source(st, {"last_rel": st["last_rel"]}, best_why))
         await self._save_scene(ctx, work, scenes, i, st)
         await store.event(turn["id"], "long_scene_done", {"index": i, "clip": st["clip_rel"], "first_from": st.get("first_from"),
-                                                          "talk": True})
+                                                          "talk": True, **({"duo": True} if duo else {})})
         return st
+
+    def _duo_recipe(self, work: dict, story: dict, i: int) -> tuple[dict | None, str]:
+        """두 사람 대사 컷에 쓸 InfiniteTalk 두 화자 레시피와, 쓰지 못하면 그 까닭(off: 설정이 꺼짐, portrait: 세로·정사각 영상 —
+        848×464 가로 생성이라 가운데를 자르면 두 사람이 잘린다, recipe_off: 레시피가 꺼짐). 구성안은 이런 요청이면 처음부터 혼자 규칙으로
+        쓰므로(_duo_ready) 여기는 구성안을 쓴 뒤에 바뀐 경우다"""
+        if not _video().duo_talk(story, i):
+            return None, "off"
+        if not self._wide(work.get("long_size")):
+            return None, "portrait"
+        r = self.recipe_for("talk_duo")
+        return (r, "") if r is not None else (None, "recipe_off")
+
+    async def _duo_silence(self, ctx: Ctx) -> str:
+        """요청 폴더의 무음 WAV (말하지 않는 사람 자리, 한 번 만든다). 대사 소리처럼 입력 폴더 상대 경로로 LoadAudio 에 넣는다"""
+        rel = files.turn_input_rel(ctx.user["username"], ctx.user["id"], ctx.turn["id"], "silence.wav")
+        if files.input_path(ctx.env, rel) is None:
+            dst = files.input_write_path(ctx.env, rel)
+            await asyncio.to_thread(files.write_silence_wav, dst, DUO_SILENCE)
+            files.own_input(ctx.env, dst)
+        return rel
+
+    async def _talk_clip(self, ctx: Ctx, work: dict, story: dict, i: int, recipe: dict, tag: str, swork: dict, rule: dict,
+                         style: str, chain: bool):
+        """입 맞춤 클립 하나 (검사해서 틀리면 씨앗을 바꿔 한 번 더, CLIP_TRIES). (가장 나은 결과, 남은 까닭), 취소면 None.
+        첫 작업이 실패하면 StepError 를 그대로 올린다 (두 사람 레시피는 감독이 LTX 로 내려간다)"""
+        pend = f"{tag}_pending"
+        extra = self._style_extra(story)
+        best, best_why = None, None
+        for check in range(1, CLIP_TRIES + 1):
+            ctx.text = "생성 대기"
+            try:
+                main = await self._dlg_job(ctx, recipe, tag, pend, "입 맞춤", swork, "generate", fresh=check > 1)
+            except StepError as e:
+                if best is None:
+                    raise
+                await store.event(ctx.turn["id"], "picture_retry_failed", {"what": "talk_clip", "index": i, "attempt": check, "code": e.code})
+                break
+            if main is None:
+                return None
+            work[pend] = swork.get(pend)
+            main = {**main, "seed": swork.get("seed")}
+            why, _seen = await self._picture_check(ctx, self._output_rel(recipe, main.get("outs"), "check"), rule, style, "talk_clip", i, check,
+                                                   extra=extra)
+            if chain and self._output_rel(recipe, main.get("outs"), "last"):
+                why = why + await self._end_check(ctx, self._output_rel(recipe, main.get("outs"), "last"), story, i, "end_frame", check)
+            if checks.better(best_why, why):
+                best, best_why = main, why
+            if not why:
+                break
+            if check < CLIP_TRIES:
+                await store.event(ctx.turn["id"], "picture_retry", {"what": "talk_clip", "index": i, "attempt": check, "why": why})
+        return best, best_why
 
     async def _dlg_finish(self, ctx: Ctx, work: dict, scenes: list, music_rel):
         """대사 영상 합치기: 샷 사이 디졸브, 대사 소리를 샷 시작 + 0.2초에, 자막(투명 PNG), 배경음악. 말하는 샷은 대사 끝에서 자른다.
@@ -2520,13 +2699,18 @@ class Director:
         items, trims, notes, subs_ok = [], [], [], True
         for i, sc in enumerate(story["scenes"]):
             ln = lines_map.get(str(i))
-            trims.append(max(TALK_MIN_SHOT, float(ln["seconds"]) + TALK_TAIL) if ln and sc.get("kind") == "talk" else None)
+            # 두 사람 대사 컷에서 오른쪽 사람이 말하면 클립 안의 대사가 무음(DUO_SILENCE)만큼 늦게 시작한다: 대사 소리도 그만큼 늦게 놓고
+            # 그만큼 더 길게 자른다 (왼쪽 사람이 말할 때와 입·소리 사이가 같게)
+            delay = float((scenes[i] or {}).get("line_delay") or 0.0) if i < len(scenes) and sc.get("kind") == "talk" else 0.0
+            trims.append(max(TALK_MIN_SHOT, float(ln["seconds"]) + TALK_TAIL) + delay if ln and sc.get("kind") == "talk" else None)
             if not ln:
                 continue
             path = files.input_path(ctx.env, ln.get("in_rel") or "")
             if path is None:
                 raise StepError("gone", f"장면 {i + 1}의 대사 소리가 없습니다")
             item = {"file": path, "shot": i}
+            if delay:
+                item["delay"] = round(delay, 3)
             if subs_ok:
                 sub_out = os.path.join(os.path.dirname(out_abs), f"sub_{str(turn['id'])[:8]}_{i}.png")
                 try:
@@ -2941,10 +3125,14 @@ class Director:
             values["bpm"] = int(work.get("bpm") or 90)
         if "keyscale" in inject:
             values["keyscale"] = str(work.get("keyscale") or "C major")
-        if "audio" in inject:          # 목소리 복제의 기준 목소리, 입 맞춤의 대사 소리 (입력 폴더 상대 경로)
+        if "audio" in inject:          # 목소리 복제의 기준 목소리, 입 맞춤의 대사 소리, 두 사람 대사 컷의 왼쪽 사람 소리 (입력 폴더 상대 경로)
             if not work.get("audio_in"):
                 raise StepError("gone", "소리 파일이 없습니다")
             values["audio"] = work["audio_in"]
+        if "audio2" in inject:         # 두 사람 대사 컷의 오른쪽 사람 소리 (말하지 않으면 무음 파일)
+            if not work.get("audio2_in"):
+                raise StepError("gone", "오른쪽 사람 소리 파일이 없습니다")
+            values["audio2"] = work["audio2_in"]
         if "voice_instruct" in inject:
             values["voice_instruct"] = str(work.get("instruct") or "A natural, clear Korean speaking voice.")
         if "max_tokens" in inject:

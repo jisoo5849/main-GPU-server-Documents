@@ -128,6 +128,20 @@ def write_sample_wav(env: dict) -> str:
     return path
 
 
+def write_silence_wav(path: str, seconds: float = 0.12, rate: int = 48000) -> str:
+    """짧은 무음 WAV (모노 16비트, 다듬은 대사 소리와 같은 48kHz). 두 사람 대사 컷에서 말하지 않는 사람 자리에 넣는다
+    (11-24 메인 X6: 듣는 사람 자리에 0.12초 무음을 넣자 그 사람은 입을 다물고 들었다). 경로를 돌려준다"""
+    import struct
+    n = max(1, int(round(float(seconds) * rate)))
+    data = bytes(2 * n)
+    wav = (b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+           + b"data" + struct.pack("<I", len(data)) + data)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(wav)
+    return path
+
+
 def turn_input_rel(username: str, user_id: int, turn_id, name: str) -> str:
     """요청 하나가 만든 입력 파일(대사 소리 등)의 입력 폴더 기준 상대 경로: studio/<사용자 폴더>/<요청 앞 8자>/<이름>"""
     if "/" in name or "\\" in name or ".." in name:

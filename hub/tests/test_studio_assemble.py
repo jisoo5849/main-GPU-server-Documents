@@ -363,9 +363,9 @@ def t_mixed_seams_build_a_graph_with_dissolve_and_plain_concat():
     assert starts == [0.0, 5.4, 10.4, 14.8] and abs(total - 19.8) < 1e-6      # 컷 이음새는 겹치지 않는다
 
 
-def _make_clip(tmp, name, sec, src, audio=False, size="320x176"):
+def _make_clip(tmp, name, sec, src, audio=False, size="320x176", rate=24):
     path = os.path.join(tmp, name)
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"{src}=size={size}:rate=24:duration={sec}"]
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"{src}=size={size}:rate={rate}:duration={sec}"]
     if audio:
         cmd += ["-f", "lavfi", "-i", f"sine=frequency=440:duration={sec}:sample_rate=48000"]
     cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p"] + (["-c:a", "aac", "-shortest"] if audio else []) + [path]
@@ -418,6 +418,34 @@ def t_real_dialogue_with_seams_when_ffmpeg_is_present():
             assert info["overlaps"] == A.overlaps_for(seams, 0.5) and abs(info["expected"] - want) < 1e-6
         info = A.run_dialogue(clips, lines, None, os.path.join(tmp, "o", "default.mp4"))     # seams 없음 = 전부 0.5초
         assert info["overlaps"] == [0.5, 0.5]
+
+
+def t_duo_clips_at_25fps_join_24fps_shots_of_the_same_size():
+    """두 사람 대사 컷(InfiniteTalk, 11-24)은 25fps 이고 1280×704 로 키워 나온다: 합치기는 첫 클립의 fps 로 모든 샷을 맞추고(fps 필터),
+    크기가 다른 샷만 거절한다. 그래서 감독은 두 사람 클립의 출력 크기를 영상 크기(long_size)로 넣는다"""
+    assert A._fps({"fps": "25/1"}) == 25.0 and A._fps({"fps": "24000/1001"}) < 24
+    f = A.build_video_filter([4.0, 4.04, 3.5], [0.5, 0.0], 24.0, [None, 3.62, None])
+    assert f.count("fps=24,settb=AVTB") == 3 and "[1:v]trim=0:3.620,setpts=PTS-STARTPTS,fps=24" in f
+    if not A.available():
+        print("  (ffmpeg 가 없어 실제 25fps·24fps 섞어 합치기는 건너뜀)")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        a = _make_clip(tmp, "ltx.mp4", 3, "testsrc", rate=24)
+        b = _make_clip(tmp, "duo.mp4", 3, "testsrc2", rate=25)
+        tone = os.path.join(tmp, "l.mp3")
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        "sine=frequency=440:duration=1.5:sample_rate=48000", tone], check=True, capture_output=True)
+        out = os.path.join(tmp, "o", "mixed.mp4")
+        info = A.run_dialogue([a, b], [{"file": tone, "shot": 1, "delay": 0.12}], None, out, seams=["cut"])
+        got = A.probe(out)
+        assert abs(got["duration"] - 6.0) < 0.3 and abs(A._fps(got) - 24.0) < 0.01 and info["shots"] == 2, (got, info)
+        c = _make_clip(tmp, "small.mp4", 3, "smptebars", size="212x116", rate=25)
+        try:
+            A.run_dialogue([a, c], [], None, os.path.join(tmp, "o", "bad.mp4"))
+        except A.AssembleError as e:
+            assert "크기" in str(e)
+        else:
+            raise AssertionError("크기가 다른 샷을 합쳤다")
 
 
 def t_real_frame_at_and_last_frame_when_ffmpeg_is_present():

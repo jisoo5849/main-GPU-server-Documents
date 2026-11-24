@@ -2054,8 +2054,9 @@ def test_write_dialogue_story_uses_the_dialogue_schema_and_repairs():
     story, left, rounds = asyncio.run(video.write_dialogue_story(call, "니키와 푸토르가 숲속을 걸어가며 대화하는 영상", "", 48))
     assert rounds == 2 and left == [] and story["dialogue"], left
     system = call.calls[0]["messages"][0]["content"]
-    assert "spoken dialogue in Korean" in system and call.calls[0]["format"] is video.DIALOGUE_SCHEMA
+    assert "spoken dialogue in Korean" in system and call.calls[0]["format"] is video.dialogue_schema()      # 두 사람 대화 설정에 따라
     assert "line_ko" in video.DIALOGUE_SCHEMA["properties"]["scenes"]["items"]["required"]
+    assert "line_ko" in video.DIALOGUE_SCHEMA_SOLO["properties"]["scenes"]["items"]["required"]
 
 
 def _dlg_good():
@@ -2327,6 +2328,163 @@ def test_cast_library_overrides_the_story_bible_and_the_style():
     assert cast_lib.match_character(same, lib)["id"] == "putor"
     assert cast_lib.match_character({"id": "A", "look": "an old man with a white beard and a brown hat"}, lib) is None
     assert cast_lib.match_character({"id": "putor", "look": "anything"}, lib)["id"] == "putor"           # id 가 라이브러리 id 와 같다
+
+
+def test_style_key_order_one_photo_detector_and_said_style():
+    """11-24 화풍 일반화: 열쇠 순서(분명한 반실사 → 애니 → 실사 → 그림 → 나머지), 실사 판정은 한 함수, 요청 글이 화풍을 말했는가"""
+    from app import cast_lib
+    key = cast_lib.style_key
+    lib_style = cast_lib.library()[0]["style"]
+    # ① 분명한 반실사 말이 먼저 (라이브러리 화풍 글의 'semi-realistic' 이 실사 낱말에 걸리지 않게). 한글이 붙은 '2.5D 느낌'도
+    for s in (lib_style, "semi-photorealistic digital painting", "반실사 컨셉아트", "2.5D 느낌의 판타지", "2.5D concept art"):
+        assert key(s) == "semi" and not cast_lib.is_photo_style(s), s
+    # ② 애니 말은 그림 말보다 먼저 (11-18 애니 시험 문장이 'painted' 때문에 반실사로 읽혔다). 3D 애니도 애니 열쇠
+    for s in ("2D hand-drawn lines on cel-shaded 3D characters, soft painted backgrounds, bright pastel colours",
+              "2D anime film with painterly watercolor backgrounds", "Pixar-like 3D animated feature", "stylized 3D CG animation",
+              "cel shading, flat colours", "웹툰 그림체", "2D로 그린 만화", "cel-shaded cartoon"):
+        assert key(s) == "anime", s
+    # ③ 실사 말
+    for s in ("photorealistic cinematic live action", "live-action film still", "a realistic photo look", "a cinematic photograph",
+              "사진처럼 생생하게", "사진 같은 화면", "실사 영화"):
+        assert key(s) == "photo" and cast_lib.is_photo_style(s), s
+    # ④ 그림 말·⑤ 나머지는 반실사 (3D 렌더·점토는 따로 열쇠가 없다)
+    for s in ("watercolour storybook illustration", "oil painting with thick strokes", "수채화 동화책", "유화 느낌",
+              "3D render, octane", "claymation", "realistic cinematic film", "something unknown", "", None):
+        assert key(s) == "semi", s
+    # '아닌 것' 구절은 그 화풍으로 읽지 않는다 (구성안 화풍 글의 "not a cartoon"·"non-photorealistic")
+    assert key("photorealistic live action, not a cartoon, not a painting") == "photo"
+    assert key("hand-drawn anime, never photographic") == "anime" and key("non-photorealistic watercolour") == "semi"
+    assert key("excellent cello celebration") == "semi" and key("animal documentary, photorealistic") == "photo"
+    # 'non-' 은 바로 붙은 낱말만 부정한다: 같은 구절의 애니 말은 남는다 (11-24 검토: 'non-realistic 2D animation' 이 반실사로 읽혔다).
+    # not 은 쉼표까지 ('not a cel-shaded cartoon' 은 구절 전체가 아닌 것)
+    assert key("non-realistic 2D animation, soft colors") == "anime" and key("Non-photorealistic anime look, flat colors") == "anime"
+    assert key("photorealistic, not a cel-shaded cartoon") == "photo" and key("nonphotorealistic watercolour") == "semi"
+    # ② 애니 말은 ③ 실사 말보다 먼저 (3D 애니·실사 배경 위의 애니 인물도 애니 열쇠)
+    assert key("photorealistic 3D animated feature") == "anime"
+    assert key("anime characters over live-action photographed backgrounds") == "anime"
+    # 실사 판정은 한 함수: story_style(사실적이지 않은 화풍만 돌려준다)과 열쇠가 서로 어긋나지 않는다
+    for s in ("semi-photorealistic digital painting", "photorealistic cinematic live action", "2D anime", "realistic cinematic film",
+              "a cinematic photograph", lib_style, "watercolour, not photorealistic", "cinematic live-action drama"):
+        assert (video.story_style({"bible": {"style": s}}) == "") == (key(s) == "photo"), s
+    # 요청 글이 화풍을 말했는가: 열쇠 말 + 3D·픽사·클레이·코믹스·동화·그림체·화풍. '코믹한'·'운동화'·정해진 모습을 쓰라는 말은 아니다
+    said = cast_lib.said_style
+    for t in ("니키와 푸토르가 대화하는 애니메이션", "실사 영화처럼", "수채화 느낌의 숲", "3D 픽사 느낌으로", "클레이 애니", "코믹스 그림체",
+              "동화 같은 숲속", "지브리 화풍", "따뜻한 화풍으로", "반실사로", "웹툰처럼", "사진처럼 찍은", "hand-drawn look"):
+        assert said(t), t
+    for t in ("니키와 푸토르가 숲길을 걸어가는 영상", "코믹한 대화", "운동화를 신은 니키", "자동화 공장", "니키 원래 그림체 그대로",
+              "그림체는 유지해 줘", "사진을 찍는 제임스", "", None):
+        assert not said(t), t
+    assert cast_lib.said_photo("실사 영화처럼") and not cast_lib.said_photo("반실사로") and not cast_lib.said_photo("애니메이션")
+
+
+def test_library_style_is_not_forced_when_the_request_names_a_style():
+    """11-24: 니키가 나오는 애니 요청에 '라이브러리 화풍(반실사)을 bible.style 에 베껴라' 줄이 같이 가서 반실사가 됐다.
+    요청이 화풍을 말하면 그 줄 대신 요청 화풍을 쓰게 하고, 구성안 화풍을 라이브러리 화풍으로 덮어쓰지 않는다"""
+    import copy as _copy
+    from app import cast_lib
+    lib = cast_lib.library()
+    lib_style = lib[0]["style"]
+    plain = cast_lib.prompt_block(lib, text="니키와 푸토르가 대화")
+    assert "copy it into bible.style" in plain and lib_style in plain
+    anime = cast_lib.prompt_block(lib, text="니키와 푸토르가 대화하는 2D 애니메이션")
+    assert "copy it into bible.style" not in anime and lib_style not in anime
+    assert "write the look the request asks for into bible.style" in anime and "golden-ochre coat" in anime      # 인물 외형은 그대로
+    silent = cast_lib.prompt_block(lib, speech=False, by_id=True, text="니키가 걷는 실사 영화")
+    assert lib_style not in silent and "write the look the request asks for into bible.style" in silent
+    assert lib_style in cast_lib.prompt_block(lib, text="니키 원래 그림체 그대로")              # 정해진 모습을 쓰라는 말은 화풍이 아니다
+    base = video.clean_dialogue_story(_copy.deepcopy(DLG_OK), 48)
+
+    def applied(style, text, keep=None):
+        st = _copy.deepcopy(base)
+        st["bible"]["style"] = style
+        cast_lib.apply_to_story(st, lib, text, keep_style=bool(video.story_style(st)) if keep is None else keep)
+        return st["bible"]["style"]
+    # 사용자가 말한 화풍은 지킨다 (모델이 그 화풍으로 썼다)
+    assert applied("2D anime film, clean cel-shaded line art", "니키와 푸토르가 대화하는 애니메이션") == "2D anime film, clean cel-shaded line art"
+    assert applied("soft watercolour storybook illustration", "수채화 느낌으로 니키가 걷는다", keep=False) == "soft watercolour storybook illustration"
+    assert applied("photorealistic cinematic live action", "니키와 푸토르가 실사 영화처럼 대화") == "photorealistic cinematic live action"
+    # 말하지 않았으면 지금 규칙: 실사·빈 화풍은 라이브러리 화풍, 사실적이지 않은 구성안 화풍은 그대로
+    assert applied("photorealistic cinematic live action", "니키와 푸토르가 대화") == lib_style
+    assert applied("", "니키와 푸토르가 대화") == lib_style
+    assert applied("warm painterly storybook look", "니키와 푸토르가 대화") == "warm painterly storybook look"
+    # 화풍을 말했는데 구성안이 따르지 않았으면(비었거나 애니 요청에 실사) 요청 화풍의 기본 글로 채운다 (11-24 검토: 애니 요청이 반실사로
+    # 덮였다). 반실사·그림 말이면 라이브러리 화풍(반실사)이 그 화풍이다
+    anime_text = cast_lib.SAID_STYLE_TEXT["anime"]
+    assert applied("", "애니메이션으로") == anime_text and video.style_key({"bible": {"style": anime_text}}) == "anime"
+    assert applied("photorealistic cinematic live action", "니키와 푸토르가 대화하는 애니메이션") == anime_text
+    assert applied("", "니키와 푸토르가 실사 영화처럼") == cast_lib.SAID_STYLE_TEXT["photo"]
+    assert video.style_key({"bible": {"style": cast_lib.SAID_STYLE_TEXT["photo"]}}) == "photo"
+    assert applied("", "수채화 느낌으로") == lib_style and applied("photorealistic film", "반실사로") == lib_style
+    # '만화책을 읽는' 같은 물건 말은 화풍을 말한 것이 아니다: 지금 규칙(라이브러리 화풍), 구성안 지시문에도 라이브러리 화풍 줄
+    assert applied("photorealistic cinematic live action", "니키가 만화책을 읽는다") == lib_style
+    assert not cast_lib.said_style("니키가 만화책을 읽는다") and cast_lib.said_style("만화 그림체로") and not cast_lib.said_style("reading a comic book")
+    assert lib_style in cast_lib.prompt_block(lib, text="니키가 만화책을 읽는다")
+    assert cast_lib.said_key("니키가 만화책을 읽는다") is None and cast_lib.said_key("애니메이션으로") == "anime"
+    assert cast_lib.said_key("실사 영화처럼") == "photo" and cast_lib.said_key("반실사로") == "semi"
+    assert cast_lib.keeps_said_style("애니메이션으로", "2D anime") and not cast_lib.keeps_said_style("애니메이션으로", "photorealistic film")
+    assert cast_lib.keeps_said_style("실사로", "photorealistic film") and not cast_lib.keeps_said_style("대화", "2D anime")
+    assert not cast_lib.keeps_said_style("실사로", "") and not cast_lib.keeps_said_style("애니메이션으로", "")
+
+
+def test_storyboard_with_library_characters_keeps_the_requested_style():
+    """11-24: '니키와 푸토르가 대화하는 애니메이션' — 구성안 지시문에 라이브러리 화풍 줄이 없고, 모델이 쓴 애니 화풍이 그대로 남는다.
+    모델이 요청 화풍을 놓치고 실사로 쓰면 요청 화풍(애니)의 기본 글로 채운다 (예전에는 라이브러리의 반실사로 덮였다, 11-24 검토)"""
+    from app import cast_lib
+    turns, want = [], {"style": ""}
+    fake = types.ModuleType("app.llm")
+
+    class HelperBusy(Exception):
+        pass
+
+    silent_story = {"title_ko": "숲길", "logline_ko": "두 사람이 숲길을 걷는다.",
+                    "bible": {"characters": [{"id": "A", "look": "a tall woman in a grey coat"}, {"id": "putor", "look": "an old man"}],
+                              "places": [{"id": "P1", "look": "a winding forest path"}], "time": "morning", "light": "soft"},
+                    "music": {"tags": "calm piano", "bpm": 70, "key": "D major", "ko": "잔잔한 피아노"},
+                    "scenes": [{"seconds": 14, "place": "P1", "characters": ["A", "putor"], "continues": False, "shot": "wide shot",
+                                "action": "They walk along the path.", "sound": "footsteps", "ko": "걷는다"},
+                               {"seconds": 14, "place": "P1", "characters": ["putor"], "continues": False, "shot": "medium shot",
+                                "action": "He stops and looks ahead.", "sound": "birds", "ko": "멈춘다"}]}
+
+    @contextlib.asynccontextmanager
+    async def llm_turn(user, ip, model, purpose, wait_seconds=None):
+        async def call(payload):
+            turns.append(payload["messages"][0]["content"])
+            story = json.loads(json.dumps(DLG_OK if want.get("dialogue", True) else silent_story))
+            if want.get("dialogue", True):
+                story["scenes"][3]["continues"] = False
+            story["bible"]["style"] = want["style"]
+            return {"message": {"content": json.dumps(story)}}
+        yield call
+
+    fake.HelperBusy, fake.llm_turn = HelperBusy, llm_turn
+    saved = sys.modules.get("app.llm")
+    sys.modules["app.llm"] = fake
+    try:
+        lib_style = cast_lib.library()[0]["style"]
+        ask = "니키와 푸토르가 숲속에서 대화하는 애니메이션"
+        want["style"] = "2D anime film with clean cel-shaded line art and flat bright colours"
+        r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", ask, seconds=48, dialogue=True))
+        assert turns and lib_style not in turns[0] and "write the look the request asks for into bible.style" in turns[0]
+        assert r["story"]["bible"]["style"] == want["style"] and r["cast"] == {"A": "niki", "B": "putor"}
+        assert video.style_key(r["story"]) == "anime" and video.story_style(r["story"]) == want["style"]
+        turns.clear()
+        want["style"] = "photorealistic cinematic live action"
+        r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", ask, seconds=48, dialogue=True))
+        assert r["story"]["bible"]["style"] == cast_lib.SAID_STYLE_TEXT["anime"] and video.style_key(r["story"]) == "anime"
+        # 대사 없는 영상도 같은 규칙 (구성안 지시문은 id 칸): 실사를 말했으면 실사 그대로, 화풍을 말하지 않았으면 라이브러리 화풍
+        turns.clear()
+        want.update(style="photorealistic cinematic live action", dialogue=False)
+        r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", "니키와 푸토르가 숲길을 걷는 실사 영화", seconds=28))
+        assert lib_style not in turns[0] and '- id "putor" (푸토르)' in turns[0] and r["cast"] == {"putor": "putor"}
+        assert r["story"]["bible"]["style"] == "photorealistic cinematic live action"
+        turns.clear()
+        r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", "니키와 푸토르가 숲길을 걷는 영상", seconds=28))
+        assert lib_style in turns[0] and r["story"]["bible"]["style"] == lib_style
+    finally:
+        if saved is None:
+            sys.modules.pop("app.llm", None)
+        else:
+            sys.modules["app.llm"] = saved
 
 
 def test_known_characters_are_used_in_films_without_dialogue_too():
@@ -2602,11 +2760,412 @@ def test_chain_style_keep_follows_the_film_style():
     import copy as _copy
     st = video.clean_dialogue_story(_copy.deepcopy(DLG_OK), 48)
     assert video.style_key(st) == "semi" and "not cel-shaded" in video.style_keep(st)
+    # 11-24: 정지 그림 지시문의 화풍 문장 = 영화 화풍 원문 + 열쇠 문장 (열쇠 문장만이면 수채·점토 같은 화풍도 반실사 문장으로 모였다)
+    assert video.style_keep(st) == ("The art style of the whole film: semi-realistic painterly 2.5D fantasy film look. "
+                                    + video.STYLE_KEEP["semi"])
     st["bible"]["style"] = "2D anime film, clean cel-shaded line art"
     assert video.style_key(st) == "anime" and "2D anime-style" in video.style_keep(st)
+    assert video.style_keep(st) == "The art style of the whole film: 2D anime film, clean cel-shaded line art. " + video.STYLE_KEEP["anime"]
     st["bible"]["style"] = "photorealistic cinematic live action"
     assert video.style_key(st) == "photo" and "live-action" in video.style_keep(st)
+    assert video.style_keep(st).startswith("The art style of the whole film: photorealistic cinematic live action. Keep the exact look")
+    st["bible"]["style"] = "soft watercolour storybook illustration with visible paper texture."
+    keep = video.style_keep(st)
+    assert keep == ("The art style of the whole film: soft watercolour storybook illustration with visible paper texture. "   # 마침표는 한 번
+                    + video.STYLE_KEEP["semi"])
+    st["bible"]["style"] = ""
+    assert video.style_keep(st) == video.STYLE_KEEP["semi"]                                  # 원문이 없으면 열쇠 문장만
+    # 원문은 200자까지: 뒤쪽 절반 안의 쉼표 경계에서 자른다
+    st["bible"]["style"] = "2D anime feature film with clean cel-shaded line art, " + "soft painted watercolour backgrounds, " * 8
+    raw = video.style_raw(st)
+    assert len(raw) <= video.STYLE_RAW_MAX and raw.startswith("2D anime feature film") and raw.endswith("watercolour backgrounds")
+    assert video.style_raw(st, 80) == "2D anime feature film with clean cel-shaded line art"
     assert "There is no person" in video.people_sentence(0) and video.people_sentence(1) == video.ONE_PERSON
+
+
+def test_still_prompts_say_art_style_and_keep_the_people_sentence_with_a_long_film_style():
+    """11-24: 고정 문구 'the painting style' 은 실사·애니 영화와 부딪혀 'the art style' 로. 화풍 원문을 실어 지시문이 길어져도
+    끝의 정확한 사람 수 문장은 잘리지 않는다 (화풍 원문을 먼저 줄이고, 그래도 넘치면 앞 글 끝을 문장 경계에서 자른다)"""
+    import copy as _copy
+    st = video.clean_dialogue_story(_copy.deepcopy(DLG_OK), 48)
+    sl = video.layout_slots(st, 1, ["A", "B"])
+    one = video.layout_slots(st, 2, ["A"])
+    ip = video.identity_prompt(st, 2, one, ["A"], final=True)
+    fp = video.finish_prompt(st, 1, sl, "A", ["B"], final=True)
+    pj = video.cut_edit_prompt(st, 5, ["A"], "jump")
+    assert "the light, the art style, and every figure's" in ip and "the light, the art style and the people already in it" in fp
+    assert "built from image 1 only for the art style and the people" in pj
+    assert not any("painting style" in p for p in (ip, fp, pj))
+    # 긴 외형·알아볼 소품·장소와 긴 화풍 글 (외형은 구성안 상한 45낱말 가까이)
+    big = _copy.deepcopy(st)
+    a, b = big["bible"]["characters"]
+    a["look"] = ("a twelve-year-old girl with two long black braids and thin straight bangs, pale face, dark blue eyes, a wine-red round-brimmed "
+                 "hat, a wine-red cape with small embroidered flowers over a wine-red blouse with a big bow at the neck, dark brown boots")
+    b["look"] = ("a short stocky old dwarf herbalist with wild white hair, a long white beard, small round glasses, a golden-ochre coat with a "
+                 "green herb badge, brown trousers, sturdy boots, a leather belt with many small pouches and a carved walking stick")
+    a["signature"] = ["wine-red round-brimmed hat", "two long black braids", "wine-red cape with embroidered flowers"]
+    b["signature"] = ["wild white hair", "long white beard", "small round glasses", "golden-ochre coat with a green herb badge"]
+    big["bible"]["characters"].append({
+        "id": "C", "look": ("a calm neat woman around forty with long straight black hair parted in the middle, a cream blouse with a "
+                            "stand-up collar, a beige linen apron with an amber brooch, a long brown skirt and soft leather shoes"),
+        "signature": ["long straight black hair parted in the middle", "cream blouse with a stand-up collar",
+                      "beige linen apron with an amber brooch"]})
+    big["scenes"][1]["characters"] = ["A", "B", "C"]
+    big["scenes"][1]["action"] = ("The girl, the old dwarf and the woman walk side by side along the path in the early light, talking quietly, "
+                                  "the girl skipping a little ahead while the dwarf leans on his stick and the woman smiles at them both, "
+                                  "and birds lift from the ferns as they pass the stream")
+    big["bible"]["places"][0]["look"] = ("a winding forest path with mossy trees, ferns and old roots, a wooden fence along one side, wild "
+                                         "flowers, a small stream with flat stones, soft moss on the rocks and birch trunks far behind")
+    big["bible"]["style"] = ("2D hand-drawn anime feature film with clean cel-shaded line art, flat bright colours, soft painted watercolour "
+                             "backgrounds, gentle film grain and warm golden light on every face and surface")
+    full = video.style_raw(big)
+    s3 = video.layout_slots(big, 1, ["A", "B", "C"])
+    for p, tail in ((video.compose_prompt(big, 1, ["A", "B", "C"]), video.people_sentence(3)),
+                    (video.cut_edit_prompt(big, 1, ["B", "A"], "cut"), video.people_sentence(3)),
+                    (video.identity_prompt(big, 1, s3, ["A", "B"], final=False), "Exactly 3 figures in total, no other person."),
+                    (video.finish_prompt(big, 1, s3, "C", ["A", "B"], final=True), video.people_sentence(3)),
+                    (video.layout_prompt(big, 1, s3), "Exactly 3 figures, no other figure or person."),
+                    (video.end_keyframe_prompt(big, 1, "they stop and smile"), video.people_sentence(3))):
+        assert len(p) <= video.STILL_PROMPT_MAX and p.endswith(tail), (len(p), p[-160:])
+        assert "The art style of the whole film: 2D hand-drawn anime feature film with clean cel-shaded line art" in p
+        assert video.STYLE_KEEP["anime"] in p
+    cp = video.compose_prompt(big, 1, ["A", "B", "C"])
+    assert full not in cp and "What happens: The girl, the old dwarf and the woman" in cp     # 넘쳐서 화풍 원문을 줄였다 (앞 글은 남는다)
+    assert full in video.layout_prompt(big, 1, s3)                                           # 넘치지 않으면 원문 그대로
+    # 앞 글이 아주 길면 앞 글 끝을 자르고 화풍 문장·끝 문장은 남긴다
+    out = video._with_style(["One sentence here. " * 120], big, "Exactly 2 people.")
+    assert len(out) <= video.STILL_PROMPT_MAX and out.endswith(video.STYLE_KEEP["anime"] + " Exactly 2 people.")
+    assert "The art style of the whole film: 2D hand-drawn anime" in out
+    # 짧으면 그대로 이어 붙인다 (예전과 같은 글)
+    assert video._with_style(["A.", "B."], st, "C.") == "A. B. " + video.style_keep(st) + " C."
+
+
+# ── 두 사람 대화 장면 (11-24 메인 X1·X6, STUDIO_DUO_TALK): 듣는 상대가 같은 장소면 두 사람을 미디엄 투샷에 둔다 ──
+DUO_OK = {
+    "title_ko": "니키의 생일 아침", "logline_ko": "베스와 제임스가 아침 식탁에서 니키의 생일을 이야기한다.",
+    "bible": {"characters": [
+        {"id": "A", "look": "a calm neat woman around forty with long straight black hair, a cream blouse and an apron with an amber brooch",
+         "name_ko": "베스", "voice": "A warm Korean woman around forty, gentle and clear.", "voice_ko": "따뜻한 엄마"},
+        {"id": "B", "look": "a tall lean man in his early forties with short brown hair and a blue cardigan", "name_ko": "제임스",
+         "voice": "A calm Korean man in his forties, low and friendly.", "voice_ko": "차분한 아빠"},
+        {"id": "C", "look": "a twelve-year-old girl with two long black braids and a wine-red hat", "name_ko": "니키"}],
+        "places": [{"id": "P1", "look": "a sunny cottage kitchen with a wooden breakfast table"},
+                   {"id": "P2", "look": "a small garden with an apple tree"}],
+        "time": "morning, clear", "light": "soft warm window light", "style": "semi-realistic painterly 2.5D film look"},
+    "music": {"tags": "gentle cinematic instrumental, piano", "bpm": 72, "key": "D major", "ko": "잔잔한 피아노"},
+    "scenes": [
+        {"seconds": 10, "place": "P1", "characters": ["A", "B"], "continues": False, "shot": "wide shot, slow dolly forward",
+         "action": "Beth and James sit at the breakfast table in the morning light.", "sound": "birds outside, a kettle",
+         "ko": "부엌의 아침", "kind": "shot", "speaker": "", "listener": "", "line_ko": "", "emotion": ""},
+        {"seconds": 5, "place": "P1", "characters": ["A", "B"], "continues": False, "shot": "medium two-shot",
+         "action": "Beth smiles and speaks softly to James about Niki.", "sound": "soft room tone", "ko": "베스가 말한다",
+         "kind": "talk", "speaker": "A", "listener": "B", "line_ko": "여보, 오늘 니키 생일이에요.", "emotion": "warm and excited"},
+        {"seconds": 5, "place": "P1", "characters": ["B", "A"], "continues": True, "shot": "medium two-shot",
+         "action": "James raises his eyebrows and answers.", "sound": "soft room tone", "ko": "제임스가 답한다",
+         "kind": "talk", "speaker": "B", "listener": "A", "line_ko": "그래요? 케이크를 사 올까요?", "emotion": "surprised"},
+        {"seconds": 5, "place": "P1", "characters": ["A", "C"], "continues": False, "shot": "medium two-shot",
+         "action": "Beth turns to Niki with a gentle smile.", "sound": "soft room tone", "ko": "베스가 니키에게 말한다",
+         "kind": "talk", "speaker": "A", "listener": "C", "line_ko": "니키야, 생일 축하해.", "emotion": "gentle"},
+        {"seconds": 8, "place": "P1", "characters": ["C"], "continues": False, "shot": "close-up",
+         "action": "Niki beams with joy.", "sound": "soft room tone", "ko": "니키가 웃는다",
+         "kind": "shot", "speaker": "", "listener": "", "line_ko": "", "emotion": ""},
+        {"seconds": 15, "place": "P2", "characters": ["A", "B", "C"], "continues": False, "shot": "wide shot",
+         "action": "The family stands together under the apple tree.", "sound": "wind in the leaves", "ko": "정원의 가족",
+         "kind": "shot", "speaker": "", "listener": "", "line_ko": "", "emotion": ""}]}
+
+
+@contextlib.contextmanager
+def duo_setting(on: bool):
+    old = settings.studio_duo_talk
+    settings.studio_duo_talk = on
+    try:
+        yield
+    finally:
+        settings.studio_duo_talk = old
+
+
+def test_duo_talk_story_rules_and_cleaning():
+    import copy as _copy
+    with duo_setting(True):
+        assert video.shot_rank("medium two-shot") == 2 and video.shot_rank("two-shot") == 2 and video.shot_rank("a two shot") == 2
+        assert video.shot_rank("wide two-shot") == 4 and video.shot_rank("medium close-up") == 1         # 넓은 투샷은 넓은 샷
+        assert video.dialogue_problems(DUO_OK, 48, True, exchange=True) == []
+        s = video.clean_dialogue_story(DUO_OK, 48)
+        assert [x["kind"] for x in s["scenes"]] == ["shot", "talk", "talk", "talk", "shot", "shot"]
+        assert [x["listener"] for x in s["scenes"]] == ["", "B", "A", "C", "", ""]                     # 모든 장면에 listener
+        assert s["scenes"][1]["characters"] == ["A", "B"] and s["scenes"][2]["characters"] == ["B", "A"]
+        # 같은 두 사람·같은 장소의 대사 컷은 앞 대사 컷을 같은 투샷으로 잇는다. 다른 사람과의 대사 컷, 대사 컷 다음 장면은 잇지 않는다
+        assert [x["continues"] for x in s["scenes"]] == [False, False, True, False, False, False]
+        assert [video.talk_pair(s, k) for k in range(6)] == [None, ["A", "B"], ["B", "A"], ["A", "C"], None, None]
+        assert [video.duo_talk(s, k) for k in range(6)] == [False, True, True, True, False, False]
+        assert video.scene_people(s, 2) == ["B", "A"] and video.pick_refs(s, 2, ["A", "B", "C"]) == ["B", "A"]     # 말하는 사람 먼저
+        assert "C" in video.anchor_ids(s) and video.cast_scene(s, 3) == "A"
+        assert video.scene_seam(s, 2) == video.SEAM_CONTINUE and video.scene_seam(s, 3) == video.SEAM_CUT
+        # 위반: 혼자 말한 컷을 잇는 대사 컷, 대사 컷을 잇는 말 없는 장면, 모르는 듣는 사람, 넓은 투샷, 듣는 사람 칸이 빈 두 사람
+        bad = _copy.deepcopy(DUO_OK)
+        bad["scenes"][1].update(characters=["A"], listener="")
+        bad["scenes"][4]["continues"] = True
+        bad["scenes"][3].update(listener="Z")
+        left = video.dialogue_problems(bad, 48, True)
+        assert any("Scene 3 is a talk scene, so it cannot continue" in x and "same two people" in x for x in left), left
+        assert any("Scene 5 comes right after a talk scene, so it cannot continue it." in x for x in left), left
+        assert any('"listener" "Z" is not in bible.characters' in x for x in left), left
+        cb = video.clean_dialogue_story(bad, 48)
+        assert cb["scenes"][1]["characters"] == ["A"] and cb["scenes"][2]["continues"] is False and cb["scenes"][4]["continues"] is False
+        assert cb["scenes"][3]["listener"] == "C" and cb["scenes"][3]["characters"] == ["A", "C"]     # 틀린 듣는 사람 → characters 의 상대
+        # 샷 크기의 경계: 두 사람 컷은 크기 3(풀샷·미디엄 와이드)까지, 혼자 컷은 2(미디엄)까지
+        for shot, ok in (("full shot", True), ("medium wide shot", True), ("long shot", False), ("wide two-shot", False)):
+            pb = _copy.deepcopy(DUO_OK)
+            pb["scenes"][1]["shot"] = shot
+            msg = any("Scene 2 is a talk scene with a listener" in x for x in video.dialogue_problems(pb, 48, True))
+            assert msg is not ok, (shot, msg)
+        for shot, ok in (("medium shot", True), ("medium close-up", True), ("full shot", False), ("medium wide shot", False)):
+            sb = _copy.deepcopy(DUO_OK)
+            sb["scenes"][3].update(characters=["A"], listener="", shot=shot)
+            msg = any("Scene 4 is a talk scene: the shot must be a close-up" in x for x in video.dialogue_problems(sb, 48, True))
+            assert msg is not ok, (shot, msg)
+        wide = _copy.deepcopy(DUO_OK)
+        wide["scenes"][1]["shot"] = "wide shot"
+        wide["scenes"][3].update(listener="")                          # characters 는 [A, C] 인데 듣는 사람 칸이 비었다
+        wide["scenes"][2].update(listener="B")                          # 말하는 사람과 같은 듣는 사람
+        left = video.dialogue_problems(wide, 48, True)
+        assert any("Scene 2 is a talk scene with a listener: the shot must be a medium two-shot" in x for x in left), left
+        assert any('Scene 4 is a talk scene: "characters" must be exactly ["A"] with "listener" ""' in x for x in left), left
+        assert any('Scene 3: the "listener" must be the other character' in x for x in left), left
+        cw = video.clean_dialogue_story(wide, 48)
+        assert cw["scenes"][3]["listener"] == "C" and cw["scenes"][2]["listener"] == "A"                 # 정리는 뜻을 살린다
+        # 혼자 말하는 컷(혼잣말·전화)은 지금처럼 클로즈업까지: 미디엄 투샷 크기도 받아 준다
+        solo = _copy.deepcopy(DUO_OK)
+        solo["scenes"][3].update(characters=["A"], listener="", shot="close-up")
+        assert video.dialogue_problems(solo, 48, True) == []
+        cs = video.clean_dialogue_story(solo, 48)
+        assert video.talk_pair(cs, 3) is None and not video.duo_talk(cs, 3) and cs["scenes"][3]["characters"] == ["A"]
+        # 듣는 쪽이 동물이면 사람 한 명의 대사 컷이다 (두 화자 레시피를 쓰지 않는다)
+        pet = _copy.deepcopy(s)
+        pet["bible"]["characters"].append({"id": "D", "look": "a small white puppy with floppy ears"})
+        pet["scenes"][3].update(characters=["A", "D"], listener="D")
+        assert video.talk_pair(pet, 3) is None and not video.duo_talk(pet, 3)
+
+
+def test_duo_talk_off_keeps_the_old_rules_and_prompts():
+    import copy as _copy
+    with duo_setting(False):
+        assert video.dialogue_extra() is video.DIALOGUE_EXTRA and video.dialogue_schema() is video.DIALOGUE_SCHEMA_SOLO
+        assert "listener" not in video.DIALOGUE_SCHEMA_SOLO["properties"]["scenes"]["items"]["properties"]
+        left = video.dialogue_problems(DUO_OK, 48, True)
+        assert any('must be exactly ["A"] (the speaker alone in the frame)' in x for x in left), left
+        assert any(x == "Scene 3 is a talk scene, so it cannot continue the previous scene." for x in left), left
+        # 예전 규칙의 샷 크기: 넓은 샷의 혼자 대사 컷은 위반 (11-24 검토: 이 분기를 보는 시험이 없었다)
+        wide = _copy.deepcopy(DUO_OK)
+        wide["scenes"][3].update(characters=["A"], listener="", shot="wide shot")
+        assert "Scene 4 is a talk scene: the shot must be a close-up or a medium close-up of the speaker." in video.dialogue_problems(wide, 48, True)
+        wide["scenes"][3]["shot"] = "medium shot"
+        assert not any("Scene 4 is a talk scene: the shot" in x for x in video.dialogue_problems(wide, 48, True))
+        s = video.clean_dialogue_story(DUO_OK, 48)
+        assert [x["characters"] for x in s["scenes"] if x["kind"] == "talk"] == [["A"], ["B"], ["A"]]
+        assert not any(x["continues"] for x in s["scenes"]) and all(x["listener"] == "" for x in s["scenes"])
+        assert not any(video.duo_talk(s, k) or video.talk_pair(s, k) for k in range(6))
+        # 예전 두 사람 자리: 말한 차례로 마주 보게, 같은 쪽이면 장면에 적힌 차례 (니키는 말하지 않아 첫 화자와 같은 쪽)
+        assert [x["id"] for x in video.layout_slots(s, 0, ["A", "B"])] == ["A", "B"]
+        assert [x["id"] for x in video.layout_slots(s, 4, ["C", "A"])] == ["C", "A"]
+        lp = video.layout_prompt(s, 3, video.layout_slots(s, 3, ["A"]))
+        assert "One adult-sized faceless mannequin figure" in lp and "turned toward each other" not in lp
+        talk = video.talk_prompt(s, 1)
+        assert "alone in the frame, no other people" in talk
+        call = Call([DUO_OK] * 3)
+        asyncio.run(video.write_dialogue_story(call, "베스와 제임스가 아침 식탁에서 대화하는 영상", "", 48))
+        assert call.calls[0]["format"] is video.DIALOGUE_SCHEMA_SOLO
+        system = call.calls[0]["messages"][0]["content"]
+        assert "to someone off-screen" in system and "medium two-shot" not in system and "very slowly pushing camera" in system
+    with duo_setting(True):
+        assert video.dialogue_extra() is video.DIALOGUE_EXTRA_DUO and video.dialogue_schema() is video.DIALOGUE_SCHEMA
+        items = video.DIALOGUE_SCHEMA["properties"]["scenes"]["items"]
+        assert "listener" in items["required"] and items["properties"]["listener"] == {"type": "string"}
+        ex = video.DIALOGUE_EXTRA_DUO
+        assert '"listener"' in ex and "medium two-shot" in ex and "three-quarter view toward the camera" in ex
+        assert "very slowly pushing camera" not in ex and "cut to the listener's face" not in ex
+        assert "6 Korean characters per second" in ex and '"sample_ko"' in ex and "never read from a page" in ex
+        assert "same two people in the same place" in ex
+        call = Call([DUO_OK])
+        story, left, _r = asyncio.run(video.write_dialogue_story(call, "베스와 제임스가 아침 식탁에서 대화하는 영상", "", 48))
+        assert call.calls[0]["format"] is video.DIALOGUE_SCHEMA and left == [] and story["scenes"][2]["continues"] is True
+        assert "medium two-shot" in call.calls[0]["messages"][0]["content"]
+    # 감독이 요청마다 정한 값(duo)이 설정보다 앞선다: 두 사람 컷을 만들 수 없는 요청(세로 영상·장면 잇기 꺼짐·두 화자 레시피 꺼짐)은
+    # 설정이 켜져 있어도 예전 혼자 규칙으로 쓰고 검사·다듬는다 (11-24 검토). 그 반대도 같다
+    with duo_setting(True):
+        assert video.dialogue_extra(False) is video.DIALOGUE_EXTRA and video.dialogue_schema(False) is video.DIALOGUE_SCHEMA_SOLO
+        assert not video.duo_rules(False) and video.duo_rules(None) and video.duo_rules()
+        left = video.dialogue_problems(DUO_OK, 48, True, duo=False)
+        assert any('must be exactly ["A"] (the speaker alone in the frame)' in x for x in left), left
+        so = video.clean_dialogue_story(DUO_OK, 48, duo=False)
+        assert [x["characters"] for x in so["scenes"] if x["kind"] == "talk"] == [["A"], ["B"], ["A"]]
+        assert not any(x["continues"] for x in so["scenes"])
+        call = Call([DUO_OK] * 3)
+        st, _l, _r = asyncio.run(video.write_dialogue_story(call, "베스와 제임스가 아침 식탁에서 대화하는 영상", "", 48, duo=False))
+        assert call.calls[0]["format"] is video.DIALOGUE_SCHEMA_SOLO and "to someone off-screen" in call.calls[0]["messages"][0]["content"]
+        assert not any(video.talk_pair(st, k) for k in range(len(st["scenes"])))
+    with duo_setting(False):
+        assert video.dialogue_extra(True) is video.DIALOGUE_EXTRA_DUO and video.dialogue_problems(DUO_OK, 48, True, exchange=True, duo=True) == []
+        call = Call([DUO_OK])
+        st, left, _r = asyncio.run(video.write_dialogue_story(call, "베스와 제임스가 아침 식탁에서 대화하는 영상", "", 48, duo=True))
+        assert call.calls[0]["format"] is video.DIALOGUE_SCHEMA and left == [] and video.talk_pair(st, 1) == ["A", "B"]
+
+
+def test_storyboard_follows_the_duo_decision_of_the_director():
+    """11-24 검토: 구성안의 두 사람 규칙은 감독이 정한 값(storyboard duo)을 따른다. 설정만 보면 세로 영상·장면 잇기 꺼짐에서도
+    투샷 대사 컷을 써서, 투샷 첫 화면이 LTX 로 가거나(X2: 입이 거의 안 움직임) 한 사람 첫 화면에 투샷 글이 붙었다"""
+    seen = []
+    fake = types.ModuleType("app.llm")
+
+    class HelperBusy(Exception):
+        pass
+
+    @contextlib.asynccontextmanager
+    async def llm_turn(user, ip, model, purpose, wait_seconds=None):
+        async def call(payload):
+            seen.append((payload["messages"][0]["content"], payload["format"]))
+            return {"message": {"content": json.dumps(DUO_OK)}}
+        yield call
+
+    fake.HelperBusy, fake.llm_turn = HelperBusy, llm_turn
+    saved = sys.modules.get("app.llm")
+    sys.modules["app.llm"] = fake
+    ask = "두 사람이 아침 식탁에서 대화하는 영상"           # 라이브러리 인물 이름이 없는 요청
+    try:
+        with duo_setting(True):
+            r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", ask, seconds=48, dialogue=True, duo=False))
+            assert seen[0][1] is video.DIALOGUE_SCHEMA_SOLO and "to someone off-screen" in seen[0][0]
+            assert not any(video.talk_pair(r["story"], k) for k in range(len(r["story"]["scenes"])))
+            seen.clear()
+            r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", ask, seconds=48, dialogue=True))
+            assert seen[0][1] is video.DIALOGUE_SCHEMA and video.talk_pair(r["story"], 1) == ["A", "B"]       # 값이 없으면 설정
+    finally:
+        if saved is None:
+            sys.modules.pop("app.llm", None)
+        else:
+            sys.modules["app.llm"] = saved
+
+
+def test_duo_sides_stay_the_same_and_the_listener_faces_the_speaker():
+    import copy as _copy
+    with duo_setting(True):
+        s = video.clean_dialogue_story(DUO_OK, 48)
+        # 베스(A)가 첫 화자라 오른쪽을 본다 → 왼쪽 자리. 장면이 바뀌어도(말하는 사람이 바뀌어도) 좌우가 같다 (180도 규칙)
+        order = lambda k, ids: [x["id"] for x in video.layout_slots(s, k, ids)]
+        assert order(1, video.scene_people(s, 1)) == order(2, video.scene_people(s, 2)) == order(0, ["A", "B"]) == ["A", "B"]
+        # 한 번도 말하지 않는 니키(C)는 첫 화자와 같은 쪽이 되지만, 두 사람 대사 컷에서는 말하는 사람의 반대쪽을 본다 (C3)
+        assert video.speaker_side(s, "C") == video.speaker_side(s, "A") == "right"
+        assert video.pair_facing(s, "A", "C") == {"A": "right", "C": "left"}
+        assert order(3, ["C", "A"]) == ["A", "C"] and order(4, ["C", "A"]) == ["A", "C"]         # 같은 두 사람의 말 없는 장면도 같은 좌우
+        sl = video.layout_slots(s, 3, ["A", "C"])
+        assert [x["facing"] for x in sl] == ["turned toward the right", "turned toward the left"]
+        # 화자 셋: 1번(A)과 3번(C)이 같은 쪽 → 둘의 첫 대사 컷의 말하는 사람이 제 쪽, 상대는 반대. 뒤의 반대 방향 대사 컷도 같은 좌우
+        three = _copy.deepcopy(DUO_OK)
+        three["bible"]["characters"][2].update(voice="A bright Korean girl, clear.", voice_ko="맑은 아이")
+        three["scenes"][3].update(characters=["C", "A"], speaker="C", listener="A", line_ko="엄마, 고마워요!", emotion="happy")
+        three["scenes"][4].update(kind="talk", characters=["A", "C"], speaker="A", listener="C", shot="medium two-shot",
+                                  line_ko="사랑한단다.", emotion="tender")
+        t3 = video.clean_dialogue_story(three, 48)
+        assert video.speakers_of(t3) == ["A", "B", "C"] and video.speaker_side(t3, "C") == "right"
+        assert video.pair_facing(t3, "A", "C") == {"C": "right", "A": "left"}
+        o3 = [x["id"] for x in video.layout_slots(t3, 3, video.scene_people(t3, 3))]
+        o4 = [x["id"] for x in video.layout_slots(t3, 4, video.scene_people(t3, 4))]
+        assert o3 == o4 == ["C", "A"], (o3, o4)
+        # ① 구도 글: 서로 마주 보되 두 얼굴 모두 카메라 쪽 3/4, 미디엄 투샷도 머리 위 여유. 장면 글은 넣지 않는다
+        slots = video.layout_slots(s, 2, video.scene_people(s, 2))
+        lp = video.layout_prompt(s, 2, slots)
+        assert ("2 faceless mannequin figures, sitting, turned toward each other, both faces in three-quarter view toward the camera: "
+                "on the left a adult-sized figure turned toward the right; on the right a adult-sized figure turned toward the left.") in lp
+        assert "clear empty space above the hair (about one tenth of the frame height); no head touches the top edge" in lp
+        assert "James raises" not in lp and lp.endswith("Exactly 2 figures, no other figure or person.")
+        assert video._frame_hint(2, 2) == "The heads and upper bodies are fully in frame, in the middle part of the picture."   # 두 사람 장면(대사 아님)은 그대로
+        # ② 인물 입히기: 말하는 방향은 실제 자리에서 상대 쪽, 듣는 사람은 입을 다물고 듣는다
+        ip = video.identity_prompt(s, 2, slots, ["B", "A"], final=True)
+        assert "The person on the right speaks toward the left side of the frame with a surprised expression" in ip
+        assert "The person on the left listens with lips closed and a soft smile, looking at the speaker." in ip
+        assert "Keep both heads where they are in Picture 1" in ip and "Exactly 2 people" in ip and "James raises" not in ip
+        ip1 = video.identity_prompt(s, 1, video.layout_slots(s, 1, ["A", "B"]), ["A", "B"], final=True)
+        assert "The person on the left speaks toward the right side of the frame with a warm and excited expression" in ip1
+        assert "The person on the right listens with lips closed" in ip1
+        # 구도 그림 없이 바로 그릴 때·앞 프레임을 고칠 때도 같은 좌우
+        cp = video.compose_prompt(s, 2, ["B", "A"], place_image=3)
+        assert "The person from image 1 is on the right and speaks toward the left side of the frame" in cp
+        assert "The person from image 2 is on the left, turned toward the speaker, and listens with lips closed" in cp
+        assert "James raises" not in cp and "Exactly 2 people" in cp
+        ce = video.cut_edit_prompt(s, 3, ["A", "C"], "cut")
+        assert "is on the left, turned toward the right side of the frame, speaking" in ce and "listening with lips closed" in ce
+        # 한 사람 컷도 그 사람이 나오는 투샷과 같은 쪽을 본다 (facing_of, 11-24 검토 D2): 한 번도 말하지 않는 니키(C)는 장면 3 투샷에서
+        # 왼쪽을 보므로 바로 다음 장면 4 클로즈업도 왼쪽 (speaker_side 로는 오른쪽이라 시선이 튀었다)
+        assert video.speaker_side(s, "C") == "right" and video.facing_of(s, 4, "C") == "left"
+        assert video.layout_slots(s, 4, ["C"])[0]["facing"] == "turned slightly toward the left"
+        assert "toward the left side of the frame" in video.cast_edit_prompt(s, 4)
+        assert "turned toward the left side of the frame" in video.cast_prompt(s, "C")          # 기준 그림은 처음 나오는 투샷
+        assert video.facing_of(s, 0, "C") == "left"                                          # 앞에 투샷이 없으면 뒤의 투샷
+        assert video.facing_of(s, 5, "A") == "right" and video.facing_of(s, 5, "B") == "left"
+        assert video.facing_of(t3, 5, "A") == "left" and video.facing_of(t3, 1, "A") == "right"   # 가장 가까운 앞 투샷의 쌍을 따른다
+    with duo_setting(False):
+        so = video.clean_dialogue_story(DUO_OK, 48)                  # 투샷이 없으면 예전 그대로 (말한 차례)
+        assert all(video.facing_of(so, k, c) == video.speaker_side(so, c) for k in range(6) for c in ("A", "B", "C"))
+
+
+def test_duo_talk_prompt_and_still_camera_shot():
+    import copy as _copy
+    with duo_setting(True):
+        s = video.clean_dialogue_story(DUO_OK, 48)
+        slots = video.layout_slots(s, 2, video.scene_people(s, 2))
+        dp = video.duo_talk_prompt(s, 2, slots)
+        assert dp.startswith("Medium two-shot of two people in a conversation, both fully in frame the whole time.")
+        assert "On the left: a calm neat woman around forty" in dp and "On the right: a tall lean man in his early forties" in dp
+        assert "The person on the right speaks to the person on the left, surprised: the lips and jaw move clearly with the words." in dp
+        assert "The person on the left only listens: the mouth stays closed, smiles and nods softly." in dp
+        assert "Natural blinking and small head movements." in dp and "The camera stays completely still." in dp
+        assert "sunny cottage kitchen" in dp and "Style: semi-realistic painterly" in dp and video.style_lock(s) in dp
+        assert "James raises" not in dp and "Niki" not in dp and len(dp) <= 3000          # 장면 글(화면 밖 이름)은 넣지 않는다 (R3)
+        dp1 = video.duo_talk_prompt(s, 1, video.layout_slots(s, 1, ["A", "B"]))
+        assert "The person on the left speaks to the person on the right, warm and excited" in dp1
+        # 혼자 대사 영상 글: 샷 글의 카메라 움직임 말을 지운다 (삼각대 문장과 부딪힘)
+        for shot, want in (("medium close-up, very slowly pushing camera", "medium close-up"), ("close-up, slow push in", "close-up"),
+                           ("slow push-in close-up", "close-up"), ("medium shot; slow dolly forward", "medium shot"),
+                           ("close-up, gentle zoom in, slight tilt down", "close-up"), ("medium two-shot", "medium two-shot"),
+                           ("wide shot from behind, slow follow", "wide shot from behind, slow follow"), ("panning shot", "")):
+            assert video.still_shot(shot) == want, (shot, video.still_shot(shot))
+        # 움직임 말이 크기 말과 같은 마디에 있어도 앞뒤 이음말이 매달리지 않는다 (11-24 검토: '… with a still or' 로 남았다).
+        # 움직임이 있던 마디는 크기 말이 남을 때만 둔다
+        for shot, want in (("Medium close-up of Beth with a still or very slowly pushing camera", "Medium close-up of Beth"),
+                           ("Close-up of Niki's face as the camera slowly pushes in", "Close-up of Niki's face"),
+                           ("Extreme close-up with a slow zoom in", "Extreme close-up"),
+                           ("close-up with a slow push in, warm light", "close-up, warm light"),
+                           ("Medium close-up, slow push-in toward her face", "Medium close-up"),
+                           ("close-up while the camera tracks left", "close-up")):
+            assert video.still_shot(shot) == want, (shot, video.still_shot(shot))
+        st = video.clean_dialogue_story(DLG_OK, 48)
+        st["scenes"][3]["shot"] = "medium close-up, very slowly pushing camera"
+        tp = video.talk_prompt(st, 3)
+        assert tp.startswith("medium close-up of one person alone in the frame") and "pushing camera" not in tp
+        assert "locked on a tripod and never moves" in tp
+        st["scenes"][3]["shot"] = "slow pan"
+        assert video.talk_prompt(st, 3).startswith("Close-up of one person alone")
+        st["scenes"][3]["shot"] = "Medium close-up of Beth with a still or very slowly pushing camera"
+        tp = video.talk_prompt(st, 3)
+        assert tp.startswith("Medium close-up of Beth of one person alone") and "with a still or" not in tp
+        # 두 사람 규칙으로 짠 대사 장면을 한 사람 첫 화면으로 만들 때(장면 잇기 꺼짐): 투샷 글은 혼자 크기로, 화면 밖 상대를 가리키는
+        # 장면 글('speaks softly to James')은 뺀다 (11-24 검토: 'Medium two-shot of one person alone' + 'She smiles at him')
+        tp1 = video.talk_prompt(s, 1)
+        assert tp1.startswith("Medium close-up of one person alone in the frame, no other people:") and "two-shot" not in tp1
+        assert "speaks softly to James" not in tp1 and "toward the right edge of the frame" in tp1
+        ce1 = video.cast_edit_prompt(s, 1)
+        assert "Medium close-up." in ce1 and "two-shot" not in ce1 and video.ONE_PERSON in ce1
+        assert video.solo_shot("medium two-shot") == "Medium close-up" and video.solo_shot("close-up") == "close-up"
+        # 혼자 말하는 컷(혼잣말)은 장면 글 그대로
+        solo = _copy.deepcopy(s)
+        solo["scenes"][3].update(characters=["A"], listener="", shot="close-up", action="Beth whispers to herself.")
+        assert "Beth whispers to herself." in video.talk_prompt(solo, 3)
+        # 듣는 쪽이 동물이면 동물은 첫 화면에 있다(화면 밖 사람이 아니다): 장면 글은 두고 샷만 혼자 크기로
+        pet = _copy.deepcopy(s)
+        pet["bible"]["characters"].append({"id": "D", "look": "a small white puppy with floppy ears"})
+        pet["scenes"][3].update(characters=["A", "D"], listener="D", action="Beth smiles at the puppy.")
+        tpp = video.talk_prompt(pet, 3)
+        assert tpp.startswith("Medium close-up of one person alone") and "Beth smiles at the puppy." in tpp
 
 
 if __name__ == "__main__":

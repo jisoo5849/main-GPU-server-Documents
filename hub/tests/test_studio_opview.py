@@ -126,6 +126,16 @@ assert d["request"]["attachments"][0]["width"] == 1920 and d["repro"] is not Non
 assert d["notices"][0]["code"] == "inspect" and d["node_timing"] and d["crew"]["events"] == [{"category": "공간"}]
 assert opview.pretty({"a": "한글", "t": NOW}).count("한글") == 1                        # 한글은 그대로, 날짜도 문자열로
 
+# ── 긴 영상 기록: 두 사람 대사 컷(11-24)의 듣는 사람·두 화자 표시, 두 화자에서 LTX 로 내려간 이벤트 ──
+DUO_STORY = {"title_ko": "생일 아침", "logline_ko": "두 사람이 이야기한다.", "seconds": 16,
+             "bible": {"characters": [{"id": "A", "look": "a woman"}, {"id": "B", "look": "a man"}], "places": [], "time": "", "light": ""},
+             "scenes": [{"seconds": 10, "ko": "아침", "kind": "shot", "listener": ""},
+                        {"seconds": 6, "ko": "베스가 말한다", "kind": "talk", "speaker": "A", "listener": "B", "characters": ["A", "B"]}]}
+lv = opview.long_view({"story": DUO_STORY, "scenes": [{}, {"duo": True, "clip_rel": "x.mp4"}]},
+                      [{"kind": "duo_fallback", "detail": {"index": 1, "reason": "failed"}}, {"kind": "llm_job", "detail": {}}])
+assert lv["scenes"][1]["duo"] is True and lv["scenes"][1]["listener"] == "B" and lv["scenes"][0]["duo"] is None
+assert "duo_fallback" in opview.LONG_EVENT_KINDS and [e["kind"] for e in lv["events"]] == ["duo_fallback"]
+
 # ── 템플릿: 믿지 않는 글은 이스케이프되고, 화면이 깨지지 않는다 ──
 lib = os.environ.get("JINJA_LIB")
 if lib:
@@ -172,4 +182,9 @@ if jinja2 is not None:
     html = env.get_template("admin_studio_turn.html").render(d=dv, pretty=opview.pretty, short=opview.short, job_prompt=None, **ctx)
     assert "시스템 프롬프트" in html and "FIX RULES" in html and XSS not in html
     assert opview.build_detail(turn(), [], [], [], [], [], None)["systems"] == []
+    # 긴 영상 기록: 두 사람 대사 컷 표시 (11-24)
+    dl = opview.build_detail(turn(work={"story": DUO_STORY, "scenes": [{}, {"duo": True, "clip_rel": "x.mp4"}]}),
+                             [{"kind": "duo_fallback", "ts": NOW, "detail": {"index": 1, "reason": "failed"}}], [], [], [], [], None)
+    html = env.get_template("admin_studio_turn.html").render(d=dl, pretty=opview.pretty, short=opview.short, job_prompt=None, **ctx)
+    assert html.count("두 사람 대사(InfiniteTalk)") == 1 and "duo_fallback" in html
 print("ok studio_opview")
