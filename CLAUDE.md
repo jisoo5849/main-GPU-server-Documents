@@ -73,6 +73,6 @@
 
 ```bash
 cd hub && python -I tests/test_promptops.py && python tests/test_templates_index.py && python tests/test_promptx.py && python tests/test_crew.py && python tests/test_video.py
-python tests/test_llm_turn.py && python tests/test_studio_recipes.py && python tests/test_studio_progress.py && python tests/test_studio_director.py && python tests/test_studio_p2.py && python tests/test_studio_admin.py && python tests/test_studio_opview.py && python tests/test_studio_assemble.py && python tests/test_studio_start.py && python tests/test_studio_checks.py   # 채팅 스튜디오 (DB·GPU 없이 가짜로, 합치기는 ffmpeg 가 있으면 실제로)
+python tests/test_llm_turn.py && python tests/test_studio_recipes.py && python tests/test_studio_progress.py && python tests/test_studio_director.py && python tests/test_studio_p2.py && python tests/test_studio_admin.py && python tests/test_studio_opview.py && python tests/test_studio_assemble.py && python tests/test_studio_start.py && python tests/test_studio_checks.py && python tests/test_scheduler_block.py   # 채팅 스튜디오·대기열 정지 풀기 (DB·GPU 없이 가짜로, 합치기는 ffmpeg 가 있으면 실제로)
 node tests/panel_nodes.test.mjs   # 패널의 그래프 도우미(노드 역할·부정 노드 감시·워크플로우 종류)
 ```

@@ -43,7 +43,13 @@ class Settings:
     worker_start_timeout = _int("WORKER_START_TIMEOUT", 300)
     vram_worker_margin_mb = _int("VRAM_WORKER_MARGIN_MB", 512)
     vram_total_margin_mb = _int("VRAM_TOTAL_MARGIN_MB", 768)
-    vram_idle_margin_mb = _int("VRAM_IDLE_MARGIN_MB", 256)
+    # 유휴 판정 여유. 11-21 사무실 기록: 어느 프로세스에도 안 잡히는 점유(드라이버·화면)가 기준보다 53~64MB 많았을 뿐인데 대기열이 정지됐다
+    vram_idle_margin_mb = _int("VRAM_IDLE_MARGIN_MB", 512)
+    # 정지 중 GPU 를 아무도 안 쓰는 상태에서 '우리 몫'이 이 횟수(15초마다 한 번) 동안 거의 같은 값(오차 VRAM_REBASE_TOL_MB 이내)이고 기준보다
+    # VRAM_REBASE_MAX_MB 이하로만 높으면, 그 값을 새 기준으로 삼아 스스로 푼다 (기준값은 min() 으로 내려가기만 해 몇 시간씩 정지가 풀리지 않았다)
+    vram_rebase_checks = _int("VRAM_REBASE_CHECKS", 8)
+    vram_rebase_tol_mb = _int("VRAM_REBASE_TOL_MB", 64)
+    vram_rebase_max_mb = _int("VRAM_REBASE_MAX_MB", 1024)
     # 이보다 작은 컨테이너 밖 GPU 프로세스는 감시 기록에서 뺀다 (GTK4 화면 앱이 NVML 에 compute 로 잡힌다)
     foreign_incident_min_mb = _int("FOREIGN_INCIDENT_MIN_MB", 256)
 

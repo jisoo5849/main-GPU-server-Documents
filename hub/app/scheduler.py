@@ -39,6 +39,17 @@ class LlmWaiter:
         self.result: dict = {}
 
 
+def rebase_ok(samples: list[int], b0: int | None, need: int, tol_mb: int, max_mb: int) -> bool:
+    """정지 중 '우리 몫' 표본이 새 유휴 기준값이 될 만한가: need 번 이상, 거의 같은 값(max-min <= tol_mb)이고, 지금 기준보다 높지만
+    max_mb 이하일 때만. 기준보다 훨씬 높게 안정된 값(진짜 메모리 누수·남의 점유)은 새 기준으로 삼지 않는다 (순수 함수)"""
+    if b0 is None or need <= 0 or len(samples) < need:
+        return False
+    last = samples[-need:]
+    if max(last) - min(last) > tol_mb:
+        return False
+    return b0 < min(last) <= b0 + max_mb
+
+
 class Scheduler:
     def __init__(self):
         self.worker: dict | None = None      # 켜져 있는 GPU 실행 공간
@@ -49,6 +60,8 @@ class Scheduler:
         self.wake = asyncio.Event()
         self.b0: int | None = None           # GPU를 아무도 쓰지 않을 때의 사용량(MB)
         self.peak = 0
+        self._idle_samples: list[int] = []   # 정지 중 GPU 가 비어 있을 때 잰 '우리 몫' (기준값 다시 잡기용)
+        self._unblock_tries = 0
         self._lock_conn = None
         self._incident_pids: dict[int, float] = {}
         self._bg: set = set()   # 끝날 때까지 참조를 잡아 두는 보조 작업들
@@ -177,16 +190,67 @@ class Scheduler:
                 await asyncio.sleep(3)
 
     async def _try_unblock(self) -> bool:
+        self._unblock_tries += 1
         if self.worker:
             await self.stop_worker()
         await self.unload_ollama()
-        if not await self._check(False):
-            return False
+        if await self._check(False):
+            await self._unblocked("auto_unblocked")
+            return True
+        # 기준을 못 넘겼다. GPU 가 비어 있는데(실행 공간·Ollama 모델 없음) 값이 높은 채 안정돼 있으면 기준값이 낮게 굳은 것일 수 있다
+        s = await self._survey()
+        why = await self._why_not_clean()
+        if why == "ours_over_baseline":
+            self._idle_samples = (self._idle_samples + [s["ours_mb"]])[-max(settings.vram_rebase_checks, 1):]
+            if rebase_ok(self._idle_samples, self.b0, settings.vram_rebase_checks, settings.vram_rebase_tol_mb,
+                         settings.vram_rebase_max_mb):
+                old, self.b0 = self.b0, min(self._idle_samples)
+                await db.incident("auto_rebaselined", {"used_mb": s["used_mb"], "ours_mb": s["ours_mb"], "old_baseline_mb": old,
+                                                       "new_baseline_mb": self.b0, "samples": list(self._idle_samples)})
+                log.warning("정지 중 GPU 가 비어 있고 '우리 몫'이 %sMB 로 안정돼 있어 기준값을 %sMB → %sMB 로 다시 잡습니다",
+                            s["ours_mb"], old, self.b0)
+                if await self._check(False):
+                    await self._unblocked("auto_unblocked")
+                    return True
+        else:
+            self._idle_samples = []             # 다른 이유로 막혔다: 표본이 이어지지 않는다
+        if self._unblock_tries % 20 == 1:       # 5분마다 (처음 포함) 왜 안 풀리는지 남긴다 (11-21: 로그 없이는 이유를 알 수 없었다)
+            await self._note_block_state(s, why)
+        return False
+
+    async def _unblocked(self, kind: str):
         await db.execute("DELETE FROM settings WHERE key='blocked'")
         s = await self._survey()
-        await db.incident("auto_unblocked", {"used_mb": s["used_mb"], "ours_mb": s["ours_mb"], "baseline_mb": self.b0})
+        await db.incident(kind, {"used_mb": s["used_mb"], "ours_mb": s["ours_mb"], "baseline_mb": self.b0,
+                                 "tries": self._unblock_tries})
+        self._idle_samples, self._unblock_tries = [], 0
         log.info("GPU 메모리가 기준으로 돌아와 대기열을 다시 시작합니다")
-        return True
+
+    async def _why_not_clean(self) -> str:
+        """유휴 확인(_check(False))이 False 인 이유 한 낱말: ollama_loaded / ollama_mem / worker_mem / ours_over_baseline / ok"""
+        if not gpu.available():
+            return "ok"
+        if await self._ollama_loaded():
+            return "ollama_loaded"
+        s = await self._survey()
+        if s["ollama_mb"]:
+            return "ollama_mem"
+        if s["worker_mb"]:
+            return "worker_mem"
+        if self.b0 is not None and s["ours_mb"] > self.b0 + settings.vram_idle_margin_mb:
+            return "ours_over_baseline"
+        return "ok"
+
+    async def _note_block_state(self, s: dict, why: str):
+        """정지 중 지금 상태를 로그와 정지 기록(관리자 화면이 읽는 settings.blocked)에 남긴다"""
+        info = {"why": why, "ours_mb": s["ours_mb"], "used_mb": s["used_mb"], "baseline_mb": self.b0,
+                "margin_mb": settings.vram_idle_margin_mb, "samples": list(self._idle_samples), "tries": self._unblock_tries,
+                "at": datetime.datetime.now().isoformat()}
+        log.warning("대기열 정지가 이어지는 중: %s (ours=%sMB, 기준=%sMB, 여유=%sMB, 확인 %s번째)", why, s["ours_mb"], self.b0,
+                    settings.vram_idle_margin_mb, self._unblock_tries)
+        cur = await db.get_setting("blocked")
+        if isinstance(cur, dict):
+            await db.set_setting("blocked", {**cur, "last_check": info})
 
     async def _wait(self, seconds: float):
         self.wake.clear()
