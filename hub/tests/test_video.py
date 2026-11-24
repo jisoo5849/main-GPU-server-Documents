@@ -2021,6 +2021,9 @@ def test_dialogue_prompts_keep_one_person_and_the_look():
     # 11-20: '화면 밖의 누군가에게 말한다'는 그 누군가를 그려 넣게 할 수 있다 → 화면 가장자리 쪽으로 말하고 아무도 들어오지 않는다
     assert "someone off-screen" not in talk and "speaks toward the" in talk and "no one else ever enters the frame" in talk
     assert "Style: semi-realistic painterly" in talk and "lips and jaw move" in talk
+    # 11-24: 카메라는 고정(밀고 들어가지 않는다), 얼굴은 화면 안 같은 자리 (베스 컷 얼굴이 카메라와 함께 아래로 빠졌다)
+    assert "locked on a tripod and never moves" in talk and "push in" in talk and "very slow push in" not in talk
+    assert "face stays in the same position inside the frame" in talk
     edit = video.cast_edit_prompt(s, 2)
     assert edit.startswith("Keep the same person from the image exactly") and video.ONE_PERSON in edit
     # 11-20 메인 재시험: "looking at someone off-screen" 이 그 '누군가'를 그려 넣어 푸토르가 둘이 됐다 (같은 씨앗으로 재현, 이 글로 한 명)
@@ -2534,7 +2537,7 @@ def test_layout_slots_sizes_poses_and_prompts():
     assert lp.startswith("Picture 1 shows the place.") and "a winding forest path with mossy trees" in lp
     assert "One child-sized faceless mannequin figure, standing, turned slightly toward the left, in the centre of the frame." in lp
     assert "no figure is seen from behind" in lp
-    assert "fill most of the frame height" in lp and lp.endswith("Exactly 1 figure, no other figure or person.")
+    assert "clear empty space above the hair" in lp and "one third of the way down" in lp and lp.endswith("Exactly 1 figure, no other figure or person.")
     assert "She looks up" not in lp and "hesitant" not in lp
     lp2 = video.layout_prompt(st, 1, sl)
     assert "2 faceless mannequin figures, walking: on the left a short figure turned toward the right; on the right a child-sized figure turned toward the left." in lp2
@@ -2585,6 +2588,8 @@ def test_layout_slots_sizes_poses_and_prompts():
     desc = video.layout_description(st, 1, sl)
     assert "Picture" not in desc and "faceless" not in desc and desc.startswith("wide shot, slow follow. on the left: a short old dwarf herbalist")
     assert "Every face is visible, front or three-quarter." in ip and "Every face is visible" in fp
+    assert "Keep the head where it is in Picture 1, with clear empty space above the hair" in ip      # 대사 클로즈업
+    assert "Keep the head where it is" not in video.identity_prompt(st, 1, sl, ["B", "A"], final=True)   # 와이드는 아님
     dup = _copy.deepcopy(st)
     dup["scenes"][1]["characters"] = ["A", "A", "B"]
     assert video.scene_people(dup, 1) == ["A", "B"]                               # 두 번 적힌 인물은 한 번

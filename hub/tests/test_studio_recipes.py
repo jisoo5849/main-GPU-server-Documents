@@ -303,9 +303,10 @@ assert rs["ltx25_i2v_sound_end"]["estimate"]["gpu_seconds"] == 60 and rs["ltx23_
 # 옛 i2v 레시피는 end_frame 을 모른다
 assert "end_frame" not in rs["ltx25_i2v_sound"]["inject"] and not any(n["class_type"] == "LTXVAddGuide" for n in rs["ltx25_i2v_sound"]["prompt"].values())
 
-# 대사 레시피 판 3: 마지막 프레임 출력과 last_index
+# 대사 레시피 판 3: 마지막 프레임 출력과 last_index (판 4: 부정 글에 카메라 움직임·얼굴 잘림, 11-24)
 tk = rs["ltx23_ia2v_talk"]
-assert tk["version"] == 3 and set(tk["outputs"]) == {"main", "check", "last"} and tk["outputs"]["last"]["node"] == "903"
+assert "camera tilting down" in tk["prompt"]["340:314"]["inputs"]["text"] and "head cut off" in tk["prompt"]["340:314"]["inputs"]["text"]
+assert tk["version"] == 4 and set(tk["outputs"]) == {"main", "check", "last"} and tk["outputs"]["last"]["node"] == "903"
 assert tk["inject"]["last_index"] == {"node": "902", "input": "batch_index", "type": "int", "min": 0, "max": 480}
 assert [s["suffix"] for s in tk["inject"]["save_prefix"]] == ["talk", "check_frame", "last_frame"]
 assert tk["prompt"]["902"]["inputs"]["image"] == tk["prompt"]["900"]["inputs"]["image"] and tk["prompt"]["903"]["inputs"]["images"] == ["902", 0]

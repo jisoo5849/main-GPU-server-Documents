@@ -3315,7 +3315,7 @@ async def t_layout_dialogue_talk_scene_puts_the_speaker_in_the_centre():
             assert {inp("A"), inp("B")} <= loads_of(by["L0d1"])
             # 니키의 대사 컷: 가운데 한 형상, 걷던 장면을 이어 걷는 자세, 장면 글 없이 말하는 방향·감정
             c1, e1 = text_of(by["L1c1"]), text_of(by["L1d1"])
-            assert "One child-sized faceless mannequin figure, standing" in c1 and "A new picture of this place: wide shot." in text_of(by["L0c1"]) and "fill most of the frame height" in c1
+            assert "One child-sized faceless mannequin figure, standing" in c1 and "A new picture of this place: wide shot." in text_of(by["L0c1"]) and "clear empty space above the hair" in c1
             assert "speaks toward the left side of the frame with a hesitant expression" in e1 and "She looks up" not in e1
             assert len([e for e in fs.events if e[0] == "place_card"]) == 1
             talk = [c for c in subs if recipe_of(c) == TALK["id"]]
@@ -3401,6 +3401,29 @@ async def t_layout_reset_clears_stage_pictures_and_the_end_keyframe():
             assert s0["layout_rel"] != old_lay and s0["end_rel"] != old_key
         finally:
             settings.results_dir, settings.studio_chain = old
+
+
+async def t_layout_close_up_does_not_redraw_for_a_floating_limb_false_positive():
+    """클로즈업 대사 컷의 '팔다리 떠 있음' 판정은 오탐이다: 다시 그리지 않는다 (11-24 메인: 베스 첫 화면을 다섯 번 다시 그렸다)"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir, settings.studio_chain = os.path.join(root, "results"), os.path.join(root, "envs"), True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = compose_deps(fs, settings.results_dir, DialogueDeps, layout=True)
+            deps.issues_for = lambda tag: ["floating_limb"] if re.match(r"L[13]d", tag) else []        # 장면 1·3 은 close-up, 0 은 와이드
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": dialogue_story(), "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            tags = tags_of(deps, t)
+            assert [x for x in tags if x.startswith("L1d")] == ["L1d1"], tags
+            assert [x for x in tags if x.startswith("L3d")] == ["L3d1"], tags
+            retry = [e[1] for e in fs.events if e[0] == "picture_retry" and e[1]["what"] == "identity" and e[1]["index"] in (1, 3)]
+            assert not retry, retry          # (장면 0 의 두 사람 장면은 가짜 검사기가 1명으로 답해 다시 그리지만 이 시험과 상관없다)
+        finally:
+            settings.results_dir, settings.envs_dir, settings.studio_chain = old
 
 
 async def main():

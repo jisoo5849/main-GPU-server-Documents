@@ -1954,7 +1954,7 @@ class Director:
             return st                 # 기준 그림도 장소 그림도 없다: 장면 그림
         prompt = v.compose_prompt(story, i, ref_ids, place_n)
         _h, animals = self._scene_cast(story, i)
-        rule = checks.compose_rule(len(people), animals, self._scene_crowd(story, i))
+        rule = checks.compose_rule(len(people), animals, self._scene_crowd(story, i), self._scene_close(story, i))
         pend = f"L{i}e_pending"
         vsz = work["long_size"]
         # 크기는 영상 비율로 (그림 1 = 세로 기준 그림의 비율을 따르면 영상 첫 화면이 잘린다)
@@ -2006,6 +2006,12 @@ class Director:
         return {**best, "seen": best_seen, "why": best_why}
 
     @staticmethod
+    def _scene_close(story: dict, i: int) -> bool:
+        """장면 i 가 클로즈업·미디엄 클로즈업인가 (몸이 화면 아래에서 잘리는 샷: '팔다리 떠 있음' 오탐을 안 본다)"""
+        rank = _video().shot_rank(story["scenes"][i].get("shot") or "")
+        return rank is not None and rank <= 1
+
+    @staticmethod
     def _scene_crowd(story: dict, i: int) -> bool:
         """장면 글(동작·샷·장소)에 무리(행인·군중) 말이 있는가 (checks.CROWD_RE). 새로 그린 첫 화면의 사람 수만 이것으로 느슨하게 한다"""
         sc = story["scenes"][i]
@@ -2034,9 +2040,11 @@ class Director:
         n = len(order)
         _h, animals = self._scene_cast(story, i)
         crowd = self._scene_crowd(story, i)
-        final_rule = checks.compose_rule(n, animals, crowd)
+        close = self._scene_close(story, i)
+        final_rule = checks.compose_rule(n, animals, crowd, close)
         # 중간 그림(② 뒤에 ③ 이 남았을 때, 마지막이 아닌 ③)에는 일부러 남긴 얼굴 없는 형상이 있다: 얼굴 이상·머리 없음으로 보지 않는다
-        mid_rule = checks.rule(None, skip=checks.LAYOUT_SKIP | (checks.ANIMAL_SKIP if animals else frozenset()))
+        mid_rule = checks.rule(None, skip=checks.LAYOUT_SKIP | (checks.ANIMAL_SKIP if animals else frozenset())
+                               | (checks.CLOSE_SKIP if close else frozenset()))
         vsz = work["long_size"]
         size = list(recipes.default_size(crec, photo=(vsz[0], vsz[1])))
 

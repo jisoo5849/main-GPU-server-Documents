@@ -1,7 +1,7 @@
 {
  "schema": "studio-recipe-1",
  "id": "ltx23_ia2v_talk",
- "version": 3,
+ "version": 4,
  "title": "대사 소리로 입 맞춤 · LTX-2.3 IA2V (증류 LoRA)",
  "quality_label": "빠름",
  "action": "talk",
@@ -387,7 +387,7 @@
   "340:314": {
    "class_type": "CLIPTextEncode",
    "inputs": {
-    "text": "blurry, distorted face, deformed mouth, extra people, extra limbs, text, watermark, low quality",
+    "text": "blurry, distorted face, deformed mouth, extra people, extra limbs, text, watermark, low quality, camera tilting down, camera moving, zooming, face leaving the frame, head cut off by the frame edge",
     "clip": [
      "340:318",
      0
