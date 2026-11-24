@@ -21,7 +21,9 @@ BODY_ISSUES = frozenset({"extra_head", "missing_head", "detached_head", "merged_
 # 동물이 있는 장면에서는 빼는 몸의 이상 (부위 나열이 동물 다리 넷을 팔다리 더함으로, 동물 머리를 머리 없음으로 잡는다)
 ANIMAL_SKIP = frozenset({"extra_limb", "floating_limb", "missing_head"})
 # 입 맞춤 클립에서는 빼는 몸의 이상: 말하는 입이 흔들린 얼굴을 '뭉개진 얼굴'로 잡을 수 있고, 입 모양은 보지 않기로 했다 (11-20 사용자)
-TALK_SKIP = frozenset({"face"})
+# 가슴 아래가 잘린 클로즈업의 '팔다리 떠 있음'은 오탐이다 (11-24 메인: 베스 클로즈업 첫 화면을 다섯 번 다시 그렸다). 입 맞춤 클립도 같다
+CLOSE_SKIP = frozenset({"floating_limb"})
+TALK_SKIP = frozenset({"face"}) | CLOSE_SKIP
 # 장면 글에 이런 말이 있으면 설정집 인물 말고도 사람이 나오는 장면이다 (행인·상인·군중)
 EXTRAS_RE = re.compile(
     r"\b(?:crowds?|people|passers?-?by|pedestrians?|shoppers?|customers?|vendors?|merchants?|villagers?|townsfolk|students?|"
@@ -129,10 +131,12 @@ def cut_rule(humans: int, animals: int, extras: bool) -> dict:
     return rule(humans, more_ok=bool(extras) or bool(animals), skip=ANIMAL_SKIP if animals else frozenset())
 
 
-def compose_rule(humans: int, animals: int, crowd: bool) -> dict:
+def compose_rule(humans: int, animals: int, crowd: bool, close: bool = False) -> dict:
     """새로 그린 첫 화면(기준 그림·구도 그림에서 그린 것)의 사람 수 기준: 장면 인물 수 정확히. 장면 글에 무리 말(CROWD_RE)이 있거나
-    동물이 있을 때만 더 많아도 된다. cut_rule 과 같은 짜임이지만 EXTRAS_RE 대신 무리 말만 본다"""
-    return rule(humans, more_ok=bool(crowd) or bool(animals), skip=ANIMAL_SKIP if animals else frozenset())
+    동물이 있을 때만 더 많아도 된다. cut_rule 과 같은 짜임이지만 EXTRAS_RE 대신 무리 말만 본다.
+    close(클로즈업·미디엄 클로즈업)이면 '팔다리 떠 있음'은 보지 않는다"""
+    skip = (ANIMAL_SKIP if animals else frozenset()) | (CLOSE_SKIP if close else frozenset())
+    return rule(humans, more_ok=bool(crowd) or bool(animals), skip=skip)
 
 
 def layout_trait(n: int) -> str:

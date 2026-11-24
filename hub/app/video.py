@@ -1736,9 +1736,11 @@ def _frame_hint(rank: int | None, n: int) -> str:
     """샷 크기별 형상 크기 지시. 11-21 실험: 'medium close-up' 만으로는 미디엄 샷이 나와 얼굴이 작았다"""
     if rank is not None and rank <= 1:
         if n == 1:
-            return ("The head and shoulders are large and fill most of the frame height, the whole head inside the frame with a little "
-                    "space above it, in the middle part of the picture.")
-        return "The heads and shoulders are large, every head fully inside the frame."
+            # 11-24 메인: 머리가 화면 맨 위에 붙은 첫 화면은 입 맞춤 영상에서 카메라가 내려가며 머리가 잘렸다 (7초 중 4초 얼굴 없음)
+            return ("The head and shoulders are large, but the whole head stays well inside the frame: clear empty space above the hair "
+                    "(about one tenth of the frame height), the eyes about one third of the way down from the top edge, "
+                    "the face in the middle part of the picture, the chest cut by the bottom edge.")
+        return "The heads and shoulders are large, every head fully inside the frame with clear space above the hair."
     if rank == 2:
         return "The heads and upper bodies are fully in frame, in the middle part of the picture."
     return "Every figure is fully in frame, apart from the others."
@@ -1827,6 +1829,10 @@ def identity_prompt(story: dict, i: int, slots: list[dict], put: list[str], fina
     parts.append(background_sentence(story, i))
     parts.append(_act_sentence(story, i, slots))
     parts.append("Every face is visible, front or three-quarter. The hands are not visible or relaxed.")
+    rank = shot_rank(story["scenes"][i].get("shot") or "")
+    if rank is not None and rank <= 1:
+        parts.append("Keep the head where it is in Picture 1, with clear empty space above the hair; do not move the head to the top edge "
+                     "and do not enlarge the figure.")
     parts.append(style_keep(story))
     parts.append(people_sentence(len(slots)) if final else f"Exactly {len(slots)} figures in total, no other person.")
     return " ".join(parts)[:1990]
@@ -1882,7 +1888,8 @@ def talk_prompt(story: dict, i: int) -> str:
             "the lips and jaw move clearly with the words, natural blinking, small head movements and calm breathing. "
             f"Behind, softly out of focus: {place} Time: {b['time']} Light: {b['light']}"
             + _style_line(story) + (" " + style_lock(story) if style_lock(story) else "")
-            + " The camera stays still with a very slow push in.")[:3000]
+            + " The camera is locked on a tripod and never moves: no tilt, no pan, no zoom, no push in. The person stays seated or "
+              "standing in the same place and the face stays in the same position inside the frame the whole time.")[:3000]
 
 
 def line_tokens(line: str) -> int:

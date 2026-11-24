@@ -140,6 +140,17 @@ def t_compose_rule_counts_exactly_unless_a_crowd_is_named():
     assert not checks.CROWD_RE.search("The mother smiles at the girl while her father laughs with a woman")
 
 
+def t_close_up_skips_the_floating_limb_false_positive():
+    """가슴 아래가 잘린 클로즈업의 '팔다리 떠 있음'은 오탐이다 (11-24 메인: 같은 그림을 다섯 번 다시 그렸다)"""
+    insp = {"people": 1, "issues": [{"type": "floating_limb"}], "traits": []}
+    assert checks.cast_problems(insp, checks.compose_rule(1, 0, False), ["B"]) == ["body:floating_limb"]
+    assert checks.cast_problems(insp, checks.compose_rule(1, 0, False, close=True), ["B"]) == []
+    assert checks.problems(insp, checks.clip_rule(1, 0, talk=True)) == []                      # 입 맞춤 클립도
+    assert checks.problems(insp, checks.clip_rule(1, 0, talk=False)) == ["body:floating_limb"]
+    real = {"people": 1, "issues": [{"type": "extra_head"}], "traits": []}
+    assert checks.cast_problems(real, checks.compose_rule(1, 0, False, close=True), ["B"]) == ["body:extra_head"]   # 진짜 이상은 그대로
+
+
 def t_layout_problems_reads_the_figure_line_and_ignores_blank_faces():
     ok = {"people": 0, "issues": [{"type": "face"}, {"type": "missing_head"}], "traits": [{"present": True}]}
     assert checks.layout_problems(ok, 2) == []              # 형상을 사람으로 세지 않아도, 얼굴이 없는 것도 문제가 아니다
