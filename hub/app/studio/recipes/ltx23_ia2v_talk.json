@@ -1,7 +1,7 @@
 {
  "schema": "studio-recipe-1",
  "id": "ltx23_ia2v_talk",
- "version": 4,
+ "version": 5,
  "title": "대사 소리로 입 맞춤 · LTX-2.3 IA2V (증류 LoRA)",
  "quality_label": "빠름",
  "action": "talk",
@@ -10,7 +10,7 @@
  "source": {
   "template": "video_ltx2_3_ia2v",
   "exported": "2026-11-19 메인 ComfyUI(8101) graphToPrompt",
-  "changes": "프롬프트 다듬기 노드(345 LoRA·346 TextGenerateLTX2Prompt·347 PreviewAny·348 스위치·349 켜기)를 빼고 306 글 인코더에 319 글을 바로 이음. 부정 글을 화풍과 상관없는 결함으로 바꿈. 높이 720→704(결과와 같게). 11-20: 검사 프레임(900 ImageFromBatch·901 SaveImage, 클립 가운데 한 장) 추가 / 11-20 판 3: 마지막 프레임 저장 추가(902 ImageFromBatch → 903 SaveImage). 합칠 때 잘리는 지점의 프레임을 last_index 로 받는다 (끝 -1 은 입 맞춤 모델이 대사 뒤에 어두워지는 구간이라 쓰지 않는다)",
+  "changes": "프롬프트 다듬기 노드(345 LoRA·346 TextGenerateLTX2Prompt·347 PreviewAny·348 스위치·349 켜기)를 빼고 306 글 인코더에 319 글을 바로 이음. 부정 글을 화풍과 상관없는 결함으로 바꿈. 높이 720→704(결과와 같게). 11-20: 검사 프레임(900 ImageFromBatch·901 SaveImage, 클립 가운데 한 장) 추가 / 11-20 판 3: 마지막 프레임 저장 추가(902 ImageFromBatch → 903 SaveImage). 합칠 때 잘리는 지점의 프레임을 last_index 로 받는다 (끝 -1 은 입 맞춤 모델이 대사 뒤에 어두워지는 구간이라 쓰지 않는다) / 11-24 판 5: 끝 가이드 추가. 첫 화면(340:334 LTXVPreprocess)을 LTXVAddGuide 로 frame_idx -1, 강도 1.0 에 한 번 더 넣는다(1단계 340:G1 → 340:326·340:315·340:292, 2단계 340:G2 → 340:287·340:290, 마지막 LTXVCropGuides 340:C2 → 340:316. ltx23_dev_i2v_sound_quality_end 의 A1/A2/C2 와 같은 배선). 근거: 11-24 요청 6c7be6fe 베스 컷 19.5~21초 머리 잘림(카메라가 내려감, cfg 1 이라 v4 의 부정 글은 계산되지 않는다), 11-20 F1~F4 에서 끝 키프레임이 마지막 프레임을 고정했다. 새 LoadImage 없이 첫 화면을 다시 쓴다",
   "measured": "2026-11-19 NIKI 시범·숲길 단편: 대사 6초 샷 약 40~60초, 12초 약 90초, 17초 약 190초 (1280×704)"
  },
  "prompt": {
@@ -55,8 +55,8 @@
    "class_type": "LTXVConcatAVLatent",
    "inputs": {
     "video_latent": [
-     "340:296",
-     0
+     "340:G2",
+     2
     ],
     "audio_latent": [
      "340:309",
@@ -85,11 +85,11 @@
      0
     ],
     "positive": [
-     "340:292",
+     "340:G2",
      0
     ],
     "negative": [
-     "340:292",
+     "340:G2",
      1
     ]
    }
@@ -123,11 +123,11 @@
    "class_type": "LTXVCropGuides",
    "inputs": {
     "positive": [
-     "340:307",
+     "340:G1",
      0
     ],
     "negative": [
-     "340:307",
+     "340:G1",
      1
     ],
     "latent": [
@@ -151,8 +151,8 @@
    "class_type": "LTXVLatentUpsampler",
    "inputs": {
     "samples": [
-     "340:309",
-     0
+     "340:292",
+     2
     ],
     "upscale_model": [
      "340:313",
@@ -403,11 +403,11 @@
      0
     ],
     "positive": [
-     "340:307",
+     "340:G1",
      0
     ],
     "negative": [
-     "340:307",
+     "340:G1",
      1
     ]
    }
@@ -420,8 +420,8 @@
     "temporal_size": 4096,
     "temporal_overlap": 4,
     "samples": [
-     "340:311",
-     0
+     "340:C2",
+     2
     ],
     "vae": [
      "340:317",
@@ -487,8 +487,8 @@
    "class_type": "LTXVConcatAVLatent",
    "inputs": {
     "video_latent": [
-     "340:325",
-     0
+     "340:G1",
+     2
     ],
     "audio_latent": [
      "340:327",
@@ -645,6 +645,77 @@
     "filename_prefix": "last_frame"
    },
    "class_type": "SaveImage"
+  },
+  "340:G1": {
+   "class_type": "LTXVAddGuide",
+   "inputs": {
+    "positive": [
+     "340:307",
+     0
+    ],
+    "negative": [
+     "340:307",
+     1
+    ],
+    "vae": [
+     "340:317",
+     2
+    ],
+    "latent": [
+     "340:325",
+     0
+    ],
+    "image": [
+     "340:334",
+     0
+    ],
+    "frame_idx": -1,
+    "strength": 1.0
+   }
+  },
+  "340:G2": {
+   "class_type": "LTXVAddGuide",
+   "inputs": {
+    "positive": [
+     "340:292",
+     0
+    ],
+    "negative": [
+     "340:292",
+     1
+    ],
+    "vae": [
+     "340:317",
+     2
+    ],
+    "latent": [
+     "340:296",
+     0
+    ],
+    "image": [
+     "340:334",
+     0
+    ],
+    "frame_idx": -1,
+    "strength": 1.0
+   }
+  },
+  "340:C2": {
+   "class_type": "LTXVCropGuides",
+   "inputs": {
+    "positive": [
+     "340:G2",
+     0
+    ],
+    "negative": [
+     "340:G2",
+     1
+    ],
+    "latent": [
+     "340:311",
+     0
+    ]
+   }
   }
  },
  "inject": {
@@ -820,7 +891,8 @@
      "340:333",
      "340:334",
      "340:335",
-     "340:350"
+     "340:350",
+     "340:G1"
     ]
    },
    {
@@ -860,7 +932,9 @@
      "900",
      "901",
      "902",
-     "903"
+     "903",
+     "340:G2",
+     "340:C2"
     ]
    }
   ]
@@ -870,10 +944,10 @@
   "when": "off"
  },
  "estimate": {
-  "gpu_seconds": 35,
+  "gpu_seconds": 40,
   "ref_frames": 145,
   "exponent": 1.3,
-  "basis": "2026-11-19 메인 스튜디오 시험: 7초 샷 38초(1280×704). 수작업 때는 6초 40~60초, 12초 약 90초, 17초 약 190초"
+  "basis": "2026-11-19 메인 스튜디오 시험: 7초 샷 38초(1280×704). 수작업 때는 6초 40~60초, 12초 약 90초, 17초 약 190초 / 판 5 끝 가이드: 11-20 F2(같은 가이드, 말 없는 컷)에서 +14% → 약 40초 [추정, 메인 재측정 전]"
  },
  "limits": {
   "max_run_seconds": 1800

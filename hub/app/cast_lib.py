@@ -20,29 +20,79 @@ log = logging.getLogger("mgs.cast")
 
 LIB_FILE = os.path.join(os.path.dirname(__file__), "cast_library.json")
 REQUIRED = ("id", "names", "look")
-# 사용자가 일부러 실사를 말했으면 라이브러리의 그림체로 바꾸지 않는다
-REAL_STYLE_RE = re.compile(r"실사|포토\s*리얼|photo\s*-?real|live[- ]action", re.I)
 # 화풍 열쇠 (11-20 장면 잇기 설계 4절): 한 영화의 인물은 모두 한 화풍이어야 해서, 화풍 글을 세 열쇠 중 하나로 줄여 인물마다 그 화풍의 기준 그림을 고른다
 STYLE_KEYS = ("photo", "semi", "anime")
-_SEMI_RE = re.compile(r"semi\s*-?\s*(?:real|photo)|반\s*실사|painterly|digital\s+painting|\bpainted\b|수채|유화", re.I)
-_PHOTO_RE = re.compile(REAL_STYLE_RE.pattern + r"|photograph\w*", re.I)
-_ANIME_RE = re.compile(r"anime|animation|animated|cartoon|cel[\s-]*shad|\b2\s*-?\s*d\b|애니|만화|웹툰", re.I)
+# 화풍 말 (11-24 화풍 일반화). 한글이 바로 붙는 '2D로'·'2.5D 느낌' 도 잡게 낱말 경계(\b) 대신 앞뒤 글자를 본다
+_SEMI_RE = re.compile(r"semi\s*-?\s*(?:real|photo)|반\s*실사|(?<![0-9.])2\.5\s*-?\s*d(?![a-z])", re.I)
+_ANIME_RE = re.compile(r"anim(?:e|ation|ated)|cartoon|\bcel(?:\b|[\s-]*shad)|(?<![0-9a-z.])2\s*-?\s*d(?![a-z])|애니|만화|웹툰", re.I)
+_PHOTO_RE = re.compile(r"(?<!반)(?<!반 )실사|포토\s*리얼|photo\s*-?\s*real|live[\s-]*action|photograph|realistic\s+photo|사진\s*(?:처럼|같)", re.I)
+_PAINT_RE = re.compile(r"painterly|digital\s+painting|\bpainted\b|watercolou?r|oil\s+painting|(?<![가-힣])수채|(?<![가-힣])유화", re.I)
+# '아닌 것'을 말한 구절 (구성안 화풍 글의 "not a cartoon"·"non-photorealistic"): 그 화풍으로 읽지 않게 지우고 본다.
+# 'non-' 은 바로 붙은 낱말 하나만 부정한다 ('non-realistic 2D animation' 의 'animation' 까지 지우면 애니가 반실사로 읽혔다, 11-24 검토).
+# not·never·no·without 은 쉼표까지 ("not a cel-shaded cartoon" 은 구절 전체가 아닌 것)
+_NOT_RE = re.compile(r"\bnon[\s-]*[a-z0-9]+(?:-[a-z0-9]+)*|\b(?:not|never|no|without|rather than|instead of)\b[^,.;:!?]*", re.I)
+# 요청 글의 물건 말 ('만화책을 읽는'·'reading a comic book'): 화풍을 말한 것이 아니다
+_OBJECT_RE = re.compile(r"만화\s*(?:책|방|가게|카페)|comic[\s-]*books?(?![\s-]*(?:style|look|art|illustration))", re.I)
+# 요청이 화풍을 말했는데 구성안 화풍이 비었거나 어긋날 때 채우는 그 열쇠의 기본 화풍 글 (라이브러리 화풍은 반실사라 애니·실사 요청에 맞지 않는다)
+SAID_STYLE_TEXT = {"anime": "2D anime feature film with clean cel-shaded line art and flat colours with soft shading",
+                   "photo": "photorealistic cinematic live-action film"}
+# 요청 글이 화풍을 말했는가 (said_style): 열쇠 말 + 3D·픽사·클레이·코믹스·동화·손그림 등. '코믹한'(우스운)은 화풍이 아니라 빼고,
+# '운동화'·'자동화' 의 '동화' 는 앞 글자로 거른다
+_SAID_RE = re.compile(
+    r"(?<![0-9a-z.])3\s*-?\s*d(?![a-z])|(?<![a-z])cgi?(?![a-z])|pixar|픽사|clay|클레이|점토|comic\s*(?:book|strip|style|art)|comics|"
+    r"코믹\s*(?:스|북|그림|화풍)|카툰|(?<![가-힣])동화|storybook|fairy[\s-]*tale|hand[\s-]*drawn|손\s*그림|stop[\s-]*motion|"
+    r"스톱\s*모션|일러스트|illustrat|지브리|ghibli", re.I)
+_STYLE_WORD_RE = re.compile(r"그림체|화풍|그림풍|작화")
+# 정해진 인물의 원래 모습을 그대로 쓰라는 말은 새 화풍을 말한 것이 아니다 ("원래 그림체 그대로")
+_KEEP_LOOK_RE = re.compile(r"(?:원래|기존|평소|정해진|같은)\s*(?:의\s*)?(?:그림체|화풍|그림풍|작화)"
+                           r"|(?:그림체|화풍|그림풍|작화)\s*(?:을|를|은|는|이|가|도)?\s*(?:그대로|유지)")
 _cache: dict = {}
 
 
 def style_key(style: str) -> str:
-    """화풍 글 → 열쇠 'photo'(실사)·'semi'(반실사)·'anime'(애니). 위에서부터 먼저 맞는 것:
-    1) semi-realistic·painting·반실사 등 (라이브러리 화풍 글은 'semi-realistic'을 품어 실사 낱말에 걸리지 않게 먼저 본다)
-    2) 실사·photorealistic·live action·photograph  3) anime·2D·cel·animation·cartoon·애니·만화
-    4) 어디에도 안 맞거나 비었으면 semi (우리 기본 그림체)"""
-    t = str(style or "")
+    """화풍 글 → 열쇠 'photo'(실사)·'semi'(반실사)·'anime'(애니). '아닌 것' 구절은 지우고, 위에서부터 먼저 맞는 것 (11-24):
+    1) 분명한 반실사 말(semi-real·semi photo·반실사·2.5D) → semi (라이브러리 화풍 글 'semi-realistic'이 실사 낱말에 걸리지 않게 먼저)
+    2) 애니 말(anime·animation·animated·cartoon·cel·2D·애니·만화·웹툰) → anime: 그림 말보다 먼저 본다 (11-18 애니 시험 문장
+       '2D … cel-shaded …, soft painted backgrounds' 가 'painted' 때문에 반실사로 읽혔다)
+    3) 실사 말(실사·photoreal·photo-real·live action·photograph·realistic photo·사진처럼·사진 같은) → photo
+    4) 그림 말(painterly·digital painting·painted·watercolour·oil painting·수채·유화) → semi  5) 나머지·빈 글 → semi"""
+    t = _NOT_RE.sub(" ", str(style or ""))
     if _SEMI_RE.search(t):
         return "semi"
-    if _PHOTO_RE.search(t):
-        return "photo"
     if _ANIME_RE.search(t):
         return "anime"
-    return "semi"
+    if _PHOTO_RE.search(t):
+        return "photo"
+    return "semi"          # 4) 그림 말과 5) 나머지는 같은 열쇠 (_PAINT_RE 는 said_style 이 화풍 말로 센다)
+
+
+def is_photo_style(style: str) -> bool:
+    """실사 화풍인가. video.story_style(사실적이지 않은 화풍만 돌려준다)과 화풍 열쇠가 같은 판정을 쓰게 한 곳에 둔다
+    (예전에는 정규식이 둘이라 'semi-photorealistic digital painting' 이 열쇠로는 반실사, story_style 로는 실사였다)"""
+    return style_key(style) == "photo"
+
+
+def said_style(text: str) -> bool:
+    """요청 글이 화풍을 말했는가 (11-24): 열쇠의 반실사·애니·실사·그림 말, 3D·픽사·클레이·코믹스·동화·손그림·일러스트, 그림체·화풍.
+    말했으면 구성안에 라이브러리 화풍을 베끼라고 하지 않고 덮어쓰지도 않는다 (니키가 나오는 애니 요청이 반실사가 되던 문제).
+    '원래 그림체 그대로' 처럼 정해진 모습을 쓰라는 말과 '만화책을 읽는' 같은 물건 말은 화풍을 말한 것으로 보지 않는다"""
+    t = _OBJECT_RE.sub(" ", str(text or ""))
+    if any(rx.search(t) for rx in (_SEMI_RE, _ANIME_RE, _PHOTO_RE, _PAINT_RE, _SAID_RE)):
+        return True
+    return bool(_STYLE_WORD_RE.search(_KEEP_LOOK_RE.sub(" ", t)))
+
+
+def said_photo(text: str) -> bool:
+    """요청 글이 실사를 말했는가 ('반실사'·'semi-photorealistic' 의 '실사·photo' 는 빼고 본다)"""
+    return bool(_PHOTO_RE.search(_SEMI_RE.sub(" ", _OBJECT_RE.sub(" ", str(text or "")))))
+
+
+def said_key(text: str) -> str | None:
+    """요청 글이 말한 화풍의 열쇠 (photo·semi·anime). 화풍을 말하지 않았으면 None. 실사 말이 있으면 photo, 아니면 화풍 열쇠 순서대로"""
+    t = _OBJECT_RE.sub(" ", str(text or ""))
+    if not said_style(t):
+        return None
+    return "photo" if said_photo(t) else style_key(t)
 
 
 def ref_for(entry: dict, key: str) -> str | None:
@@ -177,11 +227,12 @@ def match_character(char: dict, entries: list[dict]) -> dict | None:
     return None
 
 
-def prompt_block(entries: list[dict] | None, speech: bool = True, by_id: bool = False) -> str:
+def prompt_block(entries: list[dict] | None, speech: bool = True, by_id: bool = False, text: str = "") -> str:
     """구성안 지시문 끝에 붙이는 '이미 정해진 인물' 글 (영어). 목소리는 넣지 않는다: 구성안 검사가 모델이 쓴 목소리 글을 보므로
     긴 목소리 글을 베끼게 하지 않고, 목소리는 구성안이 나온 뒤 라이브러리 값으로 바꾼다.
     speech 가 거짓이면 말투를 빼고(대사 없는 영상), by_id 가 참이면 이름 칸(name_ko) 대신 라이브러리 id 를 인물 id 로 쓰게 한다
-    (대사 없는 영상의 구성안에는 name_ko 칸이 없다)"""
+    (대사 없는 영상의 구성안에는 name_ko 칸이 없다). text 는 사용자 요청 글: 화풍을 말했으면(said_style) 라이브러리 화풍을 베끼라고
+    하지 않고 요청 화풍을 쓰게 한다 (11-24: 니키가 나오는 애니 요청에 반실사 화풍을 베끼라는 줄이 같이 가 반실사가 됐다)"""
     if not entries:
         return ""
     # 말투(speech): 11-19 메인 시험에서 모델이 푸토르를 존댓말 "선생님" 말투로 써서, 손으로 만든 때의 할아버지 말투("얘야, ~란다")와 달랐다
@@ -199,16 +250,37 @@ def prompt_block(entries: list[dict] | None, speech: bool = True, by_id: bool = 
                      f'{e.get("variant_when") or "the situation fits"}, never put both entries in one scene, and use the other entry in every other scene.')
         lines.append(f'{tag}: {e["look"]}' + (f' Speech: {e["speech"]}.' if speech and e.get("speech") else "") + extra)
     style = next((e.get("style") for e in entries if e.get("style")), "")
-    if style:
+    if said_style(text):
+        lines.append("Visual style of the whole film: write the look the request asks for into bible.style.")
+    elif style:
         lines.append(f'Visual style of the whole film (copy it into bible.style): {style}')
     return "\n".join(lines)
+
+
+def keeps_said_style(text: str, style: str) -> bool:
+    """구성안 화풍이 사용자가 말한 화풍을 이미 따랐는가 (그러면 그대로 둔다): 요청에 화풍 말이 있고 구성안 화풍이 그 말과 어긋나지 않을 때
+    — 실사를 말했고 구성안 화풍이 있거나, 사실적이지 않은 화풍을 말했고 구성안 화풍도 실사가 아닐 때.
+    아니면(모델이 요청 화풍을 놓쳐 실사로 썼거나 비웠다) apply_to_story 가 요청 화풍의 기본 글로 채운다"""
+    key = said_key(text)
+    if key is None:
+        return False
+    st = str(style or "").strip()
+    return bool(st) and (key == "photo" or not is_photo_style(st))
+
+
+def said_style_fill(text: str, library_style: str) -> str:
+    """요청이 화풍을 말했는데 구성안 화풍이 그 말을 따르지 않았을 때 채울 화풍 글: 애니·실사는 그 열쇠의 기본 글(SAID_STYLE_TEXT),
+    반실사·그림 말은 라이브러리 화풍 (11-24 검토: 애니 요청에 모델이 화풍을 비우면 라이브러리의 반실사로 덮여 애니가 반실사가 됐다)"""
+    return SAID_STYLE_TEXT.get(said_key(text) or "", "") or library_style
 
 
 def apply_to_story(story: dict, entries: list[dict], text: str = "", keep_style: bool = False) -> dict:
     """구성안의 설정집을 라이브러리로 덮어쓴다. {설정집 인물 id: 라이브러리 id} 를 돌려준다.
     - 같은 인물: 외형(look)·목소리(voice·voice_ko)·후처리(voice_fx)·기준 그림(ref·refs)·알아볼 소품(signature)과 표시 이름을 라이브러리 값으로.
-    - 그림체: 모델이 그림체를 정하지 않았거나 실사로 정했고(keep_style 이 거짓) 사용자가 실사를 말하지 않았으면 라이브러리의 그림체로.
-    keep_style 은 구성안의 그림체가 이미 사실이 아닌 화풍(애니메이션 등)이라는 뜻이다: 사용자가 말한 화풍을 지킨다"""
+    - 그림체: 요청 글(text)이 화풍을 말했으면 그 화풍을 지킨다: 구성안 화풍이 그 말을 따랐으면 그대로(keeps_said_style), 따르지 않았으면
+      (비었거나 애니 요청에 실사) 요청 화풍의 기본 글(said_style_fill — 애니·실사는 그 열쇠의 글, 반실사·그림 말은 라이브러리 화풍).
+      말하지 않았으면 지금 규칙: 모델이 그림체를 정하지 않았거나 실사로 정했으면(keep_style 이 거짓) 라이브러리의 그림체로.
+    keep_style 은 구성안의 그림체가 이미 사실이 아닌 화풍(애니메이션 등)이라는 뜻이다"""
     matched: dict = {}
     if not entries or not isinstance(story, dict):
         return matched
@@ -229,8 +301,9 @@ def apply_to_story(story: dict, entries: list[dict], text: str = "", keep_style:
             if e.get(k):
                 c[k] = e[k]
         matched[str(c.get("id"))] = e["id"]
-    if matched and not keep_style and not REAL_STYLE_RE.search(text or ""):
+    if matched and not keep_style and not keeps_said_style(text, bible.get("style")):
         style = next((e.get("style") for e in entries if e["id"] in matched.values() and e.get("style")), "")
+        style = said_style_fill(text, style) if said_style(text) else style
         if style:
             bible["style"] = style
     return matched
