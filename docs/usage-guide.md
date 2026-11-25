@@ -56,3 +56,15 @@ VPN 은 사무실 밖에서 메인 서버로 들어오는 보안 통로이고, �
 
 - 작업자 초대와 기기 승인은 Tailscale 관리 콘솔(https://login.tailscale.com/admin)에서 합니다.
 - 메인 서버 설치와 보안 판단은 [vpn-tailscale.md](vpn-tailscale.md), [handover-2026-10-30-vpn.md](handover-2026-10-30-vpn.md)에 있습니다.
+
+## 3. 프로그램(MCP·스크립트)에서 쓰기 (API 키)
+
+브라우저가 아닌 프로그램(예: Claude Code 의 ComfyUI MCP, 스크립트)은 로그인 쿠키 대신 API 키로 자기 작업공간(8101~)에 접속합니다.
+
+- 키 발급: 자기 ComfyUI 화면의 **메인 GPU 패널**에서 발급합니다(키는 처음 한 번만 보입니다). 관리자는 서버에서 `docker compose exec hub python -m app.cli api-key <아이디> "<용도>"` 로도 만듭니다.
+- 사용: 요청마다 `Authorization: Bearer mgs_…` 헤더를 붙여 **자기 작업공간 포트**로 보냅니다. 예: `curl -H "Authorization: Bearer <키>" http://main:<포트>/system_stats` (포털 80 번이 아닙니다).
+  - 실행(`POST /prompt`)은 브라우저와 똑같이 허브 대기열로 접수됩니다. 순서 규칙은 달라지지 않습니다.
+- 키로 할 수 있는 일은 그 작업공간의 ComfyUI 화면과 같습니다. 단, **키로 새 키를 만들 수는 없습니다**(발급은 브라우저 로그인으로만).
+- 포털(80)은 키를 받지 않습니다. 계정·비밀번호·관리 화면은 브라우저 로그인으로만 쓸 수 있습니다.
+- 키가 새어 나갔다면 관리자에게 알려 폐기합니다. 키는 비밀번호처럼 다루고, 공유 폴더나 저장소에 올리지 않습니다.
+- ComfyUI MCP(`comfy-mcp`)는 헤더를 붙일 수 없어서, 내 PC에서 키를 붙여 주는 중계 프로그램을 앞에 둡니다.
