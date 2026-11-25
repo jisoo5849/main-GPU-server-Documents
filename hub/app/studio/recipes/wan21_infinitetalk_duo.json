@@ -1,17 +1,17 @@
 {
  "schema": "studio-recipe-1",
  "id": "wan21_infinitetalk_duo",
- "version": 1,
- "title": "두 사람 대화 입 맞춤 · Wan2.1 InfiniteTalk 두 화자 (lightx2v 6스텝)",
+ "version": 2,
+ "title": "두세 사람 대화 입 맞춤 · Wan2.1 InfiniteTalk (lightx2v 6스텝)",
  "quality_label": "빠름",
  "action": "talk_duo",
  "engine": "wan",
  "negative_source": "zero_out",
  "source": {
-  "graph": "2026-11-24 메인 작업공간 ComfyUI 실험 그래프(API 형식) 그대로: Wan2.1 I2V 480p fp8(KJ) + wan2.1_infiniteTalk_multi_fp16 (ModelPatchLoader) + lightx2v I2V 480p 6스텝 cfg 1, wav2vec2 중국어 base 인코더, 848×464 생성, 좌우 반쪽 마스크(SolidMask·MaskComposite), 1280×704 로 키움(ImageScale lanczos, 가운데 자르기), 25fps",
+  "graph": "2026-11-24 메인 작업공간 ComfyUI 실험 그래프(API 형식): Wan2.1 I2V 480p fp8(KJ) + wan2.1_infiniteTalk_multi_fp16 (ModelPatchLoader) + lightx2v I2V 480p 6스텝 cfg 1, wav2vec2 중국어 base 인코더, 848×464 생성, 말하는 사람 칸 마스크(SolidMask 0 848×464 위에 SolidMask 1 을 MaskComposite add 로 x 에 놓음) + 그 반전(InvertMask), 1280×704 로 키움(ImageScale lanczos, 가운데 자르기), 25fps",
   "license": "Apache-2.0 (InfiniteTalk·Wan2.1·lightx2v LoRA)",
-  "evidence": "11-24 메인 X1: 반실사 베스(왼쪽)·제임스(오른쪽) 투샷, 베스 6.2초 → 제임스 3.7초 — 말하는 사람 입만 움직이고 듣는 사람은 입을 다물고 웃음, 12초 동안 카메라·화풍·얼굴 그대로, 실행 115초. X6: 제임스 자리에 0.12초 무음 — 베스만 말하고 제임스는 입을 다물고 들음. X2: 같은 투샷을 LTX-2.3 IA2V 로 하면 말하는 사람 입이 거의 안 움직임 → 두 사람 대사 컷은 이 레시피",
-  "changes": "실험 그래프의 노드 번호를 그대로 둠. 소리 자리: audio = 왼쪽 사람(LoadAudio 20 → 마스크 1), audio2 = 오른쪽 사람(LoadAudio 21 → 마스크 2). 노드가 두 소리를 '왼쪽 먼저, 오른쪽 다음'으로 이어 붙이므로 감독이 말하지 않는 쪽에 짧은 무음을 넣는다. cfg 1 이라 부정 글은 계산되지 않는다(ConditioningZeroOut)"
+  "evidence": "11-24 메인 X1: 반실사 베스(왼쪽)·제임스(오른쪽) 투샷, 베스 6.2초 → 제임스 3.7초 — 말하는 사람 입만 움직이고 듣는 사람은 입을 다물고 웃음, 12초 동안 카메라·화풍·얼굴 그대로, 실행 115초. X6: 제임스 자리에 0.12초 무음 — 베스만 말하고 제임스는 입을 다물고 들음. X2: 같은 투샷을 LTX-2.3 IA2V 로 하면 말하는 사람 입이 거의 안 움직임 → 두세 사람 대사 컷은 이 레시피. X11: 두 사람, 오른쪽 제임스 화자, 마스크 1 = 오른쪽 반 + 마스크 2 = InvertMask — 제임스만 말함. X12: 세 사람, 가운데 제임스 화자, 마스크 1 = 가운데 3분의 1 + 반전 — 제임스만 말하고 왼쪽 베스·오른쪽 니키는 입을 다물고 웃으며 들음, 셋 모두 끝까지 화면에. X13: 세 사람, 오른쪽 니키 화자 2초(77프레임) — 니키 입만 대사에 맞춰 움직임",
+  "changes": "실험 그래프의 노드 번호를 그대로 둠. 판 1(1차, main 에 병합됨)은 좌우 반쪽 고정 마스크에 audio = 왼쪽 사람·audio2 = 오른쪽 사람이었다(오른쪽 화자는 무음이 앞이라 0.12초 늦게 시작). 판 2(11-24 2차): 1차의 좌우 반쪽 고정 마스크(33·34·35)를 말하는 사람 칸으로 바꿈 — 판이 다른 옛 작업은 감독이 이어받지 않는다: 마스크 1 = SolidMask 31(0, 848×464) + SolidMask 32(1, 너비 speaker_w) 를 MaskComposite 33(x = speaker_x, add), 마스크 2 = InvertMask 34(마스크 1) — 화면의 모든 칸이 화자 1·2 로 나뉘므로(model_multitalk 의 argmax) 칸 밖의 세 번째 사람이 대사에 묶이지 않게 나머지 전체가 무음 쪽. 소리 자리: audio = 말하는 사람의 대사(LoadAudio 20 → 인코더 1 → 마스크 1), audio2 = 무음(LoadAudio 21 → 인코더 2 → 마스크 2). 노드가 자리 1 다음 자리 2 로 이어 붙여 대사가 늘 0초에서 시작한다(1차의 오른쪽 화자 0.12초 늦추기 없앰). 칸은 감독이 사람 수 n 과 자리 차례 k 로 x = round(k·848/n), 너비 = round((k+1)·848/n) − x. cfg 1 이라 부정 글은 계산되지 않는다(ConditioningZeroOut)"
  },
  "prompt": {
   "10": {
@@ -160,27 +160,12 @@
    }
   },
   "34": {
-   "class_type": "MaskComposite",
+   "class_type": "InvertMask",
    "inputs": {
-    "destination": [
-     "31",
+    "mask": [
+     "33",
      0
-    ],
-    "source": [
-     "35",
-     0
-    ],
-    "x": 424,
-    "y": 0,
-    "operation": "add"
-   }
-  },
-  "35": {
-   "class_type": "SolidMask",
-   "inputs": {
-    "value": 1,
-    "width": 424,
-    "height": 464
+    ]
    }
   },
   "90": {
@@ -427,6 +412,20 @@
    "input": "audio",
    "type": "input_audio"
   },
+  "speaker_x": {
+   "node": "33",
+   "input": "x",
+   "type": "int",
+   "min": 0,
+   "max": 847
+  },
+  "speaker_w": {
+   "node": "32",
+   "input": "width",
+   "type": "int",
+   "min": 16,
+   "max": 848
+  },
   "seed": {
    "node": "402",
    "input": "noise_seed",
@@ -572,7 +571,6 @@
      "32",
      "33",
      "34",
-     "35",
      "400",
      "401",
      "402",

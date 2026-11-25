@@ -84,6 +84,8 @@ def repro_prompt(turn: dict, events: list[dict], atts: dict[str, dict]) -> dict 
                     if name in recipe["inject"]:
                         vals[name] = a["input_rel"]
         vals["save_prefix"] = [f"repro/{str(turn['id'])[:8]}/{s['suffix']}" for s in recipes.slots_of(recipe, "save_prefix")]
+        if "negative" in recipe["inject"]:      # 부정 글 자리(장면 그림, 11-24 2차): 접수 때 넣은 글, 없으면 레시피의 기본 부정 글
+            vals["negative"] = str(sub.get("negative") or "") or recipes.default_negative(recipe)
         return recipes.build(recipe, {k: v for k, v in vals.items() if k in recipe["inject"]})
     except (recipes.RecipeError, KeyError, ValueError, TypeError):
         return None
@@ -94,7 +96,8 @@ PURPOSE_KO = {"prompt_expand": "이미지 프롬프트 확장", "video_frame": "
               "video_plan": "연출 계획표", "video_story": "긴 영상 구성안"}
 LONG_EVENT_KINDS = ("story", "long_inherited", "long_scene_start", "long_scene_retry", "long_scene_done", "long_resumed",
                     "long_music", "long_assembled", "end_check", "end_keyframe_failed", "end_keyframe_dropped", "cast_style_convert",
-                    "long_chain_empty", "long_scene_redo", "place_card", "place_card_dropped", "layout_done", "duo_fallback")
+                    "long_chain_empty", "long_scene_redo", "place_card", "place_card_dropped", "layout_done", "duo_fallback",
+                    "quality_still_failed", "cast_style_convert_fallback")     # 정밀 판·실사 변환이 실패해 빠른 길로 내려감 (11-24 2차)
 
 
 def long_view(work: dict, events: list[dict]) -> dict | None:
@@ -113,7 +116,8 @@ def long_view(work: dict, events: list[dict]) -> dict | None:
                        "plan": s.get("plan"), "scene_prompt": s.get("scene_prompt"),
                        "prompt": s.get("prompt"), "violations": s.get("violations"), "clip_rel": s.get("clip_rel"),
                        "last_rel": s.get("last_rel"), "image_rel": s.get("image_rel"), "listener": sc.get("listener"),
-                       "duo": s.get("duo")})
+                       # 누구에게 하는 말인지 (11-24 사용자 확정 규칙: 독백은 혼자 클로즈업, 모두에게 하는 말은 그 자리 사람 모두)
+                       "monologue": sc.get("monologue"), "to_all": sc.get("to_all"), "duo": s.get("duo")})
     return {"title": story.get("title_ko"), "logline": story.get("logline_ko"), "seconds": story.get("seconds"),
             "bible": story.get("bible"), "music": story.get("music"), "scenes": scenes,
             "music_rel": work.get("music_rel"), "final_rel": work.get("final_rel"),

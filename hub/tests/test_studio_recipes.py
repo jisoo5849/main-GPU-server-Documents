@@ -132,7 +132,7 @@ for rid, r in rs.items():
     assert R.recipe_ok(rp), (rid, [x for x in rp if not x["ok"]])
     R.build(r, R.sample_values(r))
 assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music", "voice", "voice_clone", "talk",
-                                              "scene_image", "edit_ref", "i2v_end", "compose_ref", "talk_duo"}
+                                              "scene_image", "edit_ref", "i2v_end", "compose_ref", "talk_duo", "edit_photo"}
 
 # pick: edit_ref 는 edit 와 따로 고른다 (qwen_image_edit 은 그대로)
 assert R.pick(rs, set(), "edit", "fast")["id"] == "qwen_image_edit"
@@ -348,43 +348,61 @@ x = copy.deepcopy(tk); x["inject"]["save_prefix"] = x["inject"]["save_prefix"][:
 assert "V7" in bad(R.check_recipe(x, PROFILES))
 print("ok studio_recipes scene chaining")
 
-# ── 두 사람 대사 컷 (11-24 메인 X1·X6): InfiniteTalk 두 화자 레시피 ──
-assert "talk_duo" in R.ACTIONS and "talk_duo" in R.PART_ACTIONS and "audio2" in R.SLOT_NAMES
+# ── 두세 사람 대사 컷 (11-24 메인 X1·X6·X11~X13): InfiniteTalk 레시피, 말하는 사람 칸 마스크 ──
+assert "talk_duo" in R.ACTIONS and "talk_duo" in R.PART_ACTIONS and {"audio2", "speaker_x", "speaker_w"} <= R.SLOT_NAMES
 du = rs["wan21_infinitetalk_duo"]
-assert du["action"] == "talk_duo" and du["version"] == 1 and du["negative_source"] == "zero_out" and du["limits"]["max_run_seconds"] == 900
-assert set(du["inject"]) == {"prompt", "first_frame", "audio", "audio2", "seed", "frames", "width", "height", "save_prefix",
-                             "check_index", "last_index"}
+# 판 2: 판 1(1차, main 에 병합됨)은 좌우 반쪽 마스크·왼쪽/오른쪽 소리 자리였다 (판이 다른 옛 작업은 감독이 이어받지 않는다)
+assert du["action"] == "talk_duo" and du["version"] == 2 and du["negative_source"] == "zero_out" and du["limits"]["max_run_seconds"] == 900
+assert "판 1(1차" in du["source"]["changes"] and "판 2" in du["source"]["changes"]
+assert set(du["inject"]) == {"prompt", "first_frame", "audio", "audio2", "speaker_x", "speaker_w", "seed", "frames", "width", "height",
+                             "save_prefix", "check_index", "last_index"}
 assert du["defaults"]["fps"] == 25 and set(du["outputs"]) == {"main", "check", "last"}
-assert "Apache-2.0" in du["source"]["license"] and "X1" in du["source"]["evidence"] and "X6" in du["source"]["evidence"]
+assert "Apache-2.0" in du["source"]["license"] and all(x in du["source"]["evidence"] for x in ("X1", "X6", "X11", "X12", "X13"))
 dp = du["prompt"]
 assert dp["400"]["class_type"] == "WanInfiniteTalkToVideo" and dp["400"]["inputs"]["mode"] == "two_speakers"
 assert (dp["400"]["inputs"]["width"], dp["400"]["inputs"]["height"]) == (848, 464)                 # 480p 모델 생성 크기는 고정
 assert du["fixed"]["gen_width"]["value"] == 848 and du["fixed"]["gen_height"]["value"] == 464
-# 좌우 반쪽 마스크: 마스크 1 = 왼쪽(x 0), 마스크 2 = 오른쪽(x 424)
-assert dp["400"]["inputs"]["mode.mask_1"] == ["33", 0] and dp["33"]["inputs"]["x"] == 0
-assert dp["400"]["inputs"]["mode.mask_2"] == ["34", 0] and dp["34"]["inputs"]["x"] == 424
-# 소리 자리: audio = 왼쪽 사람(20 → 화자 1), audio2 = 오른쪽 사람(21 → 화자 2)
+# 말하는 사람 칸: 마스크 1 = 빈 SolidMask 31(0, 848×464) 위에 SolidMask 32(1, 너비 speaker_w)를 MaskComposite 33(x = speaker_x)로 놓는다.
+# 마스크 2 = InvertMask 34(마스크 1): 말하는 사람을 뺀 나머지 전체 (1차의 좌우 반쪽 고정 마스크 33·34·35 를 바꿨다)
+assert dp["400"]["inputs"]["mode.mask_1"] == ["33", 0] and dp["33"]["class_type"] == "MaskComposite"
+assert dp["33"]["inputs"]["destination"] == ["31", 0] and dp["33"]["inputs"]["source"] == ["32", 0] and dp["33"]["inputs"]["operation"] == "add"
+assert dp["31"]["inputs"] == {"value": 0, "width": 848, "height": 464} and dp["32"]["inputs"]["value"] == 1 and dp["32"]["inputs"]["height"] == 464
+assert dp["400"]["inputs"]["mode.mask_2"] == ["34", 0] and dp["34"] == {"class_type": "InvertMask", "inputs": {"mask": ["33", 0]}}
+assert "35" not in dp and "35" not in du["progress"]["bands"][0]["nodes"]
+assert du["inject"]["speaker_x"] == {"node": "33", "input": "x", "type": "int", "min": 0, "max": 847}
+assert du["inject"]["speaker_w"] == {"node": "32", "input": "width", "type": "int", "min": 16, "max": 848}
+# 소리 자리: audio = 말하는 사람의 대사(20 → 인코더 1 → 마스크 1), audio2 = 무음(21 → 인코더 2 → 마스크 2). 노드가 자리 1 다음 자리 2 로
+# 이어 붙여 대사가 늘 0초에서 시작한다 (1차의 오른쪽 화자 0.12초 늦추기는 없다)
 assert du["inject"]["audio"]["node"] == "20" and du["inject"]["audio2"]["node"] == "21"
 assert dp["22"]["inputs"]["audio"] == ["20", 0] and dp["400"]["inputs"]["audio_encoder_output_1"] == ["22", 0]
 assert dp["23"]["inputs"]["audio"] == ["21", 0] and dp["400"]["inputs"]["mode.audio_encoder_output_2"] == ["23", 0]
+assert dp["90"]["inputs"]["audio1"] == ["20", 0] and dp["90"]["inputs"]["audio2"] == ["21", 0] and dp["90"]["inputs"]["direction"] == "after"
 # 출력 크기: 생성 뒤 ImageScale(lanczos, 가운데 자르기)로 영상 크기에 맞춘다. 검사·잇는 프레임은 키운 프레임에서
 assert du["inject"]["width"]["node"] == "95" and dp["95"]["class_type"] == "ImageScale" and dp["95"]["inputs"]["crop"] == "center"
 assert dp["900"]["inputs"]["image"] == ["95", 0] and dp["902"]["inputs"]["image"] == ["95", 0] and dp["91"]["inputs"]["fps"] == 25
 assert [s["suffix"] for s in du["inject"]["save_prefix"]] == ["talk", "check_frame", "last_frame"]
 dv = R.sample_values(du)
-assert dv["audio"] == dv["audio2"] == R.SAMPLE_AUDIO
+assert dv["audio"] == dv["audio2"] == R.SAMPLE_AUDIO and (dv["speaker_x"], dv["speaker_w"]) == (0, 424)
+assert "speaker_x" not in R.sample_values(tk)                              # 칸 자리는 talk_duo 만
 db = R.build(du, {**dv, "audio": "studio/bob/abcd/line_1.wav", "audio2": "studio/bob/abcd/silence.wav", "frames": 129,
-                  "width": 1280, "height": 704, "last_index": 98, "check_index": 64})
+                  "width": 1280, "height": 704, "last_index": 98, "check_index": 64, "speaker_x": 283, "speaker_w": 282})
 assert db["20"]["inputs"]["audio"].endswith("line_1.wav") and db["21"]["inputs"]["audio"].endswith("silence.wav")
 assert db["400"]["inputs"]["length"] == 129 and (db["95"]["inputs"]["width"], db["95"]["inputs"]["height"]) == (1280, 704)
 assert db["902"]["inputs"]["batch_index"] == 98 and db["900"]["inputs"]["batch_index"] == 64 and not dangling(db)
 assert (db["400"]["inputs"]["width"], db["400"]["inputs"]["height"]) == (848, 464)
-for k, val in (("frames", 126), ("frames", 505), ("audio2", "../x.wav"), ("audio2", None)):      # 25fps 의 5초+1 = 126 은 4n+1 이 아니다
+assert db["33"]["inputs"]["x"] == 283 and db["32"]["inputs"]["width"] == 282 and db["31"]["inputs"]["width"] == 848   # 세 사람의 가운데 칸
+for k, val in (("frames", 126), ("frames", 505), ("audio2", "../x.wav"), ("audio2", None),      # 25fps 의 5초+1 = 126 은 4n+1 이 아니다
+               ("speaker_x", 848), ("speaker_x", -1), ("speaker_x", None), ("speaker_w", 0), ("speaker_w", 849), ("speaker_w", 1.5)):
     try:
         R.build(du, {**dv, k: val})
         raise AssertionError(f"{k}={val!r} 거부")
     except R.RecipeError:
         pass
+try:
+    R.build(du, {k: v for k, v in dv.items() if k != "speaker_w"})
+    raise AssertionError("speaker_w 는 필수")
+except R.RecipeError:
+    pass
 # 프레임 수: 초 × fps + 1 이상인 가장 작은 4n+1 (25fps 는 초 × 25 + 1 이 4n+1 이 아닐 때가 있다)
 assert [R.frames_for(du, s) for s in (4, 5, 6, 7, 20)] == [101, 129, 153, 177, 501]
 assert R.frames_for(du, 7.4) == 189 and all((R.frames_for(du, s) - 1) % 4 == 0 for s in range(3, 21))
@@ -397,7 +415,7 @@ from app import promptops  # noqa: E402
 names = {m["name"] for m in promptops.find_models(dp)}
 assert {"wan2.1_infiniteTalk_multi_fp16.safetensors", "wav2vec2-chinese-base_fp16.safetensors",
         "Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors", "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors"} <= names
-# V6: 소리 자리가 바뀌어 이어지면(왼쪽 소리가 화자 2로) 거부, 자리가 빠지거나 LoadAudio 가 아니면 거부, 두 화자 모드가 아니면 거부
+# V6: 소리 자리가 바뀌어 이어지면(대사가 화자 2로) 거부, 자리가 빠지거나 LoadAudio 가 아니면 거부, 두 화자 모드가 아니면 거부
 x = copy.deepcopy(du); x["prompt"]["22"]["inputs"]["audio"] = ["21", 0]; x["prompt"]["23"]["inputs"]["audio"] = ["20", 0]
 assert "V6" in bad(R.check_recipe(x))
 x = copy.deepcopy(du); del x["inject"]["audio2"]
@@ -429,11 +447,41 @@ x = copy.deepcopy(du); x["prompt"]["21"]["class_type"] = "VHS_LoadAudio"
 m = v6_msg(x); assert "inject.audio2 노드는 LoadAudio" in m, m
 x = copy.deepcopy(du); x["prompt"]["400b"] = copy.deepcopy(x["prompt"]["400"])
 m = v6_msg(x); assert "노드가 하나여야" in m, m
-# 감독의 전제(왼쪽 사람 = audio = 마스크 1, defaults.fps 로 계산한 프레임)가 레시피와 어긋나면 거부
+# 감독의 전제(말하는 사람 = audio = 마스크 1 = speaker_x·speaker_w 칸, 무음 = audio2 = 마스크 2 = 마스크 1 의 반전, fixed.gen_width 로
+# 계산한 칸, defaults.fps 로 계산한 프레임)가 레시피와 어긋나면 거부
 x = copy.deepcopy(du); x["prompt"]["400"]["inputs"]["mode.mask_1"], x["prompt"]["400"]["inputs"]["mode.mask_2"] = ["34", 0], ["33", 0]
-m = v6_msg(x); assert "mode.mask_1" in m and "왼쪽 반" in m and "mode.mask_2" in m, m
-x = copy.deepcopy(du); x["prompt"]["35"]["inputs"]["width"] = 300                # 오른쪽 조각이 반이 아님
-m = v6_msg(x); assert "조각(SolidMask)" in m and "424" in m, m
+m = v6_msg(x); assert "mode.mask_1" in m and "MaskComposite" in m and "mode.mask_2" in m, m
+# 마스크 2 가 마스크 1 의 반전이 아니다: 1차의 오른쪽 반 고정 마스크(세 번째 사람이 칸 밖에서 대사에 묶인다), 다른 마스크의 반전, 반전 없음
+x = copy.deepcopy(du)
+x["prompt"]["34"] = {"class_type": "MaskComposite", "inputs": {"destination": ["31", 0], "source": ["35", 0], "x": 424, "y": 0, "operation": "add"}}
+x["prompt"]["35"] = {"class_type": "SolidMask", "inputs": {"value": 1, "width": 424, "height": 464}}
+m = v6_msg(x); assert "mode.mask_2 는 마스크 1(33)의 InvertMask" in m, m
+x = copy.deepcopy(du); x["prompt"]["34"]["inputs"]["mask"] = ["31", 0]
+m = v6_msg(x); assert "mode.mask_2 는 마스크 1(33)의 InvertMask" in m, m
+x = copy.deepcopy(du); x["prompt"]["400"]["inputs"]["mode.mask_2"] = ["33", 0]
+m = v6_msg(x); assert "mode.mask_2" in m and "mode.mask_1" not in m, m
+# 마스크 1 의 짜임: add 가 아님, 바탕이 빈 마스크가 아니거나 생성 크기가 아님, 조각의 높이가 생성 높이가 아님
+x = copy.deepcopy(du); x["prompt"]["33"]["inputs"]["operation"] = "multiply"
+m = v6_msg(x); assert "mode.mask_1" in m and "operation add" in m, m
+x = copy.deepcopy(du); x["prompt"]["31"]["inputs"]["value"] = 1
+m = v6_msg(x); assert "바탕" in m and "848×464" in m, m
+x = copy.deepcopy(du); x["prompt"]["31"]["inputs"]["width"] = 832
+m = v6_msg(x); assert "바탕" in m, m
+x = copy.deepcopy(du); x["prompt"]["32"]["inputs"]["height"] = 400
+m = v6_msg(x); assert "조각" in m and "464" in m, m
+# 칸 자리: speaker_x 는 마스크 1 의 x, speaker_w 는 조각의 width (바뀌거나 범위가 생성 폭을 넘으면 거부), fixed.gen_width 필요
+x = copy.deepcopy(du); x["inject"]["speaker_w"] = {"node": "31", "input": "width", "type": "int", "min": 16, "max": 848}
+m = v6_msg(x); assert "inject.speaker_w" in m and "32.width" in m, m
+x = copy.deepcopy(du); x["inject"]["speaker_x"]["max"] = 848
+m = v6_msg(x); assert "inject.speaker_x 범위" in m and "0~847" in m, m
+x = copy.deepcopy(du); x["inject"]["speaker_x"]["type"] = "float"
+m = v6_msg(x); assert "inject.speaker_x" in m, m
+x = copy.deepcopy(du); del x["inject"]["speaker_x"]
+m = v6_msg(x); assert "inject.speaker_x" in m, m
+x = copy.deepcopy(du); del x["fixed"]["gen_width"]
+m = v6_msg(x); assert "fixed.gen_width" in m, m
+x = copy.deepcopy(tk); x["inject"]["speaker_x"] = {"node": "276", "input": "audio", "type": "int", "min": 0, "max": 10}   # talk_duo 에서만
+m = v6_msg(x); assert "inject.speaker_x 는 talk_duo 레시피에서만" in m, m
 x = copy.deepcopy(du); x["prompt"]["91"]["inputs"]["fps"] = 16
 m = v6_msg(x); assert "CreateVideo 91 fps(16)" in m and "defaults.fps(25)" in m, m
 x = copy.deepcopy(du); del x["inject"]["frames"]["step"]
@@ -453,4 +501,125 @@ info["WanInfiniteTalkToVideo"]["input"]["required"].pop("mode")
 errs, _w = R.check_object_info(dp, info)
 assert any("mode.audio_encoder_output_2" in e for e in errs) and any("mode.mask_1" in e for e in errs)
 print("ok studio_recipes duo talk")
+
+# ── 장면 그림 정밀 판 (11-24 2차 C5b, 메인 실측 P3a~f): 가속 스위치(fixed.turbo)로 파생 판, 40스텝 cfg 4, 부정 글 자리 ──
+sc = rs["qwen_image_2512_scene"]
+sq = rs["qwen_image_2512_scene_quality"]
+assert sc["version"] == 2 and sc["fixed"]["turbo"] == {"node": "238:229", "input": "value", "type": "bool", "value": True}
+assert sq["derived_from"] == sc["id"] and R.quality_of(sq) == "high" and sq["action"] == "scene_image" and sq["quality_label"] == "높음"
+sp_, qp_ = sc["prompt"], sq["prompt"]
+assert sp_["238:229"]["inputs"]["value"] is True and qp_["238:229"]["inputs"]["value"] is False       # 원본은 그대로
+# 스위치가 거짓이면 가는 곳: 스텝 40(238:224, 50에서 줄임), cfg 4(238:223), LoRA 없는 모델(238:226). 참이면 Lightning 4스텝 cfg 1
+for sw, on_false, on_true in (("238:240", "238:224", "238:225"), ("238:243", "238:223", "238:218"), ("238:233", "238:226", "238:221")):
+    assert qp_[sw]["inputs"]["on_false"] == [on_false, 0] and qp_[sw]["inputs"]["on_true"] == [on_true, 0] and qp_[sw]["inputs"]["switch"] == ["238:229", 0]
+assert qp_["238:224"]["inputs"]["value"] == 40 and qp_["238:223"]["inputs"]["value"] == 4 and sp_["238:225"]["inputs"]["value"] == 4
+assert sp_["238:218"]["inputs"]["value"] == 1 and qp_["238:230"]["inputs"]["steps"] == ["238:240", 0] and qp_["238:230"]["inputs"]["cfg"] == ["238:243", 0]
+assert "판 2" in sc["source"]["changes"] and "P3" in sc["source"]["changes"]
+# 부정 글 자리: fixed.negative 와 같은 노드·입력. 기본 글은 그래프의 글 (높음 판은 빠른 판에서 만들 때 더한 말까지)
+assert sc["inject"]["negative"] == {"node": "238:228", "input": "text", "type": "string", "role": "negative", "max_len": 2000}
+assert "value" not in sc["fixed"]["negative"] and sq["inject"]["negative"] == sc["inject"]["negative"]
+assert R.default_negative(sc) == sp_["238:228"]["inputs"]["text"] and R.default_negative(sq).endswith(R.QUALITY_NEGATIVE_EXTRA)
+assert R.sample_values(sq)["negative"] == R.default_negative(sq)
+ANIME_NEG = "semi-realistic, photorealistic, photograph, 3D render, realistic lighting, skin pores, low quality, blurry, text, watermark"
+sb = R.build(sq, {**R.sample_values(sq), "negative": ANIME_NEG})
+assert sb["238:228"]["inputs"]["text"] == ANIME_NEG and sb["238:227"]["inputs"]["text"] == "a calm test scene"
+assert sq["prompt"]["238:228"]["inputs"]["text"] != ANIME_NEG                     # 원본 레시피는 그대로
+for val in ("", "   ", None, 5):
+    try:
+        R.build(sq, {**R.sample_values(sq), "negative": val})
+        raise AssertionError(f"negative={val!r} 거부")
+    except R.RecipeError:
+        pass
+try:
+    R.build(sc, {k: v for k, v in R.sample_values(sc).items() if k != "negative"})
+    raise AssertionError("negative 는 필수 (감독이 늘 넣는다)")
+except R.RecipeError:
+    pass
+# V5: 부정 글 자리가 fixed.negative 와 다르거나, fixed.negative 에 value 가 있거나, 부정 노드가 없는 구성이면 거부
+x = copy.deepcopy(sc); x["inject"]["negative"]["node"] = "238:227"
+assert "V5" in bad(R.check_recipe(x))
+x = copy.deepcopy(sc); x["fixed"]["negative"]["value"] = x["prompt"]["238:228"]["inputs"]["text"]
+assert "V5" in bad(R.check_recipe(x))
+x = copy.deepcopy(sc); x["inject"]["negative"]["type"] = "int"
+assert "V5" in bad(R.check_recipe(x))
+x = copy.deepcopy(sc); x["prompt"]["238:228"]["inputs"]["text"] = "  "                          # 기본 부정 글이 비면 감독이 넣을 글이 없다
+assert "V5" in bad(R.check_recipe(x))
+x = copy.deepcopy(rs["zimage_turbo_t2i"]); x["inject"]["negative"] = {"node": x["inject"]["prompt"]["node"], "input": "text", "type": "string"}
+assert "V5" in bad(R.check_recipe(x))
+# 고르기: 부품(scene_image)은 같은 화질 판을 먼저. 빠름을 찾을 때 높음 판을 고르지 않고(빠른 판이 꺼지면 Z-Image 로), 높음이 꺼지면 빠른 판
+assert R.pick(rs, set(), "scene_image")["id"] == sc["id"] and R.pick(rs, set(), "scene_image", "high")["id"] == sq["id"]
+assert R.pick(rs, {sc["id"]}, "scene_image") is None and R.pick(rs, {sq["id"]}, "scene_image", "high")["id"] == sc["id"]
+assert R.pick(rs, set(), "talk", "high")["id"] == "ltx23_ia2v_talk" and R.pick(rs, set(), "music", "high")["id"] == "ace_step_music"
+print("ok studio_recipes scene quality")
+
+# ── 실사 변환 레시피 (11-24 2차 C7, 메인 실측 P1): Qwen-Image 2.1 편집, 새 action edit_photo ──
+ph = rs["qwen_image21_edit_photo"]
+assert "edit_photo" in R.ACTIONS and "edit_photo" in R.PART_ACTIONS and ph["action"] == "edit_photo" and ph["version"] == 1
+assert R.recipe_ok(R.check_recipe(ph)) and "qwen_image21_edit_photo_quality" not in rs               # 가속 스위치가 없어 높음 판이 없다
+assert set(ph["inject"]) == {"prompt", "edit_image", "seed", "save_prefix"} and ph["negative_source"] == "node"
+assert R.pick(rs, set(), "edit_photo")["id"] == ph["id"] and R.pick(rs, set(), "edit")["id"] == "qwen_image_edit"     # 편집을 가로채지 않는다
+pp = ph["prompt"]
+# 그래프는 P1 그대로: 그림 470 → 글 노드 474 의 images.image_1, 474 의 출력 0 = 긍정, 1 = 부정, 2 = 입력 그림 크기의 잠재
+assert pp["474"]["class_type"] == "TextEncodeQwenImage21" and pp["474"]["inputs"]["images.image_1"] == ["470", 0]
+assert pp["458"]["inputs"]["positive"] == ["474", 0] and pp["458"]["inputs"]["negative"] == ["474", 1] and pp["458"]["inputs"]["latent_image"] == ["474", 2]
+assert (pp["458"]["inputs"]["steps"], pp["458"]["inputs"]["cfg"], pp["458"]["inputs"]["sampler_name"], pp["458"]["inputs"]["scheduler"]) == (25, 1, "euler", "simple")
+assert pp["469"]["class_type"] == "QwenImage21Cache" and pp["461"]["class_type"] == "SaveImage" and pp["457"]["class_type"] == "VAEDecode"
+assert ph["inject"]["prompt"]["output"] == 0 and ph["fixed"]["negative"] == {"node": "474", "input": "negative_prompt", "type": "string",
+                                                                           "role": "negative", "output": 1, "value": ""}
+assert ph["inject"]["edit_image"] == {"node": "470", "input": "image", "type": "input_image"} and ph["inject"]["seed"]["node"] == "458"
+assert [s["suffix"] for s in ph["inject"]["save_prefix"]] == ["photo"] and ph["outputs"]["main"]["node"] == "461"
+assert ph["defaults"]["size_rule"] == "input" and "width" not in ph["inject"]
+# 한 노드가 긍정·부정을 함께 내므로 출력마다 본다 (자리의 output 칸)
+assert R.roles_of(pp, "474") == {"positive", "negative"} and R.roles_of(pp, "474", out=0) == {"positive"} and R.roles_of(pp, "474", out=1) == {"negative"}
+assert R.split_outputs(ph["inject"]["prompt"], ph["fixed"]["negative"]) and not R.split_outputs(ph["inject"]["prompt"], ph["inject"]["prompt"])
+pv = R.sample_values(ph)
+assert set(pv) == {"prompt", "edit_image", "seed", "save_prefix"}
+pb = R.build(ph, {**pv, "prompt": "Turn this illustrated portrait into a real photograph", "edit_image": "studio/bob/abcd/beth.png", "seed": 7,
+                  "save_prefix": ["bob/abcd1234/photo"]})
+assert pb["474"]["inputs"]["prompt"].startswith("Turn this") and pb["470"]["inputs"]["image"] == "studio/bob/abcd/beth.png"
+assert pb["458"]["inputs"]["seed"] == 7 and pb["461"]["inputs"]["filename_prefix"] == "bob/abcd1234/photo" and pb["474"]["inputs"]["negative_prompt"] == ""
+assert not dangling(pb) and ph["prompt"]["474"]["inputs"]["prompt"] != pb["474"]["inputs"]["prompt"]
+for k, val in (("edit_image", "../x.png"), ("edit_image", None), ("prompt", " "), ("seed", -1)):
+    try:
+        R.build(ph, {**pv, k: val})
+        raise AssertionError(f"{k}={val!r} 거부")
+    except R.RecipeError:
+        pass
+x = copy.deepcopy(ph); x["prompt"]["474"]["inputs"]["negative_prompt"] = "blurry"                       # 고정한 빈 부정 글과 다름
+assert "V2" in bad(R.check_recipe(x))
+# V4·V5: 출력 칸이 없으면(한 노드가 긍정·부정 모두에 닿음) 거부, 같은 출력이면 거부
+x = copy.deepcopy(ph); del x["inject"]["prompt"]["output"]
+assert "V4" in bad(R.check_recipe(x)) and "V5" in bad(R.check_recipe(x))
+x = copy.deepcopy(ph); x["fixed"]["negative"]["output"] = 0
+assert "V5" in bad(R.check_recipe(x))
+x = copy.deepcopy(ph); x["prompt"]["458"]["inputs"]["negative"] = ["474", 0]                          # 긍정 출력이 부정에도 감
+assert "V4" in bad(R.check_recipe(x)) and "V5" in bad(R.check_recipe(x))
+
+
+def v6_photo(r):
+    return next((c["msg"] for c in R.check_recipe(r) if c["id"] == "V6"), "")
+
+
+assert v6_photo(ph) == ""
+x = copy.deepcopy(ph); x["prompt"]["474"]["inputs"]["images.image_1"] = ["457", 0]                     # 편집 대상이 글 노드에 안 닿음
+m = v6_photo(x); assert "images.image_1" in m, m
+x = copy.deepcopy(ph); x["prompt"]["458"]["inputs"]["latent_image"] = ["474", 0]                       # 잠재가 입력 그림 크기가 아님
+m = v6_photo(x); assert "셋째 출력" in m, m
+x = copy.deepcopy(ph); x["prompt"]["475"] = copy.deepcopy(x["prompt"]["474"])                          # 글 노드가 둘
+m = v6_photo(x); assert "노드가 하나여야" in m, m
+x = copy.deepcopy(ph); del x["inject"]["edit_image"]
+m = v6_photo(x); assert "inject.edit_image 가 필요" in m, m
+x = copy.deepcopy(ph); x["inject"]["prompt"]["input"] = "negative_prompt"; x["inject"]["prompt"]["output"] = 1
+assert "edit_photo 레시피의 inject.prompt" in v6_photo(x)
+x = copy.deepcopy(ph); x["action"] = "edit"                                                             # 같은 그래프를 일반 편집으로 쓸 수 없다
+assert "V6" in bad(R.check_recipe(x))
+# V10: 모델 파일 (메인 공용 저장소에 있음 확인), V11: 점 든 입력 images.image_1 은 첫 마디(images)가 노드 입력에 있으면 통과
+assert {m["name"] for m in promptops.find_models(pp)} == {"qwen_image_2.1_int8_convrot.safetensors", "qwen3vl_8b_int8_convrot.safetensors",
+                                                          "qwen_image_2.1_vae_bf16.safetensors"}
+pinfo = {ct: {"input": {"required": {k.split(".")[0]: None for n in pp.values() if n["class_type"] == ct for k in n["inputs"]}}}
+         for ct in {n["class_type"] for n in pp.values()}}
+assert "images" in pinfo["TextEncodeQwenImage21"]["input"]["required"] and R.check_object_info(pp, pinfo) == ([], [])
+pinfo["TextEncodeQwenImage21"]["input"]["required"].pop("images")
+assert any("images.image_1" in e for e in R.check_object_info(pp, pinfo)[0])
+print("ok studio_recipes photo edit")
 print("ok studio_recipes")

@@ -1,7 +1,7 @@
 {
  "schema": "studio-recipe-1",
  "id": "qwen_image_2512_scene",
- "version": 1,
+ "version": 2,
  "title": "장면 그림 · Qwen-Image 2512 Lightning (반실사 회화체)",
  "quality_label": "빠름",
  "action": "scene_image",
@@ -10,7 +10,8 @@
   "template": "image_qwen_Image_2512",
   "exported": "2026-11-19 메인 ComfyUI(8101) graphToPrompt",
   "why": "대사 영상의 인물 라이브러리 그림체(반실사 회화)로 장면 첫 화면을 그린다. Z-Image 는 같은 그림체 글에도 광택 있는 디즈니·픽사풍 3D 로 나와, 기준 그림(Qwen-Image 2512 계열)을 편집한 말하는 장면과 화풍이 달랐다. 사용자가 Lightning(4스텝) 결과 b_new_light 를 화풍으로 골랐다",
-  "measured": "2026-11-19 1280×704, Lightning 6초, 전체 품질(50스텝) 56초(모델 올리는 시간 포함). 사용자 선택은 Lightning"
+  "measured": "2026-11-19 1280×704, Lightning 6초, 전체 품질(50스텝) 56초(모델 올리는 시간 포함). 사용자 선택은 Lightning",
+  "changes": "판 2 (2026-11-24): 가속 스위치(238:229)를 fixed.turbo 로 적어 높음 파생 판(qwen_image_2512_scene_quality, 가속 끔 cfg 4)이 생기게 하고, 그 판의 스텝(238:224)을 50에서 40으로 줄였다(시간 절약, 메인 실측 P3a~f 값). 부정 글 자리(inject.negative)를 더해 감독이 반실사가 아닌 영화(애니·실사·3D 애니·그 밖의 화풍)의 장소 그림·사람 없는 장면 그림을 정밀 판 + 화풍별 부정 글로 그린다(P3: 빠른 판도 앞머리 화풍을 대체로 따르지만 정밀 판이 더 충실 — 애니는 선이 깔끔하고 색이 평평, 실사는 사진에 가깝고, 수채는 종이 결·번짐이 뚜렷). 빠른 판(Lightning 4스텝 cfg 1)은 그대로이고 부정 글도 기본 글 그대로다(cfg 1 이라 효과가 없다)"
  },
  "prompt": {
   "60": {
@@ -131,7 +132,7 @@
   },
   "238:224": {
    "inputs": {
-    "value": 50
+    "value": 40
    },
    "class_type": "PrimitiveInt"
   },
@@ -253,6 +254,13 @@
    "max": 1536,
    "step": 16
   },
+  "negative": {
+   "node": "238:228",
+   "input": "text",
+   "type": "string",
+   "role": "negative",
+   "max_len": 2000
+  },
   "save_prefix": [
    {
     "node": "60",
@@ -268,6 +276,12 @@
    "input": "text",
    "type": "string",
    "role": "negative"
+  },
+  "turbo": {
+   "node": "238:229",
+   "input": "value",
+   "type": "bool",
+   "value": true
   }
  },
  "outputs": {
