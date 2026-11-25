@@ -49,11 +49,19 @@ def _portal_url(request_host: str, next_url: str = "") -> str:
 
 
 async def _authorize(conn):
-    """세션 사용자와 이 포트의 환경. 주인(또는 관리자)만 열 수 있다."""
+    """세션 사용자와 이 포트의 환경. 주인(또는 관리자)만 열 수 있다.
+
+    브라우저는 로그인 쿠키로, 스크립트·MCP 같은 프로그램은 API 키(`Authorization: Bearer mgs_…`)로 들어온다.
+    키로 인증된 요청에는 conn.state.via_api_key 를 켠다: 키는 계정 수준 동작(키 발급)에는 쓰지 못하게 하려는 표시다.
+    쿠키가 유효하면 쿠키가 먼저다."""
     env = await envs.env_by_port(_port(conn.scope))
     if env is None:
         return None, None, "env"
     user = await security.session_user(conn.cookies.get(security.SESSION_COOKIE))
+    if user is None:
+        user = await security.api_key_user(security.bearer(conn.headers))
+        if user is not None:
+            conn.state.via_api_key = True
     if user is None:
         return env, None, "login"
     if user["id"] != env["owner_id"] and user["role"] != "admin":
@@ -73,7 +81,7 @@ async def handle_http(request: Request):
     if problem == "login":
         if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
             return RedirectResponse(_portal_url(request.headers.get("host", ""), str(request.url)), 302)
-        return JSONResponse({"error": "로그인이 필요합니다.",
+        return JSONResponse({"error": "로그인이 필요합니다. 프로그램은 Authorization: Bearer <API 키> 로 접속하세요.",
                              "login": _portal_url(request.headers.get("host", ""))}, status_code=401)
     if problem == "forbidden":
         return Response("다른 사용자의 작업공간입니다.", status_code=403, media_type="text/plain; charset=utf-8")

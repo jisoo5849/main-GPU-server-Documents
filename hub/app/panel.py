@@ -214,6 +214,10 @@ async def handle(request: Request, env: dict, user, path: str):
         # 그 스크립트가 관리자 키를 받아 가지 못하게, 키는 작업공간 주인에게만 발급한다.
         if env["owner_id"] != user["id"]:
             return JSONResponse({"error": "API 키는 자기 작업공간에서만 발급할 수 있습니다."}, status_code=403)
+        # 키가 새어 나가도 그 키로 또 다른 키를 계속 만들 수는 없게, 키 발급은 로그인(쿠키)으로만 한다.
+        if getattr(request.state, "via_api_key", False):
+            return JSONResponse({"error": "API 키로는 새 API 키를 발급할 수 없습니다. 브라우저 로그인으로 발급하세요."},
+                                status_code=403)
         data = await _body(request)
         key = await security.create_api_key(user["id"], str(data.get("label", "ComfyUI 패널"))[:60])
         await db.log_access(user["id"], ip, "api_key_create", {"via": "comfyui_panel"})
