@@ -198,6 +198,25 @@ def t_why_not_clean_names_the_reason():
     with_fakes(go)
 
 
+def t_incident_kinds_used_in_code_are_allowed_by_the_schema():
+    """가짜 DB 는 kind 를 검사하지 않아 auto_rebaselined 가 실제 CHECK 에 막히는 것을 놓쳤다(11-24).
+    코드가 db.incident·proc_incident 에 넘기는 kind 글자가 모두 schema.sql 의 incidents_kind_check 허용값에 있어야 한다"""
+    import glob
+    import re
+    app = os.path.join(os.path.dirname(__file__), "..", "app")
+    schema = open(os.path.join(app, "schema.sql"), encoding="utf-8").read()
+    m = re.search(r"ADD CONSTRAINT incidents_kind_check\s+CHECK \(kind IN \(([^)]*)\)\)", schema)
+    assert m, "schema.sql 에서 incidents_kind_check 를 찾지 못함"
+    allowed = set(re.findall(r"'([a-z_]+)'", m.group(1)))
+    used = set()
+    for path in glob.glob(os.path.join(app, "**", "*.py"), recursive=True):
+        src = open(path, encoding="utf-8").read()
+        used |= set(re.findall(r"db\.(?:proc_)?incident\(\s*\"([a-z_]+)\"", src))
+        used |= set(re.findall(r"self\._unblocked\(\s*\"([a-z_]+)\"", src))   # _unblocked(kind) 가 그대로 incident 로 넘긴다
+    assert "auto_rebaselined" in used and "foreign_gpu_process" in used, used   # 찾는 식이 낡지 않았는지
+    assert used <= allowed, f"schema 허용값에 없는 kind: {sorted(used - allowed)}"
+
+
 if __name__ == "__main__":
     for k, v in sorted(globals().items()):
         if k.startswith("t_"):
