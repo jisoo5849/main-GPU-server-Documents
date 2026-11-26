@@ -5,7 +5,7 @@
 (한 장 9~19초). 사용자: 입 모양은 중요하지 않고 물리적인 오류·편집 오류·화풍 고정만 본다.
 
 사람 수 기준 (11-20 검토에서 고침):
-- 한 사람 그림(인물 기준 그림·기준 그림을 고친 첫 화면·입 맞춤 클립)은 정확히 1명. 두 사람 대사 컷(11-24)의 클립은 정확히 2명.
+- 한 사람 그림(인물 기준 그림·기준 그림을 고친 첫 화면·입 맞춤 클립)은 정확히 1명. 두세 사람 대사 컷(11-24)의 클립은 정확히 그 수(2·3명).
 - 긴 영상의 장면 그림은 설정집 인물(되풀이해 나오는 사람)만 알아서, 한 장면에만 나오는 행인·상인·군중이 빠져 있다. 그래서 가까운
   장면만 정확히, 미디엄은 빠진·겹친 사람만, 넓은 장면은 세지 않는다. 동물 인물이 있으면 사람 수와 팔다리 수를 보지 않는다
   (동물을 사람으로 셀지 정해져 있지 않고, 다리 넷이 '팔다리 더함'으로 잡힌다).
@@ -24,7 +24,7 @@ ANIMAL_SKIP = frozenset({"extra_limb", "floating_limb", "missing_head"})
 # 가슴 아래가 잘린 클로즈업의 '팔다리 떠 있음'은 오탐이다 (11-24 메인: 베스 클로즈업 첫 화면을 다섯 번 다시 그렸다). 입 맞춤 클립도 같다
 CLOSE_SKIP = frozenset({"floating_limb"})
 TALK_SKIP = frozenset({"face"}) | CLOSE_SKIP
-# 두 사람 대사 컷(미디엄 투샷, 11-24): 얼굴 이상은 입 맞춤과 같이 보지 않고, 클로즈업 오탐 예외(CLOSE_SKIP)는 해당 없다 (허리까지 보인다)
+# 두세 사람 대사 컷(미디엄 투샷·그룹샷, 11-24): 얼굴 이상은 입 맞춤과 같이 보지 않고, 클로즈업 오탐 예외(CLOSE_SKIP)는 해당 없다 (허리까지 보인다)
 DUO_TALK_SKIP = frozenset({"face"})
 # 장면 글에 이런 말이 있으면 설정집 인물 말고도 사람이 나오는 장면이다 (행인·상인·군중)
 EXTRAS_RE = re.compile(
@@ -55,11 +55,13 @@ def style_trait(style: str) -> str:
 
 def style_negative(style_key: str) -> str:
     """화풍 열쇠(cast_lib.style_key)별로 '아닌 것'을 함께 말하는 검사 문장 (영어). style_trait 의 화풍 글만으로는 검사 모델이
-    3D 렌더·사진·만화를 가려내지 못해서(11-20 실측 S6: 실사로 바꾼 그림에 그림 느낌이 남아도 통과) 아닌 쪽을 못 박는다"""
+    3D 렌더·사진·만화를 가려내지 못해서(11-20 실측 S6: 실사로 바꾼 그림에 그림 느낌이 남아도 통과) 아닌 쪽을 못 박는다.
+    custom(수채·클레이·픽셀 …, 11-24 2차)은 무엇이 아닌지 몰라 빈 글: 화풍 원문 줄(style_trait)만 본다"""
     return {
         "semi": "The picture is a soft painted semi-realistic illustration, not a glossy 3D render, not a flat cartoon, not cel-shaded",
         "anime": "The picture is a 2D anime-style illustration with clean cel-shaded line art, not a 3D render, not a photograph",
         "photo": "The picture looks like a real photograph or live-action film still, not a painting, not a cartoon, not a 3D render",
+        "toon3d": "The picture is a stylized 3D animated film image, not a photograph, not a flat 2D drawing",
     }.get(str(style_key or ""), "")
 
 
@@ -116,10 +118,12 @@ def scene_rule(humans: int, animals: int, rank: int | None, extras: bool) -> dic
 def clip_rule(first_people: int | None, animals: int, talk: bool = False, duo: bool = False, crowd: bool = False) -> dict:
     """클립 가운데 프레임의 기준. first_people 은 그 클립의 첫 화면에서 센 사람 수 (모르면 None).
     입 맞춤 클립은 한 사람이 그대로 있어야 한다 (첫 화면이 이미 한 사람으로 검사됐다).
-    두 사람 대사 컷(talk·duo)은 두 사람 아래로는 안 된다: 듣는 사람이 사라져도 다시 만든다 (fewer_ok 거짓, 11-24).
-    crowd 는 장면 글에 무리 말이 있을 때: 첫 화면 기준(compose_rule)처럼 더 많아도 된다 (배경 행인이 첫 화면부터 있어 다시 만들어도 같다)"""
+    두세 사람 대사 컷(talk·duo)은 first_people 에 그 장면의 사람 수(2·3)를 받아 정확히 그 수: 듣는 사람이 사라져도 다시 만든다
+    (fewer_ok 거짓, 11-24. 수를 모르면 2). crowd 는 장면 글에 무리 말이 있을 때: 첫 화면 기준(compose_rule)처럼 더 많아도 된다
+    (배경 행인이 첫 화면부터 있어 다시 만들어도 같다)"""
     if talk and duo:
-        return rule(2, more_ok=crowd, skip=DUO_TALK_SKIP | (ANIMAL_SKIP if animals else frozenset()))
+        want = first_people if isinstance(first_people, int) and not isinstance(first_people, bool) and first_people >= 2 else 2
+        return rule(want, more_ok=crowd, skip=DUO_TALK_SKIP | (ANIMAL_SKIP if animals else frozenset()))
     skip = (ANIMAL_SKIP if animals else frozenset()) | (TALK_SKIP if talk else frozenset())
     if talk and not animals:
         if isinstance(first_people, int) and not isinstance(first_people, bool) and 1 < first_people <= CROWD_COUNT:

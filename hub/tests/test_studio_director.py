@@ -670,7 +670,7 @@ async def t_all_shipped_recipes_pass_checks_and_build():
         assert recipes.recipe_ok(rep), (rid, [x for x in rep if not x["ok"]])
         p = recipes.build(r, recipes.sample_values(r))
         assert D.negative_problem(r, p) is None, (rid, D.negative_problem(r, p))
-    assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music", "voice", "voice_clone", "talk", "scene_image", "edit_ref", "i2v_end", "compose_ref", "talk_duo"}
+    assert {r["action"] for r in rs.values()} == {"i2v", "t2v", "image", "edit", "music", "voice", "voice_clone", "talk", "scene_image", "edit_ref", "i2v_end", "compose_ref", "talk_duo", "edit_photo"}
     # 4스텝 LoRA 는 레시피가 켠 채로 고정한다
     assert rs["wan22_t2v_14b_fast"]["prompt"]["128:129"]["inputs"]["value"] is True
     assert rs["qwen_image_edit"]["prompt"]["170:168"]["inputs"]["value"] is True
@@ -684,6 +684,9 @@ async def t_all_shipped_recipes_pass_checks_and_build():
     assert d.recipe_for("scene_image")["id"] == "qwen_image_2512_scene"
     # 두 사람 대사 레시피는 따로 고른다: 혼자 대사 컷('talk')은 그대로 LTX
     assert d.recipe_for("talk")["id"] == "ltx23_ia2v_talk" and d.recipe_for("talk_duo")["id"] == "wan21_infinitetalk_duo"
+    # 11-24 2차: 장면 그림 정밀 판(높음)과 실사 변환 레시피도 따로 고른다. 편집('edit')은 그대로 Qwen Image Edit
+    assert d.recipe_for("scene_image", "high")["id"] == "qwen_image_2512_scene_quality"
+    assert d.recipe_for("edit_photo")["id"] == "qwen_image21_edit_photo" and d.recipe_for("edit", "high")["id"] == "qwen_image_edit_quality"
 
 
 async def t_new_seed_with_new_seconds_rewrites_prompt():
@@ -1636,7 +1639,7 @@ class LongDeps(FakeDeps):
             self.n += 1
             main = rec["outputs"]["main"]["node"]
             ext = (rec["outputs"]["main"].get("ext") or [".mp4"])[0]
-            if rec["action"] in ("image", "edit", "scene_image", "edit_ref", "compose_ref"):
+            if rec["action"] in ("image", "edit", "scene_image", "edit_ref", "compose_ref", "edit_photo"):
                 outs = [{"node_id": main, "rel_path": self._file(f"img_{self.n}{ext}"), "media": "images"}]
             elif rec["action"] in ("music", "voice", "voice_clone"):
                 outs = [{"node_id": main, "rel_path": self._file(f"{rec['action']}_{self.n}{ext}"), "media": "audio"}]
@@ -3629,7 +3632,7 @@ def prompt_text(call):
                     if n.get("class_type") in ("CLIPTextEncode", "PrimitiveStringMultiline"))
 
 
-async def t_duo_talk_scene_uses_the_two_speaker_recipe_with_silence_on_the_other_side():
+async def t_duo_talk_scene_puts_the_line_in_slot_1_on_the_speaker_column_and_silence_in_slot_2():
     old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check)
     with tempfile.TemporaryDirectory() as root:
         settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
@@ -3657,13 +3660,15 @@ async def t_duo_talk_scene_uses_the_two_speaker_recipe_with_silence_on_the_other
             c1, d1 = text_of(by["L1c1"]), text_of(by["L1d1"])
             assert "turned toward each other, both faces in three-quarter view toward the camera" in c1 and "Exactly 2 figures" in c1
             assert "The person on the left speaks toward the right side of the frame with a warm expression" in d1
-            assert "The person on the right listens with lips closed and a soft smile" in d1 and "talks about Niki" not in d1
+            assert "The person on the right listens with lips closed and a gentle closed-mouth smile" in d1 and "talks about Niki" not in d1
             inp = lambda cid: fs.atts[w["casts"][cid]["att"]]["input_rel"]
             assert {inp("A"), inp("B")} <= loads_of(by["L1d1"])
-            # 장면 1: 말하는 베스가 왼쪽 → audio(왼쪽 자리) = 대사, audio2(오른쪽 자리) = 무음. 25fps 4n+1, 자르는 지점의 프레임, 영상 크기로 키움
+            # 장면 1: 말하는 베스가 왼쪽 → 마스크 1 = 왼쪽 반 칸(x 0, 너비 424), audio(자리 1) = 대사, audio2(자리 2) = 무음.
+            # 25fps 4n+1, 자르는 지점의 프레임, 영상 크기로 키움
             silence = files.turn_input_rel(USER["username"], USER["id"], t["id"], "silence.wav")
             g1 = by["L1w2"][1]["prompt"]
             assert g1["20"]["inputs"]["audio"] == w["lines"]["1"]["in_rel"] and g1["21"]["inputs"]["audio"] == silence
+            assert (g1["33"]["inputs"]["x"], g1["32"]["inputs"]["width"]) == (0, 424) and g1["34"]["inputs"]["mask"] == ["33", 0]
             s1 = story["scenes"][1]["seconds"]
             assert g1["400"]["inputs"]["length"] == recipes.frames_for(DUO, s1) and (g1["400"]["inputs"]["length"] - 1) % 4 == 0
             assert (g1["95"]["inputs"]["width"], g1["95"]["inputs"]["height"]) == tuple(w["long_size"]) == (1280, 704)
@@ -3673,10 +3678,12 @@ async def t_duo_talk_scene_uses_the_two_speaker_recipe_with_silence_on_the_other
             p1 = prompt_text(by["L1w2"])
             assert "The person on the left speaks to the person on the right, warm" in p1 and "only listens" in p1
             assert "alone in the frame" not in p1 and "talks about Niki" not in p1
-            # 장면 2: 제임스가 오른쪽에서 말한다 → 왼쪽 자리에 무음(앞에 온다), 오른쪽에 대사. 잇는 프레임도 무음만큼 늦게
+            # 장면 2: 제임스가 오른쪽에서 말한다 → 마스크 1 = 오른쪽 반 칸(x 424), 대사는 여전히 자리 1·무음은 자리 2 (11-24 X11).
+            # 대사가 0초에서 시작하므로 잇는 프레임을 늦추지 않는다 (1차의 0.12초 늦추기는 없앴다)
             g2 = by["L2w1"][1]["prompt"]
-            assert g2["20"]["inputs"]["audio"] == silence and g2["21"]["inputs"]["audio"] == w["lines"]["2"]["in_rel"]
-            assert g2["902"]["inputs"]["batch_index"] == min(int(round((max(D.TALK_MIN_SHOT, 2.6 + D.TALK_TAIL) + D.DUO_SILENCE) * 25)),
+            assert g2["20"]["inputs"]["audio"] == w["lines"]["2"]["in_rel"] and g2["21"]["inputs"]["audio"] == silence
+            assert (g2["33"]["inputs"]["x"], g2["32"]["inputs"]["width"]) == (424, 424)
+            assert g2["902"]["inputs"]["batch_index"] == min(int(round(max(D.TALK_MIN_SHOT, 2.6 + D.TALK_TAIL) * 25)),
                                                              g2["400"]["inputs"]["length"] - 1)
             assert "The person on the right speaks to the person on the left, surprised" in prompt_text(by["L2w1"])
             spath = files.input_path(ENV, silence)
@@ -3684,13 +3691,15 @@ async def t_duo_talk_scene_uses_the_two_speaker_recipe_with_silence_on_the_other
             # 혼잣말 컷은 그대로 LTX 혼자 대사
             assert "alone in the frame, no other people" in prompt_text(by["L3v1"])
             sc = w["scenes"]
-            assert sc[1]["duo"] is True and sc[1]["line_delay"] == 0.0 and sc[1]["first_from"] == "layout"
-            assert sc[2]["duo"] is True and sc[2]["line_delay"] == D.DUO_SILENCE and sc[2]["first_from"] == "last"
-            assert sc[1]["last_rel"] and sc[2]["seam"] == "continue" and "duo" not in sc[3] and "line_delay" not in sc[3]
+            assert sc[1]["duo"] is True and sc[1]["first_from"] == "layout"
+            assert sc[2]["duo"] is True and sc[2]["first_from"] == "last" and not any("line_delay" in x for x in sc)
+            assert sc[1]["last_rel"] and sc[2]["seam"] == "continue" and "duo" not in sc[3]
             starts = {e[1]["index"]: e[1] for e in fs.events if e[0] == "long_scene_start"}
             dones = {e[1]["index"]: e[1] for e in fs.events if e[0] == "long_scene_done"}
             assert starts[1].get("duo") is True and starts[2].get("duo") is True and "duo" not in starts[3] and "duo" not in starts[0]
+            assert starts[1]["people"] == starts[2]["people"] == 2 and "people" not in starts[3]
             assert dones[1].get("duo") is True and dones[2].get("duo") is True and "duo" not in dones[3]
+            assert dones[1]["people"] == dones[2]["people"] == 2 and "people" not in dones[3]
             # 검사: 두 사람 대사 컷은 정확히 두 사람 (듣는 사람이 사라진 첫 클립을 다시 만들었다), 혼잣말 컷은 한 사람
             pc = [e[1] for e in fs.events if e[0] == "picture_check" and e[1].get("what") == "talk_clip" and not e[1].get("skipped")]
             p_1 = [e for e in pc if e["index"] == 1]
@@ -3699,11 +3708,10 @@ async def t_duo_talk_scene_uses_the_two_speaker_recipe_with_silence_on_the_other
             n2 = p_1[1]["file"].split("_")[1].split(".")[0]                     # 다시 만든 클립(검사를 통과한 것)을 쓴다
             assert sc[1]["clip_rel"].endswith(f"video_{n2}.mp4"), (sc[1]["clip_rel"], p_1)
             assert not [e for e in fs.events if e[0] == "duo_fallback"]
-            # 합치기: 오른쪽 사람이 말한 컷은 대사를 무음만큼 늦게 놓고 그만큼 더 길게 자른다. 이어지는 투샷은 디졸브
+            # 합치기: 어느 쪽 사람이 말해도 대사는 클립의 0초에서 시작한다 — 늦추거나 더 길게 자르지 않는다. 이어지는 투샷은 디졸브
             clips, lines, _m, _o, trims = [c[1] for c in deps.calls if c[0] == "assemble_dialogue"][0]
-            byshot = {x["shot"]: x for x in lines}
-            assert "delay" not in byshot[1] and byshot[2]["delay"] == D.DUO_SILENCE and "delay" not in byshot[3]
-            assert trims[0] is None and trims[1] == 3.5 and abs(trims[2] - 3.62) < 1e-9 and trims[3] == 3.5
+            assert not any("delay" in x for x in lines) and [x["shot"] for x in lines] == [1, 2, 3]
+            assert trims == [None, 3.5, 3.5, 3.5]
             assert deps.seam_kinds == ["cut", "continue", "cut"]
         finally:
             (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk,
@@ -3844,11 +3852,12 @@ async def t_duo_talk_portrait_estimate_and_reset():
         # 다시 만들기: 두 화자 작업의 접수 정보와 장면의 두 사람 표시(내려간 표시 포함)도 비운다
         work = {"story": story, "chain": True, "L1w_pending": {"client_id": "studio-x-L1w1", "attempt": 2}}
         t["work"] = dict(work)
-        scenes = [{"clip_rel": "a.mp4"}, {"clip_rel": "b.mp4", "duo": True, "line_delay": 0.12, "duo_failed": True}, {}, {}]
+        scenes = [{"clip_rel": "a.mp4"}, {"clip_rel": "b.mp4", "duo": True, "duo_failed": True}, {}, {}]
         await d1._long_reset(ctx, work, scenes, 1)
         assert work["L1w_pending"] == {"client_id": None, "attempt": 2} and scenes[1] == {}
-        assert "line_delay" in D.LONG_SCENE_KEYS and "duo" in D.LONG_SCENE_KEYS and "first_solo" in D.LONG_SCENE_KEYS
-        assert "duo_failed" in D.LONG_SCENE_KEYS
+        assert "duo" in D.LONG_SCENE_KEYS and "first_solo" in D.LONG_SCENE_KEYS and "duo_failed" in D.LONG_SCENE_KEYS
+        # 2차: 새 클립은 오른쪽 화자 늦추기를 쓰지 않지만(대사는 늘 소리 자리 1), 1차로 만든 클립을 이어받은 요청의 합치기가 읽도록 남긴다
+        assert "line_delay" in D.LONG_SCENE_KEYS
     finally:
         settings.studio_chain, settings.studio_duo_talk = old
 
@@ -3997,6 +4006,218 @@ async def t_duo_clip_in_a_crowd_and_an_animal_listener_are_checked_like_their_fi
              settings.studio_picture_check, settings.studio_ref_layout) = old
 
 
+# ── 두세 사람 대사 컷 2차 (11-24): 사용자 확정 규칙 "대화 할 때는 대화를 주고받는 이들이 나와야 하고, 독백 씬에는 클로즈업이 나와야 해"
+#    + "셋 모두 나오게". 세 사람 대화는 InfiniteTalk 마스크 1 = 말하는 사람의 3분의 1 칸(자리 차례 group_order), 독백은 혼자 LTX ──
+def family_story():
+    """가족 세 사람의 아침 식탁: 베스(A)가 제임스(B)에게(식탁의 니키(C)도 나온다) → 제임스가 모두에게(같은 화면에서 이어짐) →
+    니키의 혼잣말(독백, 혼자 클로즈업) → 니키가 엄마에게(구성안은 둘만 적었지만 식탁의 제임스도 나온다)"""
+    from app import video
+    raw = {
+        "title_ko": "생일 아침", "logline_ko": "가족이 니키의 생일을 이야기한다.",
+        "bible": {"characters": [
+            {"id": "A", "look": "a calm neat woman around forty in a cream blouse and an apron", "name_ko": "베스",
+             "voice": "A warm Korean woman around forty, gentle.", "voice_ko": "따뜻한 엄마"},
+            {"id": "B", "look": "a tall lean man in his early forties in a blue cardigan", "name_ko": "제임스",
+             "voice": "A calm Korean man in his forties, low and friendly.", "voice_ko": "차분한 아빠"},
+            {"id": "C", "look": "a twelve-year-old girl with two long black braids and a wine-red cape", "name_ko": "니키",
+             "voice": "A bright twelve-year-old Korean girl, clear.", "voice_ko": "맑은 아이"}],
+            "places": [{"id": "P1", "look": "a sunny cottage kitchen with a wooden table"}], "time": "morning", "light": "warm window light",
+            "style": "semi-realistic painterly 2.5D film look"},
+        "music": {"tags": "gentle instrumental, strings", "bpm": 72, "key": "D major", "ko": "잔잔한 현악"},
+        "scenes": [
+            {"seconds": 10, "place": "P1", "characters": ["A", "B", "C"], "continues": False, "shot": "wide shot",
+             "action": "The family sits at the wooden table in the morning.", "sound": "birds", "ko": "가족의 아침 식탁", "kind": "shot",
+             "speaker": "", "listener": "", "line_ko": "", "emotion": ""},
+            {"seconds": 6, "place": "P1", "characters": ["A", "B", "C"], "continues": False, "shot": "medium group shot",
+             "action": "She smiles at him.", "sound": "room tone", "ko": "베스가 제임스에게", "kind": "talk",
+             "speaker": "A", "listener": "B", "line_ko": "여보, 오늘 니키 생일이에요.", "emotion": "warm"},
+            {"seconds": 6, "place": "P1", "characters": ["B", "A", "C"], "continues": True, "shot": "medium group shot",
+             "action": "He laughs and looks around the table.", "sound": "room tone", "ko": "제임스가 모두에게", "kind": "talk",
+             "speaker": "B", "listener": "everyone", "line_ko": "자, 다 같이 축하하자!", "emotion": "cheerful"},
+            {"seconds": 5, "place": "P1", "characters": ["C"], "continues": False, "shot": "close-up",
+             "action": "She looks down, thinking.", "sound": "room tone", "ko": "니키의 혼잣말", "kind": "talk",
+             "speaker": "C", "listener": "nobody", "line_ko": "다들 기억하고 있었구나...", "emotion": "quiet"},
+            {"seconds": 6, "place": "P1", "characters": ["C", "A"], "continues": False, "shot": "medium two-shot",
+             "action": "She beams at her mother.", "sound": "room tone", "ko": "니키가 엄마에게", "kind": "talk",
+             "speaker": "C", "listener": "A", "line_ko": "엄마, 고마워요!", "emotion": "happy"}]}
+    old = settings.studio_duo_talk
+    settings.studio_duo_talk = True
+    try:
+        story = video.clean_dialogue_story(raw, 33)
+    finally:
+        settings.studio_duo_talk = old
+    assert story is not None
+    return story
+
+
+async def t_speaker_span_splits_the_generation_width_by_the_seat_order():
+    """말하는 사람 칸(마스크 1): 사람 n 명(2~3)을 레시피의 고정 생성 폭(fixed.gen_width 848)에 같은 너비로 나눈 k 번째 칸"""
+    span = D.Director._speaker_span
+    assert [span(DUO, ["A", "B"], c) for c in ("A", "B")] == [(0, 424), (424, 424)]
+    assert [span(DUO, ["A", "B", "C"], c) for c in ("A", "B", "C")] == [(0, 283), (283, 282), (565, 283)]
+    assert sum(w for _x, w in (span(DUO, ["A", "B", "C"], c) for c in "ABC")) == 848
+    narrow = copy.deepcopy(DUO)
+    narrow["fixed"]["gen_width"]["value"] = 832
+    assert span(narrow, ["A", "B"], "B") == (416, 416)
+    nofix = copy.deepcopy(DUO)
+    del nofix["fixed"]["gen_width"]
+    assert span(nofix, ["A", "B", "C"], "C") == (565, 283)                  # 고정 폭을 못 읽으면 848
+    for n, k in ((2, 0), (2, 1), (3, 0), (3, 1), (3, 2)):                    # 레시피 칸 자리의 범위 안 (벗어나면 RecipeError)
+        x, w = span(DUO, [str(j) for j in range(n)], str(k))
+        assert recipes.check_value(DUO["inject"]["speaker_x"], x) == x
+        assert recipes.check_value(DUO["inject"]["speaker_w"], w) == w
+
+
+async def t_family_table_three_people_talk_on_their_column_and_the_monologue_is_a_solo_close_up():
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check,
+           settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check = True, True, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs)
+            # 세 사람 장면(0·1·2·4)의 마지막 그림·클립은 세 사람, 니키의 혼잣말 컷(3)은 한 사람으로 센다
+            deps.people_for = lambda tag: 3 if re.match(r"L[0124](?:f|k|v|w)", tag) else None
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            story = family_story()
+            assert [s["characters"] for s in story["scenes"]][1:] == [["A", "B", "C"], ["B", "A", "C"], ["C"], ["C", "A", "B"]]
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 60)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            w = t["work"]
+            tags = tags_of(deps, t)
+            for must in ("L1c1", "L1d1", "L1f01", "L1w1", "L2w1", "L3c1", "L3d1", "L3v1", "L4c1", "L4d1", "L4f01", "L4w1"):
+                assert must in tags, (must, tags)
+            assert not any(x.startswith(("L1v", "L2v", "L2c", "L4v", "L3w", "L3f")) for x in tags), tags   # 이어지는 컷은 앞 클립 프레임
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            by = {tags[k]: subs[k] for k in range(len(subs))}
+            assert {recipe_of(by[k]) for k in ("L1w1", "L2w1", "L4w1")} == {DUO["id"]} and recipe_of(by["L3v1"]) == TALK["id"]
+            # 자리 차례는 넓은 장면의 차례(왼쪽 베스, 가운데 제임스, 오른쪽 니키)로 대화 내내 같다 → 말하는 사람의 칸
+            silence = files.turn_input_rel(USER["username"], USER["id"], t["id"], "silence.wav")
+            for tag, line, span in (("L1w1", "1", (0, 283)), ("L2w1", "2", (283, 282)), ("L4w1", "4", (565, 283))):
+                g = by[tag][1]["prompt"]
+                assert g["20"]["inputs"]["audio"] == w["lines"][line]["in_rel"] and g["21"]["inputs"]["audio"] == silence, tag
+                assert (g["33"]["inputs"]["x"], g["32"]["inputs"]["width"]) == span and g["34"]["inputs"]["mask"] == ["33", 0], tag
+                assert g["902"]["inputs"]["batch_index"] == min(int(round(max(D.TALK_MIN_SHOT, 2.6 + D.TALK_TAIL) * 25)),
+                                                                g["400"]["inputs"]["length"] - 1), tag
+                assert prompt_text(by[tag]).startswith("Medium group shot of three people in a conversation"), tag
+            assert "The person on the left speaks to the person in the middle, warm" in prompt_text(by["L1w1"])
+            assert "The person in the middle speaks to the others, cheerful" in prompt_text(by["L2w1"])
+            assert "The person on the right speaks to the person on the left, happy" in prompt_text(by["L4w1"])
+            assert "only listen with lips closed and a gentle closed-mouth smile" in prompt_text(by["L4w1"])
+            # 첫 화면: 세 형상 나란히 → 앞의 둘(베스·제임스) → 세 번째(니키). 듣는 사람은 입을 다문 미소
+            assert "3 faceless mannequin figures, sitting, side by side" in text_of(by["L1c1"])
+            d1, f1 = text_of(by["L1d1"]), text_of(by["L1f01"])
+            assert "The person on the left speaks toward the right side of the frame with a warm expression" in d1
+            assert "The person in the middle listens with lips closed and a gentle closed-mouth smile" in d1
+            assert "The person on the right listens with lips closed and a gentle closed-mouth smile" in f1
+            # 니키의 혼잣말: 같은 식탁이어도 혼자 클로즈업, LTX 혼자 대사 (구도 그림도 한 형상)
+            assert "One child-sized faceless mannequin figure" in text_of(by["L3c1"])
+            assert "alone in the frame, no other people" in prompt_text(by["L3v1"])
+            # 검사: 세 사람 대사 클립은 정확히 세 사람(빠지면 다시 만든다), 독백 클립은 한 사람
+            pc = [e[1] for e in fs.events if e[0] == "picture_check" and e[1].get("what") == "talk_clip" and not e[1].get("skipped")]
+            assert all(e["want"] == 3 and e["fewer_ok"] is False for e in pc if e["index"] in (1, 2, 4)) and {1, 2, 4} <= {e["index"] for e in pc}
+            assert [e["want"] for e in pc if e["index"] == 3] == [1]
+            starts = {e[1]["index"]: e[1] for e in fs.events if e[0] == "long_scene_start"}
+            dones = {e[1]["index"]: e[1] for e in fs.events if e[0] == "long_scene_done"}
+            assert all(starts[k]["duo"] is True and starts[k]["people"] == 3 for k in (1, 2, 4)) and "duo" not in starts[3]
+            assert all(dones[k]["duo"] is True and dones[k]["people"] == 3 for k in (1, 2, 4)) and "people" not in dones[3]
+            sc = w["scenes"]
+            assert [s.get("duo") for s in sc] == [None, True, True, None, True] and sc[2]["first_from"] == "last"
+            assert not [e for e in fs.events if e[0] == "duo_fallback"]
+            clips, lines, _m, _o, trims = [c[1] for c in deps.calls if c[0] == "assemble_dialogue"][0]
+            assert not any("delay" in x for x in lines) and trims == [None, 3.5, 3.5, 3.5, 3.5]
+        finally:
+            (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk,
+             settings.studio_picture_check, settings.studio_ref_layout) = old
+
+
+async def t_family_table_three_people_fall_back_to_ltx_with_the_group_prompt():
+    """세 사람 대사 컷이 LTX 로 내려갈 때(두 화자 레시피 꺼짐)도 영상 글은 세 사람 글이고 검사는 정확히 세 사람이다 (명세 G5 마지막 항목.
+    11-24 2차 검토: 내려가기 시험이 모두 두 사람이었다)"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check,
+           settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check = True, True, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs, with_duo=False)
+            deps.people_for = lambda tag: 3 if re.match(r"L[0124](?:f|k|v|w)", tag) else None
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": family_story(), "approved": True}
+            await d.pump(); await settle(d, 60)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            fb = [e[1] for e in fs.events if e[0] == "duo_fallback"]
+            assert [(e["index"], e["reason"]) for e in fb] == [(1, "recipe_off"), (2, "recipe_off"), (4, "recipe_off")], fb
+            tags = tags_of(deps, t)
+            assert not any(x.startswith(("L1w", "L2w", "L4w")) for x in tags), tags
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            by = {tags[k]: subs[k] for k in range(len(subs))}
+            for tag in ("L1v1", "L2v1", "L4v1"):
+                p = prompt_text(by[tag])
+                assert recipe_of(by[tag]) == TALK["id"], tag
+                assert "Medium group shot of three people in a conversation" in p and "alone in the frame" not in p, (tag, p[:200])
+            assert "The person in the middle speaks to the others, cheerful" in prompt_text(by["L2v1"])
+            assert "alone in the frame, no other people" in prompt_text(by["L3v1"])          # 독백은 그대로 혼자 대사 글
+            pc = [e[1] for e in fs.events if e[0] == "picture_check" and e[1].get("what") == "talk_clip" and not e[1].get("skipped")]
+            assert {1, 2, 4} <= {e["index"] for e in pc}
+            assert all(e["want"] == 3 and e["fewer_ok"] is False for e in pc if e["index"] in (1, 2, 4)), pc
+            assert [e["want"] for e in pc if e["index"] == 3] == [1]
+            assert not any(s.get("duo") for s in t["work"]["scenes"])
+        finally:
+            (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk,
+             settings.studio_picture_check, settings.studio_ref_layout) = old
+
+
+async def t_round1_state_keeps_the_line_delay_and_old_duo_jobs_are_not_adopted():
+    """1차(레시피 판 1) 상태로 재개해도 소리와 입이 맞는다 (11-24 2차 검토).
+    ① 1차로 만든 오른쪽 화자 두 사람 클립(무음이 앞이라 대사가 0.12초 늦게 시작, 장면 상태 line_delay)을 이어받으면 합치기가 대사를 그만큼
+       늦게 놓고 그만큼 더 길게 자른다. 새 클립은 line_delay 를 쓰지 않는다.
+    ② 1차 그래프로 접수한 두 화자 작업(접수 정보에 판이 없다)은 이어받지 않고 새로 접수한다 (시도 번호는 이어서). 새 접수 정보에는 판이 남는다"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check,
+           settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check = True, True, False
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": duo_story(), "approved": True,
+                         "L1w_pending": {"client_id": f"studio-{t['id']}-L1w1", "attempt": 1}}
+            fs.by_client[f"studio-{t['id']}-L1w1"] = {"prompt_id": "old-job"}          # 1차 그래프로 접수한 옛 작업
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            duo_ids = [c[1]["client_id"] for c in subs if recipe_of(c) == DUO["id"]]
+            assert duo_ids and duo_ids[0].endswith("-L1w2"), duo_ids                       # 옛 작업을 이어받지 않고 시도 번호를 이어서
+            assert not [e for e in fs.events if e[0] == "long_resumed" and e[1].get("key") == "L1w_pending"]
+            w = t["work"]
+            assert w["L1w_pending"]["version"] == DUO["version"] == 2 and w["L2w_pending"]["version"] == 2
+            assert not any("line_delay" in s for s in w["scenes"])
+            # ① 1차로 만든 장면 2(오른쪽 제임스) 클립을 이어받은 모양: 합치기만 다시 한다
+            clips, lines, _m, _o, trims = [c[1] for c in deps.calls if c[0] == "assemble_dialogue"][-1]
+            assert trims == [None, 3.5, 3.5, 3.5] and not any("delay" in x for x in lines)
+            scenes = [dict(s) for s in w["scenes"]]
+            scenes[2]["line_delay"] = 0.12
+            ctx = D.Ctx(t, USER, ENV, LTX)
+            ctx.long = {}
+            await d._dlg_finish(ctx, w, scenes, None)
+            clips, lines, _m, _o, trims = [c[1] for c in deps.calls if c[0] == "assemble_dialogue"][-1]
+            assert trims[:2] == [None, 3.5] and abs(trims[2] - 3.62) < 1e-9 and trims[3] == 3.5, trims
+            assert [x.get("delay") for x in lines] == [None, 0.12, None], lines
+            # 저장할 때도 남는다 (다시 시도·허브 재시작 뒤 합치기가 읽는다)
+            assert "line_delay" in D.LONG_SCENE_KEYS
+        finally:
+            (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk,
+             settings.studio_picture_check, settings.studio_ref_layout) = old
+
+
 async def t_style_convert_is_not_redrawn_when_the_check_model_does_not_answer():
     """기준 그림 화풍 변환 검사(_compose_check)는 STUDIO_PICTURE_CHECK 와 상관없이 늘 돈다. 검사 모델이 답하지 않으면(cast:unchecked)
     다시 그리지 않고 결과에 알린다: 실사 변환은 가속을 끈 높음 판이라 한 장에 몇 분 [추정] (11-24 검토: 이 멈춤에 시험이 없었다)"""
@@ -4029,6 +4250,600 @@ async def t_style_convert_is_not_redrawn_when_the_check_model_does_not_answer():
             assert not [e for e in fs.events if e[0] == "picture_retry" and e[1].get("what") == "convert"]
         finally:
             settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_picture_check = old
+
+
+# ── 어떤 화풍 요청에도 (11-24 2차 Part C): 실사 변환 레시피, 장소 그림 정밀 판, custom 화풍 검사 ──
+PHOTO_EDIT = recipes.load_all()["qwen_image21_edit_photo"]
+SCENE_Q = recipes.load_all()["qwen_image_2512_scene_quality"]
+
+
+def semi_ref_story(root, style):
+    """library_story 의 두 인물에 반실사 기준 그림(refs.semi)만 두고 영화 화풍을 style 로 (영화 시작 때 그 화풍으로 바꿔 만든다)"""
+    story = library_story(root)
+    story["bible"]["style"] = style
+    for c in story["bible"]["characters"]:
+        rel = f"studio/_cast/{c['id']}_semi.png"
+        os.makedirs(os.path.dirname(os.path.join(root, rel)), exist_ok=True)
+        with open(os.path.join(root, rel), "wb") as f:
+            f.write(b"png")
+        c["refs"] = {"semi": rel}
+    return story
+
+
+class PhotoFailDeps(DialogueDeps):
+    """실사 변환 레시피의 작업만 실패한다 (새 모델이 메인에서 실패하는 경우)"""
+
+    async def submit(self, env, user, body, ip):
+        if body["extra_data"]["studio"]["recipe"] == PHOTO_EDIT["id"]:
+            self.outcome_seq.insert(0, "error")
+        return await super().submit(env, user, body, ip)
+
+
+async def t_photo_film_converts_references_with_the_photo_recipe_first():
+    """11-24 2차 C7 (메인 P1): 실사 영화는 반실사 기준 그림을 실사 변환 전용 레시피(Qwen-Image 2.1 편집, action edit_photo)로 먼저 바꾼다.
+    지시문은 P1 에서 통한 문장 모양, 검사는 1차와 같다(소품·실사 문장). 레시피가 없으면 1차 길(가속 끈 높음 편집 → 빠른 편집)"""
+    from app.studio import checks
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_picture_check)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir, settings.studio_chain = os.path.join(root, "results"), os.path.join(root, "envs"), True
+        settings.studio_picture_check = True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = chain_deps(fs, settings.results_dir, DialogueDeps)
+            deps.recs.update({HQ_EDIT["id"]: HQ_EDIT, PHOTO_EDIT["id"]: PHOTO_EDIT})
+            deps.inspect_result = dict(PASS)
+            d = D.Director(deps, dict(deps.recs))
+            assert [r["id"] for r in d._convert_recipes("photo")] == [PHOTO_EDIT["id"], HQ_EDIT["id"]]
+            assert d._convert_recipe("photo")["id"] == PHOTO_EDIT["id"]
+            for key in ("anime", "toon3d", "custom", "semi"):                  # 실사 말고는 빠른 편집 하나 (실사 변환 레시피를 쓰지 않는다)
+                assert [r["id"] for r in d._convert_recipes(key)] == [EDITR["id"]], key
+            no_photo = D.Director(deps, {k: v for k, v in deps.recs.items() if k != PHOTO_EDIT["id"]})
+            assert [r["id"] for r in no_photo._convert_recipes("photo")] == [HQ_EDIT["id"]]           # 1차 길 그대로
+            t = dialogue_turn(fs)
+            story = semi_ref_story(settings.results_dir, "photorealistic cinematic live action")
+            # 예상 시간: 변환 두 장은 그 레시피의 추정식 (실사 변환 레시피 대 가속 끈 높음 편집)
+            ctx = D.Ctx(t, USER, ENV, LTX)
+            ctx.long = {}
+            e_photo, e_hq = await d.estimate_long(ctx, copy.deepcopy(story)), await no_photo.estimate_long(ctx, copy.deepcopy(story))
+            assert e_photo - e_hq == 2 * (PHOTO_EDIT["estimate"]["gpu_seconds"] - HQ_EDIT["estimate"]["gpu_seconds"]), (e_photo, e_hq)
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            conv = [e[1] for e in fs.events if e[0] == "cast_style_convert"]
+            assert len(conv) == 2 and all(e["style"] == "photo" and e["recipe"] == PHOTO_EDIT["id"] for e in conv), conv
+            assert not [e for e in fs.events if e[0] == "cast_style_convert_fallback"]
+            tags = tags_of(deps, t)
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            photo = [c for c in subs if recipe_of(c) == PHOTO_EDIT["id"]]
+            rids = [recipe_of(c) for c in subs]
+            assert len(photo) == 2 and HQ_EDIT["id"] not in rids and EDITR["id"] not in rids, rids
+            assert "C0p1" in tags and "C1p1" in tags and not [x for x in tags if x.startswith(("C0s", "C1s"))], tags
+            for c in photo:
+                p = c[1]["prompt"]["474"]["inputs"]["prompt"]
+                assert p.startswith("Turn this illustrated portrait into a real photograph of the same person") and "real human skin and pores" in p
+                assert c[1]["prompt"]["474"]["inputs"]["negative_prompt"] == "" and c[1]["prompt"]["470"]["inputs"]["image"].startswith("studio/bob/")
+                assert D.negative_problem(PHOTO_EDIT, c[1]["prompt"]) is None
+            assert all(t["work"]["casts"][c["id"]].get("converted") == "photo" for c in story["bible"]["characters"])
+            neg = checks.style_negative("photo")
+            chars = {c["id"]: c for c in story["bible"]["characters"]}
+            ins = [c[1][3] for c in deps.calls if c[0] == "inspect"]
+            assert [checks.cast_trait(chars["A"]["look"]), neg] in ins and [checks.cast_trait(chars["B"]["look"]), neg] in ins, ins[:4]
+            conv_checks = [e[1] for e in fs.events if e[0] == "picture_check" and e[1].get("what") == "convert"]
+            assert len(conv_checks) == 2 and all(e["why"] == [] for e in conv_checks), conv_checks
+        finally:
+            settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_picture_check = old
+
+
+async def t_photo_recipe_failure_falls_back_to_the_quality_edit():
+    """11-24 2차 C7: 실사 변환 레시피의 작업이 실패하면(시드를 바꾼 한 번 더까지) 1차 길(가속 끈 높음 편집)로 한 번 내려가고 기록을 남긴다.
+    작업 표시가 달라(C{k}p → C{k}s) 실패한 작업을 이어받지 않고, 지시문은 같은 실사 문장이다. 실패한 레시피는 이 요청에서 기억해
+    다음 인물에는 쓰지 않는다 (같은 실패를 인물마다 되풀이하지 않게)"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_picture_check)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir, settings.studio_chain = os.path.join(root, "results"), os.path.join(root, "envs"), True
+        settings.studio_picture_check = False
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = chain_deps(fs, settings.results_dir, PhotoFailDeps)
+            deps.recs.update({HQ_EDIT["id"]: HQ_EDIT, PHOTO_EDIT["id"]: PHOTO_EDIT})
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": semi_ref_story(settings.results_dir, "photorealistic cinematic live action"), "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            fb = [e[1] for e in fs.events if e[0] == "cast_style_convert_fallback"]
+            assert len(fb) == 1 and fb[0]["recipe"] == PHOTO_EDIT["id"] and fb[0]["code"] == "run_error" and fb[0]["style"] == "photo", fb
+            conv = [e[1] for e in fs.events if e[0] == "cast_style_convert"]
+            assert len(conv) == 2 and all(e["recipe"] == HQ_EDIT["id"] for e in conv), conv
+            rids = [recipe_of(c) for c in deps.calls if c[0] == "submit"]
+            assert rids.count(PHOTO_EDIT["id"]) == 2 and rids.count(HQ_EDIT["id"]) == 2, rids
+            tags = tags_of(deps, t)
+            assert [x for x in tags if x.startswith("C0")] == ["C0p1", "C0p2", "C0s1"], tags        # 첫 인물: 실사 변환 두 번 실패 → 높음 편집
+            assert [x for x in tags if x.startswith("C1")] == ["C1s1"], tags                        # 둘째 인물: 실패를 기억해 바로 높음 편집
+            assert t["work"]["failed_recipes"] == [PHOTO_EDIT["id"]]
+            hq = [c for c in deps.calls if c[0] == "submit" and recipe_of(c) == HQ_EDIT["id"]]
+            slot = HQ_EDIT["inject"]["prompt"]
+            assert all(c[1]["prompt"][slot["node"]]["inputs"][slot["input"]].startswith("Turn this illustrated portrait") for c in hq)
+        finally:
+            settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_picture_check = old
+
+
+def quality_story(style, empty_first=False):
+    """라이브러리 인물이 나오는(장면·장소 그림이 Qwen 2512) 긴 영상: 같은 장소의 사람 장면 둘 + 다른 장소의 사람 없는 장면 하나.
+    empty_first 면 사람 없는 장면이 처음이다 (장면 그림이 장소 그림보다 먼저 그려진다)"""
+    story = copy.deepcopy(LONG_STORY)
+    story["bible"]["style"] = style
+    story["bible"]["characters"][0]["library"] = "guest"
+    if empty_first:
+        story["scenes"][0].update(characters=[], action="Rain falls on the empty street.")
+        story["scenes"][1]["continues"] = False
+    else:
+        story["scenes"][2].update(characters=[], shot="wide shot", action="Rain falls on the empty apartment entrance.")
+    return story
+
+
+class QualityFailDeps(LongDeps):
+    """장면 그림 정밀 판의 작업만 실패한다"""
+
+    async def submit(self, env, user, body, ip):
+        if body["extra_data"]["studio"]["recipe"] == SCENE_Q["id"]:
+            self.outcome_seq.insert(0, "error")
+        return await super().submit(env, user, body, ip)
+
+
+async def _quality_film(style, cls=None, layout=False, empty_first=False):
+    """quality_story(style) 를 장면 잇기 + 새로 그리기로 만든다. 정밀 판(SCENE_Q)과 빠른 판(SCENE)이 모두 켜져 있다. (deps, t, fs, 접수 표시별 호출)"""
+    fs = FakeStore(); fs.patch()
+    deps = compose_deps(fs, settings.results_dir, cls, layout=layout)
+    deps.recs.update({SCENE["id"]: SCENE, SCENE_Q["id"]: SCENE_Q})
+    d = D.Director(deps, dict(deps.recs))
+    t = long_turn(fs)
+    t["work"] = {"story": quality_story(style, empty_first), "approved": True}
+    await d.pump(); await settle(d, 25)
+    assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+    tags = tags_of(deps, t)
+    subs = [c for c in deps.calls if c[0] == "submit"]
+    return deps, t, fs, {tags[k]: subs[k] for k in range(len(subs))}
+
+
+async def t_non_semi_film_draws_place_cards_and_empty_scenes_with_the_quality_scene_recipe():
+    """11-24 2차 C5b (메인 P3a~f): 반실사가 아닌 영화의 장소 그림·사람 없는 장면 그림은 Qwen 2512 정밀 판(가속 끔 40스텝 cfg 4)으로 그리고
+    화풍별 부정 글을 넣는다(cfg 4 라 적용된다). 사람이 나오는 그림(인물 기준 그림)은 빠른 판 그대로, 앞머리 화풍은 두 판 모두.
+    custom 은 무엇이 아닌지 몰라 레시피의 기본 부정 글, 반실사는 사용자가 고른 빠른 판 그대로. 예상 시간에도 정밀 판 시간을 넣는다"""
+    from app import video
+    old = (settings.results_dir, settings.studio_chain, settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.studio_chain = root, True
+        try:
+            neg_node, pos_node = SCENE["inject"]["negative"]["node"], SCENE["inject"]["prompt"]["node"]
+            text = lambda c, n: c[1]["prompt"][n]["inputs"]["text"]
+            anime = "2D anime film with clean cel-shaded line art"
+            deps, t, fs, by = await _quality_film(anime)
+            assert "P0q1" in by and "P01" not in by and "L2q1" in by and "L2i1" not in by, sorted(by)
+            assert recipe_of(by["P0q1"]) == SCENE_Q["id"] and recipe_of(by["L2q1"]) == SCENE_Q["id"] and recipe_of(by["C01"]) == SCENE["id"]
+            assert text(by["P0q1"], neg_node) == video.QUALITY_NEGATIVE["anime"] == text(by["L2q1"], neg_node)
+            assert text(by["C01"], neg_node) == recipes.default_negative(SCENE)              # 빠른 판(인물 기준 그림)은 기본 부정 글 그대로
+            assert text(by["P0q1"], pos_node).startswith(anime + ". An empty establishing view") and text(by["L2q1"], pos_node).startswith(anime + ". ")
+            assert text(by["C01"], pos_node).startswith(anime + ". Character reference")
+            assert by["P0q1"][1]["prompt"]["238:229"]["inputs"]["value"] is False and by["C01"][1]["prompt"]["238:229"]["inputs"]["value"] is True
+            pc = [e[1] for e in fs.events if e[0] == "place_card"]
+            assert len(pc) == 1 and pc[0]["recipe"] == SCENE_Q["id"] and pc[0]["quality"] is True, pc
+            sub = [e[1] for e in fs.events if e[0] == "comfy_submitted" and e[1]["recipe"] == SCENE_Q["id"]]
+            assert sub and all(e["negative"] == video.QUALITY_NEGATIVE["anime"] for e in sub), sub
+            assert not [e for e in fs.events if e[0] == "quality_still_failed"]
+            # custom: 레시피의 기본 부정 글(높음 판은 빠른 판에서 만들 때 더한 말까지), 앞머리는 원문
+            water = "soft watercolour storybook illustration with visible paper grain"
+            deps, t, fs, by = await _quality_film(water)
+            assert recipe_of(by["P0q1"]) == SCENE_Q["id"] and text(by["P0q1"], neg_node) == recipes.default_negative(SCENE_Q)
+            assert text(by["P0q1"], pos_node).startswith("Soft watercolour storybook illustration")
+            # 반실사 (라이브러리 화풍): 빠른 판 그대로
+            from app import cast_lib
+            deps, t, fs, by = await _quality_film(cast_lib.library()[0]["style"])
+            assert "P01" in by and "L2i1" in by and not [k for k in by if "q" in k], sorted(by)
+            assert SCENE_Q["id"] not in [recipe_of(c) for c in by.values()]
+            # 예상 시간: 장소 그림 한 장 + 사람 없는 장면 한 장이 정밀 판 (반실사·정밀 판이 꺼진 영화는 그대로)
+            fs2 = FakeStore(); fs2.patch()
+            deps2 = compose_deps(fs2, root)
+            deps2.recs.update({SCENE["id"]: SCENE, SCENE_Q["id"]: SCENE_Q})
+            d_q = D.Director(deps2, dict(deps2.recs))
+            d_f = D.Director(deps2, {k: v for k, v in deps2.recs.items() if k != SCENE_Q["id"]})
+            ctx = D.Ctx(long_turn(fs2), USER, ENV, LTX)
+            ctx.long = {}
+            st_a = quality_story(anime)
+            diff = await d_q.estimate_long(ctx, copy.deepcopy(st_a)) - await d_f.estimate_long(ctx, copy.deepcopy(st_a))
+            assert diff == 2 * (D.PLACE_QUALITY_SECONDS - D.DIALOGUE_CAST_SECONDS), diff
+            st_s = quality_story(cast_lib.library()[0]["style"])
+            assert await d_q.estimate_long(ctx, copy.deepcopy(st_s)) == await d_f.estimate_long(ctx, copy.deepcopy(st_s))
+        finally:
+            settings.results_dir, settings.studio_chain, settings.studio_ref_layout = old
+
+
+async def t_quality_scene_recipe_failure_falls_back_to_the_fast_one():
+    """11-24 2차 C5b: 정밀 판의 작업이 실패하면(시드를 바꾼 한 번 더까지) 지금처럼 빠른 판으로 그린다. 장소 그림을 버리지 않는다.
+    실패한 정밀 판은 이 요청에서 기억해 다음 장소 그림·장면 그림에는 쓰지 않는다 (장마다 같은 실패를 되풀이하지 않게)"""
+    old = (settings.results_dir, settings.studio_chain, settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.studio_chain = root, True
+        try:
+            node = SCENE["inject"]["negative"]["node"]
+            # 장소 그림이 먼저: 장소 그림 정밀 판이 두 번 실패 → 빠른 판. 뒤의 사람 없는 장면은 바로 빠른 판
+            deps, t, fs, by = await _quality_film("photorealistic cinematic live action", QualityFailDeps)
+            assert {"P0q1", "P0q2", "P01", "L2i1"} <= set(by) and "L2q1" not in by, sorted(by)
+            assert recipe_of(by["P01"]) == SCENE["id"] and recipe_of(by["L2i1"]) == SCENE["id"]
+            assert by["P01"][1]["prompt"][node]["inputs"]["text"] == recipes.default_negative(SCENE)   # 빠른 판에는 화풍별 부정 글을 넣지 않는다
+            failed = [e[1] for e in fs.events if e[0] == "quality_still_failed"]
+            assert [(e["what"], e["code"], e["recipe"]) for e in failed] == [("place", "run_error", SCENE_Q["id"])], failed
+            assert t["work"]["failed_recipes"] == [SCENE_Q["id"]]
+            assert t["work"]["places"]["P1"].get("att") and not [e for e in fs.events if e[0] == "place_card_dropped"]
+            pc = [e[1] for e in fs.events if e[0] == "place_card"]
+            assert len(pc) == 1 and pc[0]["recipe"] == SCENE["id"] and pc[0]["quality"] is False, pc
+            # 사람 없는 장면이 먼저: 장면 그림 정밀 판이 두 번 실패 → 빠른 판. 뒤의 장소 그림 둘은 바로 빠른 판
+            deps, t, fs, by = await _quality_film("photorealistic cinematic live action", QualityFailDeps, empty_first=True)
+            assert {"L0q1", "L0q2", "L0i1", "P01", "P11"} <= set(by) and not [k for k in by if k.startswith(("P0q", "P1q"))], sorted(by)
+            assert recipe_of(by["L0i1"]) == SCENE["id"] and recipe_of(by["P11"]) == SCENE["id"]
+            failed = [e[1] for e in fs.events if e[0] == "quality_still_failed"]
+            assert [(e["what"], e["index"], e["code"]) for e in failed] == [("scene_image", 0, "run_error")], failed
+            assert t["work"]["failed_recipes"] == [SCENE_Q["id"]]
+        finally:
+            settings.results_dir, settings.studio_chain, settings.studio_ref_layout = old
+
+
+async def t_custom_film_checks_the_raw_style_but_not_on_the_mannequin_layout():
+    """11-24 2차 C3: custom 영화는 '아닌 것' 문장이 없어 인물을 입힌 그림·끝 프레임 검사에 화풍 원문 줄을 쓰고, 구도 그림(회색 마네킹)
+    검사에는 화풍 줄을 넣지 않는다 (마네킹이 화풍 검사에 걸려 헛되이 다시 그리지 않게)"""
+    from app.studio import checks
+    old = (settings.results_dir, settings.studio_chain, settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.studio_chain = root, True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = compose_deps(fs, root, layout=True)
+            story = copy.deepcopy(LONG_STORY)
+            story["bible"]["style"] = "soft watercolour storybook illustration with visible paper grain"
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 25)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            trait = checks.style_trait(story["bible"]["style"])
+            ins = [c[1][3] for c in deps.calls if c[0] == "inspect" and c[1][3]]
+            layout = [x for x in ins if x[0].startswith("Exactly 1 faceless mannequin")]
+            assert layout and all(x == [checks.layout_trait(1)] for x in layout), layout          # 형상 수 줄만
+            person = [x for x in ins if x[0].startswith("A person who looks like")]
+            assert len(person) >= 4 and all(x[-1] == trait for x in person), person                 # 인물 입히기·끝 키프레임·끝 프레임
+            assert not any(checks.style_negative("semi") in x for x in ins)                           # 예전 반실사 문장은 없다
+        finally:
+            settings.results_dir, settings.studio_chain, settings.studio_ref_layout = old
+
+
+async def t_custom_and_toon3d_style_check_lines_heads_and_hints():
+    """11-24 2차 C3·C5: 검사 화풍 줄(열쇠 문장, custom 은 원문 줄 — 특징 한 줄 한도 안), 장소·장면 그림 앞머리(custom·3D 애니도 원문),
+    장면 힌트에 부딪히는 문장이 없음, 정밀 판은 반실사가 아닌 Qwen 2512 영화에만"""
+    from app import cast_lib
+    from app.studio import checks
+    custom = {"bible": {"style": "soft watercolour storybook illustration with visible paper grain"}}
+    toon = {"bible": {"style": "Pixar-like 3D animated feature film"}}
+    sc = D.Director._style_check
+    assert sc(custom) == checks.style_trait(custom["bible"]["style"])
+    assert sc(toon) == checks.style_negative("toon3d") and sc({"bible": {"style": "2D anime film"}}) == checks.style_negative("anime")
+    assert sc({"bible": {}}) == checks.style_negative("semi") and sc({"bible": {"style": "live action"}}) == checks.style_negative("photo")
+    long_custom = {"bible": {"style": "soft watercolour washes, " * 30}}
+    assert len(sc(long_custom)) <= checks.TRAIT_MAX and sc(long_custom).startswith("The whole picture is in this art style: soft watercolour")
+    sp = D.Director._scene_image_prompt
+    assert sp(SCENE, custom, "IMG text") == "Soft watercolour storybook illustration with visible paper grain. IMG text"
+    assert sp(SCENE_Q, toon, "IMG text") == "Pixar-like 3D animated feature film. IMG text"
+    assert sp(IMG, custom, "IMG text").startswith("Soft watercolour storybook") and sp(IMG, toon, "IMG text").startswith("Pixar-like 3D")
+    for st in (custom, toon):
+        h = D.Director.scene_hint(st).lower()
+        assert st["bible"]["style"].lower() in h and "not a cartoon" not in h and "3d render" not in h
+    d = D.Director(FakeDeps(FakeStore()), {SCENE["id"]: SCENE, SCENE_Q["id"]: SCENE_Q, IMG["id"]: IMG})
+    for st in (custom, toon, {"bible": {"style": "photorealistic live action"}}, {"bible": {"style": "2D anime film"}}):
+        assert d._quality_still(st, SCENE)["id"] == SCENE_Q["id"], st
+    for st in ({"bible": {}}, {"bible": {"style": cast_lib.library()[0]["style"]}}):
+        assert d._quality_still(st, SCENE) is None, st                       # 반실사는 사용자가 고른 빠른 판
+    assert d._quality_still(custom, IMG) is None and d._quality_still(custom, None) is None      # Z-Image 영화에는 정밀 판이 없다
+    d.disabled.add(SCENE_Q["id"])
+    assert d._quality_still(custom, SCENE) is None                                              # 꺼지면 빠른 판
+
+
+async def t_long_reset_also_clears_the_quality_scene_image_job():
+    """다시 만드는 장면은 정밀 판 장면 그림의 접수 정보(L{k}q)도 비운다 (옛 그림을 이어받지 않게). 장소 그림(영화마다 한 번)은 그대로"""
+    with tempfile.TemporaryDirectory() as root:
+        fs = FakeStore(); fs.patch()
+        deps = LongDeps(fs, root)
+        d = D.Director(deps, dict(deps.recs))
+        t = long_turn(fs)
+        work = {"story": copy.deepcopy(LONG_STORY), "chain": True, "L0q_pending": {"client_id": "studio-x-L0q1", "attempt": 1},
+                "L0i_pending": {"client_id": "studio-x-L0i1", "attempt": 2}, "P0q_pending": {"client_id": "p", "attempt": 1}}
+        t["work"] = dict(work)
+        ctx = D.Ctx(t, USER, ENV, LTX)
+        ctx.long = {}
+        await d._long_reset(ctx, work, [{"clip_rel": "a.mp4"}, {}, {}], 0)
+        assert work["L0q_pending"] == {"client_id": None, "attempt": 1} and work["L0i_pending"] == {"client_id": None, "attempt": 2}
+        assert work["P0q_pending"] == {"client_id": "p", "attempt": 1}
+        assert t["work"]["L0q_pending"] == {"client_id": None, "attempt": 1}                       # 바로 저장한다
+def away_story():
+    """그 자리에 없는 사람에게 하는 말 (11-24 3차 검토): 다락방의 니키 → 문 밖에서 부르는 엄마(목소리) → 니키가 문 쪽에 대답(listener 는 엄마),
+    부엌의 가족 → 니키가 부엌문으로 뛰어나감 → 베스가 떠난 니키를 부름(listener 는 니키) → 제임스가 베스에게"""
+    from app import video
+    raw = {
+        "title_ko": "늦잠", "logline_ko": "니키가 늦잠을 자고 학교에 뛰어간다.",
+        "bible": {"characters": [
+            {"id": "A", "look": "a calm neat woman around forty in a cream blouse and an apron", "name_ko": "베스",
+             "voice": "A warm Korean woman around forty, gentle.", "voice_ko": "따뜻한 엄마"},
+            {"id": "B", "look": "a tall lean man in his early forties in a blue cardigan", "name_ko": "제임스",
+             "voice": "A calm Korean man in his forties, low and friendly.", "voice_ko": "차분한 아빠"},
+            {"id": "C", "look": "a twelve-year-old girl with two long black braids and a wine-red cape", "name_ko": "니키",
+             "voice": "A bright twelve-year-old Korean girl, clear.", "voice_ko": "맑은 아이"}],
+            "places": [{"id": "P1", "look": "a sunny cottage kitchen with a wooden table"}, {"id": "P3", "look": "a quiet attic bedroom with a round window"}],
+            "time": "morning", "light": "warm window light", "style": "semi-realistic painterly 2.5D film look"},
+        "music": {"tags": "gentle instrumental, strings", "bpm": 72, "key": "D major", "ko": "잔잔한 현악"},
+        "scenes": [
+            {"seconds": 8, "place": "P3", "characters": ["C"], "continues": False, "shot": "medium shot",
+             "action": "Niki sits alone on her bed by the round window.", "sound": "birds", "ko": "다락방의 니키", "kind": "shot",
+             "speaker": "", "listener": "", "line_ko": "", "emotion": ""},
+            {"seconds": 5, "place": "P3", "characters": [], "continues": False, "shot": "close-up of the attic door",
+             "action": "The attic door stays still.", "sound": "a voice behind the door", "ko": "닫힌 문", "kind": "shot",
+             "speaker": "A", "listener": "", "line_ko": "니키야, 밥 먹어라!", "emotion": "calling warmly"},
+            {"seconds": 5, "place": "P3", "characters": ["C"], "continues": False, "shot": "close-up",
+             "action": "Niki calls toward the door.", "sound": "room tone", "ko": "니키의 대답", "kind": "talk",
+             "speaker": "C", "listener": "A", "line_ko": "엄마, 조금만요!", "emotion": "sleepy"},
+            {"seconds": 10, "place": "P1", "characters": ["A", "B", "C"], "continues": False, "shot": "wide shot",
+             "action": "The family sits at the wooden table.", "sound": "birds", "ko": "가족의 아침 식탁", "kind": "shot",
+             "speaker": "", "listener": "", "line_ko": "", "emotion": ""},
+            {"seconds": 6, "place": "P1", "characters": ["C"], "continues": False, "shot": "medium shot",
+             "action": "Niki grabs her bag and runs out of the kitchen door.", "sound": "a door slams", "ko": "니키가 뛰어나간다", "kind": "shot",
+             "speaker": "", "listener": "", "line_ko": "", "emotion": ""},
+            {"seconds": 5, "place": "P1", "characters": ["A", "B"], "continues": False, "shot": "medium two-shot",
+             "action": "Beth calls toward the door.", "sound": "room tone", "ko": "베스가 니키를 부른다", "kind": "talk",
+             "speaker": "A", "listener": "C", "line_ko": "니키야, 도시락 가져가!", "emotion": "calling"},
+            {"seconds": 5, "place": "P1", "characters": ["B", "A"], "continues": False, "shot": "medium two-shot",
+             "action": "James chuckles.", "sound": "room tone", "ko": "제임스가 베스에게", "kind": "talk",
+             "speaker": "B", "listener": "A", "line_ko": "벌써 갔어요.", "emotion": "amused"}]}
+    old = settings.studio_duo_talk
+    settings.studio_duo_talk = True
+    try:
+        story = video.clean_dialogue_story(raw, 44, exchange=True)
+    finally:
+        settings.studio_duo_talk = old
+    assert story is not None
+    return story
+
+
+async def t_r3_a_line_to_someone_not_in_the_place_is_a_solo_close_up():
+    """G0 '그 자리에 있는 사람에게 하는 말' (11-24 3차 검토): 문 밖의 엄마·뛰어나간 니키에게 하는 말은 혼자 클로즈업(LTX 혼자 대사, 구도 그림 한 형상).
+    그 사람을 대화 컷에 데려오지 않고(예전에는 다락방에 베스가 앉은 투샷), 다음 대화 컷(제임스→베스)에도 니키는 없다"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check,
+           settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check = True, True, False
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs)
+            deps.people_for = lambda tag: None
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            story = away_story()
+            assert [s["characters"] for s in story["scenes"]] == [["C"], [], ["C"], ["A", "B", "C"], ["C"], ["A"], ["B", "A"]]
+            assert story["scenes"][2]["monologue"] is True and story["scenes"][5]["monologue"] is True
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 60)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            tags = tags_of(deps, t)
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            by = {tags[k]: subs[k] for k in range(len(subs))}
+            for k in (2, 5):
+                clip = next(x for x in tags if re.match(rf"L{k}[wv]\d", x))
+                assert recipe_of(by[clip]) == TALK["id"] and "alone in the frame, no other people" in prompt_text(by[clip]), (k, clip)
+                lay = next((x for x in tags if re.match(rf"L{k}c\d", x)), None)
+                assert lay is None or "One " in text_of(by[lay]), (k, lay)
+            assert recipe_of(by[next(x for x in tags if re.match(r"L6[wv]\d", x))]) == DUO["id"]
+        finally:
+            (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk,
+             settings.studio_picture_check, settings.studio_ref_layout) = old
+
+
+async def t_r3_photo_like_custom_scene_hint_does_not_say_drawn():
+    """custom 화풍인데 사진 쪽(누아르·흑백 무성영화)이면 장면 그림 힌트에 '그린 그림·사진 아님' 을 쓰지 않는다 (11-24 3차 검토, C2 원칙)"""
+    for style in ("black-and-white film noir with hard shadows", "black-and-white silent film look"):
+        h = D.Director.scene_hint({"bible": {"style": style}})
+        assert style in h and "Not a photograph" not in h and "drawn" not in h and "one still frame" in h, h
+    h = D.Director.scene_hint({"bible": {"style": "soft watercolour storybook illustration"}})
+    assert "drawn in this style" in h and "Not a photograph" in h
+async def t_r3_a_new_clip_clears_the_round1_line_delay():
+    """1차 상태(오른쪽 화자 클립의 line_delay)가 남은 장면을 새로 만들면 그 표시를 지운다: 새 클립은 대사가 늘 0초에서 시작하므로, 남으면
+    합치기가 대사를 0.12초 늦게 놓아 소리가 입보다 늦는다 (2차 검토 변이: 새 클립 완료 때 line_delay 를 지우지 않아도 통과했다)"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check,
+           settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check = True, True, False
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs)
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            t["work"] = {"story": duo_story(), "approved": True, "scenes": [{}, {}, {"line_delay": 0.12}, {}]}   # 클립은 없다 (새로 만든다)
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            assert not any("line_delay" in s for s in t["work"]["scenes"])
+            _clips, lines, _m, _o, _trims = [c[1] for c in deps.calls if c[0] == "assemble_dialogue"][-1]
+            assert not any("delay" in x for x in lines), lines
+        finally:
+            (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk,
+             settings.studio_picture_check, settings.studio_ref_layout) = old
+
+
+async def t_r4_photo_like_custom_converts_references_as_a_live_action_still():
+    """4차 검토: 사진 쪽 custom 영화(누아르·흑백 무성영화)의 기준 그림 변환은 실사 변환 레시피를 먼저 쓰고, 지시문은 '그린 그림'이 아니라 그 화풍의
+    실사 영화 한 컷이다 (예전에는 'a character drawn in this art style: black-and-white film noir …'). 손그림 custom 은 빠른 편집 하나 그대로"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_picture_check)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir, settings.studio_chain = os.path.join(root, "results"), os.path.join(root, "envs"), True
+        settings.studio_picture_check = True
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = chain_deps(fs, settings.results_dir, DialogueDeps)
+            deps.recs.update({HQ_EDIT["id"]: HQ_EDIT, PHOTO_EDIT["id"]: PHOTO_EDIT})
+            deps.inspect_result = dict(PASS)
+            d = D.Director(deps, dict(deps.recs))
+            assert [r["id"] for r in d._convert_recipes("custom", True)] == [PHOTO_EDIT["id"], HQ_EDIT["id"]]
+            assert [r["id"] for r in d._convert_recipes("custom")] == [EDITR["id"]] and d._convert_recipe("custom", True)["id"] == PHOTO_EDIT["id"]
+            t = dialogue_turn(fs)
+            story = semi_ref_story(settings.results_dir, "black-and-white film noir with hard shadows")
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 40)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-3:])
+            conv = [e[1] for e in fs.events if e[0] == "cast_style_convert"]
+            assert len(conv) == 2 and all(e["style"] == "custom" and e["recipe"] == PHOTO_EDIT["id"] for e in conv), conv
+            photo = [c for c in deps.calls if c[0] == "submit" and recipe_of(c) == PHOTO_EDIT["id"]]
+            assert len(photo) == 2
+            for c in photo:
+                p = c[1]["prompt"]["474"]["inputs"]["prompt"]
+                assert p.startswith("Turn this portrait into a live-action film still of the same person") and "film noir" in p, p
+                assert "drawn" not in p and "illustrat" not in p.split(":")[0], p
+        finally:
+            settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_picture_check = old
+
+
+def present_story():
+    """3차 명세 (11-25, 사용자 결정 "방식 바꾸기"): 구성안이 장면마다 그 자리에 있는 사람(present)을 적었다. 가족 식탁 → 베스가 모두에게(셋) →
+    니키가 손을 흔들고 나간다(장면 글은 예전 낱말 목록에 없는 'waves goodbye', 떠남은 present 로만) → 베스가 제임스에게(둘) → 제임스가 같은 화면에서
+    답한다 → 문 밖에서 니키 목소리(present 에 없다) → 제임스의 혼잣말"""
+    from app import video
+    fam = family_story()["bible"]["characters"]
+    raw = {
+        "title_ko": "등교하는 아침", "logline_ko": "니키가 학교에 가고 부모가 이야기한다.",
+        "bible": {"characters": [{k: c[k] for k in ("id", "look", "name_ko", "voice", "voice_ko")} for c in fam],
+                  "places": [{"id": "P1", "look": "a sunny cottage kitchen with a wooden table"}], "time": "morning", "light": "warm window light",
+                  "style": "semi-realistic painterly 2.5D film look"},
+        "music": {"tags": "gentle instrumental, strings", "bpm": 72, "key": "D major", "ko": "잔잔한 현악"},
+        "scenes": [
+            {"seconds": 10, "place": "P1", "characters": ["A", "B", "C"], "present": ["A", "B", "C"], "continues": False, "shot": "wide shot",
+             "action": "The family sits at the wooden table in the morning.", "sound": "birds", "ko": "가족의 아침 식탁", "kind": "shot",
+             "speaker": "", "listener": "", "line_ko": "", "emotion": ""},
+            {"seconds": 6, "place": "P1", "characters": ["A", "B", "C"], "present": ["A", "B", "C"], "continues": False,
+             "shot": "medium group shot", "action": "She smiles around the table.", "sound": "room tone", "ko": "베스가 모두에게", "kind": "talk",
+             "speaker": "A", "listener": "everyone", "line_ko": "자, 아침 먹자!", "emotion": "cheerful"},
+            {"seconds": 6, "place": "P1", "characters": ["C"], "present": ["A", "B", "C"], "continues": False, "shot": "medium shot",
+             "action": "Niki grabs her school bag and waves goodbye.", "sound": "footsteps", "ko": "니키가 손을 흔든다", "kind": "shot",
+             "speaker": "", "listener": "", "line_ko": "", "emotion": ""},
+            {"seconds": 6, "place": "P1", "characters": ["A", "B"], "present": ["A", "B"], "continues": False, "shot": "medium two-shot",
+             "action": "She smiles at him.", "sound": "room tone", "ko": "베스가 제임스에게", "kind": "talk",
+             "speaker": "A", "listener": "B", "line_ko": "우리 딸 다 컸네요.", "emotion": "warm"},
+            {"seconds": 6, "place": "P1", "characters": ["B", "A"], "present": ["A", "B"], "continues": True, "shot": "medium two-shot",
+             "action": "He nods.", "sound": "room tone", "ko": "제임스가 답한다", "kind": "talk",
+             "speaker": "B", "listener": "A", "line_ko": "그러게 말이야.", "emotion": "gentle"},
+            {"seconds": 5, "place": "P1", "characters": [], "present": ["A", "B"], "continues": False, "shot": "close-up of the kitchen door",
+             "action": "The kitchen door stays still.", "sound": "room tone", "ko": "부엌문", "kind": "talk",
+             "speaker": "C", "listener": "everyone", "line_ko": "다녀오겠습니다!", "emotion": "bright"},
+            {"seconds": 5, "place": "P1", "characters": ["B"], "present": ["A", "B"], "continues": False, "shot": "close-up",
+             "action": "He smiles to himself.", "sound": "room tone", "ko": "제임스의 혼잣말", "kind": "talk",
+             "speaker": "B", "listener": "nobody", "line_ko": "잘 다녀와라...", "emotion": "quiet"}]}
+    old = settings.studio_duo_talk
+    settings.studio_duo_talk = True
+    try:
+        story = video.clean_dialogue_story(raw, 44, exchange=True)
+    finally:
+        settings.studio_duo_talk = old
+    assert story is not None
+    return story
+
+
+async def t_s3_present_story_draws_who_present_says_on_the_speaker_column():
+    """3차 명세 1.5 감독의 대사 컷 경로: present 로 다듬은 이야기에서 감독이 그 칸이 정한 사람으로 컷을 만든다. 베스가 모두에게(셋, InfiniteTalk 3분의 1
+    칸), 니키가 떠난 뒤 부모의 대화(둘, 반쪽 칸 — 장면 글의 'waves goodbye' 는 예전 낱말 목록에 없지만 present 가 정한다), 같은 화면으로 이어지는
+    답, 그 자리에 없는 니키의 목소리(그리지 않는 목소리 shot), 제임스의 혼잣말(혼자 LTX 대사)"""
+    old = (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check,
+           settings.studio_ref_layout)
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir, settings.envs_dir = os.path.join(root, "results"), os.path.join(root, "envs")
+        settings.studio_chain, settings.studio_duo_talk, settings.studio_picture_check = True, True, False
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = duo_deps(fs)
+            counts = {"0": 3, "1": 3, "2": 1, "3": 2, "4": 2, "5": 0, "6": 1}
+            deps.people_for = lambda tag: counts.get(re.match(r"L(\d+)", tag).group(1)) if re.match(r"L\d+", tag) else None
+            d = D.Director(deps, dict(deps.recs))
+            t = dialogue_turn(fs)
+            story = present_story()
+            assert [s["characters"] for s in story["scenes"]] == [["A", "B", "C"], ["A", "B", "C"], ["C"], ["A", "B"], ["B", "A"], [], ["B"]]
+            assert [s["present"] for s in story["scenes"]][2:4] == [["A", "B", "C"], ["A", "B"]]
+            assert story["scenes"][5]["kind"] == "shot" and story["scenes"][5]["offscreen"] is True and story["scenes"][6]["monologue"] is True
+            t["work"] = {"story": story, "approved": True}
+            await d.pump(); await settle(d, 60)
+            assert t["state"] == "done", (t["state"], t.get("error"), fs.events[-4:])
+            w = t["work"]
+            tags = tags_of(deps, t)
+            subs = [c for c in deps.calls if c[0] == "submit"]
+            by = {tags[k]: subs[k] for k in range(len(subs))}
+            assert {recipe_of(by[k]) for k in ("L1w1", "L3w1", "L4w1")} == {DUO["id"]} and recipe_of(by["L6v1"]) == TALK["id"]
+            assert not any(x.startswith(("L4c", "L4d", "L5c", "L5w", "L6w")) for x in tags), tags      # 이어지는 답은 앞 클립 프레임
+            # 그 자리에 없는 니키의 목소리: 사람 없는 장면 그림(L5i) + 보통 장면 영상이고 입 맞춤 대사 컷이 아니다
+            assert "L5i1" in tags and recipe_of(by["L5v1"]) not in (TALK["id"], DUO["id"]), tags
+            for tag, span in (("L1w1", (0, 283)), ("L3w1", (0, 424)), ("L4w1", (424, 424))):
+                g = by[tag][1]["prompt"]
+                assert (g["33"]["inputs"]["x"], g["32"]["inputs"]["width"]) == span, (tag, g["33"]["inputs"]["x"], g["32"]["inputs"]["width"])
+            assert prompt_text(by["L1w1"]).startswith("Medium group shot of three people in a conversation")
+            assert prompt_text(by["L3w1"]).startswith("Medium two-shot of two people in a conversation") and "twelve-year-old" not in prompt_text(by["L3w1"])
+            assert "2 faceless mannequin figures" in text_of(by["L3c1"]) and "3 faceless mannequin figures" in text_of(by["L1c1"])
+            assert "alone in the frame, no other people" in prompt_text(by["L6v1"])
+            starts = {e[1]["index"]: e[1] for e in fs.events if e[0] == "long_scene_start"}
+            assert starts[1]["people"] == 3 and starts[3]["people"] == 2 and starts[4]["people"] == 2 and "duo" not in starts[6]
+            assert "duo" not in starts[5] and w["scenes"][4]["first_from"] == "last"
+            assert not [e for e in fs.events if e[0] == "duo_fallback"]
+        finally:
+            (settings.results_dir, settings.envs_dir, settings.studio_chain, settings.studio_duo_talk,
+             settings.studio_picture_check, settings.studio_ref_layout) = old
+
+
+async def t_s3_oom_words_are_read_as_gpu_memory_errors():
+    """3차 명세 3절: OOM_RE 의 \\b 자리에 백스페이스 글자(\\x08)가 들어 있어 'oom' 만으로는 GPU 메모리 부족을 알아보지 못했다 (HEAD 부터).
+    실행 오류 글이 'CUDA error: oom' 이면 run_oom(안내 'GPU 메모리가 모자랐습니다'), 'boom' 같은 낱말 속 oom 은 run_error 그대로"""
+    assert "\x08" not in D.OOM_RE.pattern and D.OOM_RE.pattern == r"out of memory|\boom\b|메모리가 부족|메모리 부족"
+    for text in ("cuda error: oom", "torch.outofmemoryerror: cuda out of memory", "runtimeerror: oom!", "gpu 메모리가 부족합니다", "메모리 부족"):
+        assert D.OOM_RE.search(text), text
+    for text in ("boom", "room tone", "zoom in", "bloom", "oomph", "error: doom"):
+        assert not D.OOM_RE.search(text), text
+    for message, code in (("CUDA error: OOM", "run_oom"), ("boom", "run_error")):
+        fs = FakeStore(); fs.patch()
+        deps = FakeDeps(fs, outcome="error")
+        drive = deps._drive
+
+        async def failing(jid, cid, outcome, rec=None, drive=drive, message=message):
+            await drive(jid, cid, outcome, rec)
+            fs.jobs[jid]["error"] = {"message": message}
+        deps._drive = failing
+        d = D.Director(deps, {REC["id"]: REC})
+        t = new_turn(fs)
+        await d.pump(); await settle(d)
+        assert t["state"] == "failed" and t["error"]["code"] == code, (message, t["state"], t.get("error"))
+        if code == "run_oom":
+            n = [m for m in fs.messages if m["kind"] == "notice"][-1]
+            assert n["body"].startswith("GPU 메모리가 모자랐습니다"), n["body"]
+
+
+async def t_fd_revise_passes_the_last_film_look_to_the_story():
+    """fixD: 고치기 차례(api 가 요청에 now_style 을 적음)면 감독이 앞 영상의 화풍을 storyboard 에 넘긴다 ('지금 그림체' 가 가리키는 화풍).
+    한 메시지 요청에는 넘기지 않는다 (storyboard 가 인물의 그림체로 읽는다). "" (앞 영상의 화풍을 모름)도 그대로 넘긴다"""
+    old = settings.results_dir
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            for now in ("2D anime feature film with clean cel-shaded line art", "", None):
+                fs = FakeStore(); fs.patch()
+                deps = LongDeps(fs, root)
+                d = D.Director(deps, dict(deps.recs))
+                t = long_turn(fs)
+                if now is not None:
+                    t["request"]["now_style"] = now
+                await d.pump(); await settle(d, 10)
+                assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))
+                kws = [c[1] for c in deps.calls if c[0] == "storyboard"]
+                assert len(kws) == 1 and kws[0].get("now_style", "absent") == (now if now is not None else "absent"), (now, kws)
+        finally:
+            settings.results_dir = old
 
 
 async def main():

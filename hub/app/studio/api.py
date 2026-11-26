@@ -372,6 +372,11 @@ async def _post_message(request: Request, user: dict, thread: dict):
         if dec["action"] == "i2v":
             turn_atts = list(lreq.get("attachment_ids") or [])
             reuse = {"reuse_frame_of": str(last["turn"]["id"])}
+        elif dec["action"] == "t2v":
+            # 이번 말의 '지금 그림체' 는 방금 본 영상의 화풍이다: 긴 영상이면 그 구성안의 화풍 글, 모르면 "" (fixD, video.film_look·storyboard)
+            from .. import video
+            lwork = last["turn"].get("work")
+            reuse = {"now_style": video.film_look(lwork.get("story") if isinstance(lwork, dict) else None)}
     # 긴 영상(20초 넘게, 여러 장면을 이어 붙임)은 소리 포함 글→영상만, 허브에 합치기 도구(ffmpeg)가 있을 때만 (docs/long-video-design.md 7.1)
     long_ok = bool(use_sound and via_image and assemble.available())
     max_sec = intent.MAX_SECONDS_LONG if long_ok else (intent.MAX_SECONDS_SOUND if use_sound else intent.MAX_SECONDS)

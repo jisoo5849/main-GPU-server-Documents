@@ -54,6 +54,11 @@ for last in (IMG, VID):
     r = d("하나 더", 0, last)
     assert (r["rule"], r["carry"]) == ("R6b", "repeat"), last
 assert d("하나 더", 0, IMG)["action"] == "image" and d("한 번 더", 0, VID)["action"] == "i2v"
+# 화풍을 바꿔 달라는 '다시 만들어'는 시드만 바꾸는 다시 만들기(R6b)가 아니라 고치기(R6)다 (5차 검토: 원래 구성안 그대로 다시 만들어 화풍이 버려졌다)
+for t in ("애니메이션으로 다시 만들어 줘", "수채화 느낌으로 다시 만들어 줘", "픽사 스타일로 다시 만들어 줘"):
+    r = d(t, 0, VID_T2V)
+    assert (r["rule"], r["action"], r["carry"]) == ("R6", "t2v", "revise"), (t, r["rule"])
+assert d("다시 만들어 줘", 0, VID_T2V)["carry"] == "repeat" and d("한 번 더 만들어 줘", 0, VID_T2V)["rule"] == "R6b"
 # R6a: 이미지 결과 + 고치는 말 → image·revise. R6: 영상 결과 + 고치는 말 → P3
 r = d("더 밝게", 0, IMG)
 assert (r["rule"], r["action"], r["carry"], r["later"]) == ("R6a", "image", "revise", False)

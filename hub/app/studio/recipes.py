@@ -17,22 +17,30 @@ ACTIONS = {"image", "i2v", "t2v", "edit", "music",       # music: 긴 영상의 
            "scene_image",                                # 대사 영상의 장면 그림 (Qwen-Image 2512, 인물 라이브러리의 반실사 회화체와 같은 계열)
            "edit_ref", "i2v_end",                        # 장면 잇기(11-20, docs/scene-chaining-design.md): 그림 여러 장 편집, 끝 키프레임 가이드가 붙은 긴 영상 클립
            "compose_ref",                                # 기준 그림으로 새로 그리기(11-20): 같은 편집 모델, 출력 크기는 빈 잠재의 width·height (앞 프레임은 그림에 넣지 않는다)
-           "talk_duo"}                                   # 두 사람 대사 컷(11-24): InfiniteTalk 두 화자. 소리 자리 둘(왼쪽 audio·오른쪽 audio2), 말하지 않는 쪽은 무음
+           "talk_duo",                                   # 두세 사람 대사 컷(11-24): InfiniteTalk 두 화자 모드. audio = 말하는 사람 대사(마스크 1 = 그 사람 칸), audio2 = 무음(마스크 2 = 나머지)
+           "edit_photo"}                                 # 기준 그림 실사 변환 전용(11-24 메인 P1, Qwen-Image 2.1 편집). edit 와 따로 둔다: 같은 edit 면 id 정렬상
+                                                         # qwen_image21… 이 qwen_image_edit 보다 앞에 와서 모든 편집을 가로챈다
 # 그림 여러 장을 글 노드 image1~3 에 넣는 레시피. edit_ref 는 그림 1을 고치고, compose_ref 는 그림 1~3을 기준으로 새로 그린다
 REF_ACTIONS = {"edit_ref", "compose_ref"}
-# 대사 영상의 부품: 화질·엔진을 따지지 않고 action 마다 하나를 고른다 (음악과 같다)
-PART_ACTIONS = {"music", "voice", "voice_clone", "talk", "scene_image", "talk_duo"}
+# 대사 영상의 부품: 엔진을 따지지 않고 action 마다 하나를 고른다 (음악과 같다). 화질은 같은 화질 판이 있으면 그것 (pick)
+PART_ACTIONS = {"music", "voice", "voice_clone", "talk", "scene_image", "talk_duo", "edit_photo"}
 # 글이 영상·이미지 모델의 positive 로 가지 않는 레시피(목소리)는 부정 자리도 없다: negative_source "none"
 NO_NEGATIVE_ACTIONS = {"voice", "voice_clone"}
 SLOT_TYPES = {"string", "int", "float", "bool", "input_image", "input_audio", "prefix"}
 SLOT_NAMES = {"prompt", "first_frame", "edit_image", "seed", "frames", "seconds", "width", "height", "check_index", "save_prefix",
               "duration", "bpm", "keyscale", "audio", "voice_instruct", "max_tokens", "ref_text", "x_vector",
-              "ref_image", "ref_image2", "end_frame", "last_index", "audio2"}
+              "ref_image", "ref_image2", "end_frame", "last_index", "audio2", "speaker_x", "speaker_w",
+              "negative"}       # 부정 글 (11-24 2차 C5b): fixed.negative 와 같은 자리. 장면 그림 정밀 판(cfg 4)에 화풍별 부정 글을 넣는다
+# 실사 변환 레시피(edit_photo)의 글 노드: 한 노드가 긍정 조건(출력 0)·부정 조건(출력 1)·입력 그림 크기의 잠재(출력 2)를 함께 낸다
+PHOTO_ENCODER = "TextEncodeQwenImage21"
+PHOTO_IMAGE_INPUT = "images.image_1"
 AUDIO_SLOT_NAMES = ("audio", "audio2")
-# 두 사람 대사 레시피(talk_duo)의 영상 노드: 소리 자리마다 닿아야 하는 입력 (왼쪽 사람 = audio → 1, 오른쪽 사람 = audio2 → 2).
-# 노드는 두 소리를 '왼쪽 먼저, 오른쪽 다음'으로 이어 붙인다 (11-24 메인 X6·X9). 바뀌어 이어지면 엉뚱한 사람의 입이 움직인다
+# 두세 사람 대사 레시피(talk_duo)의 영상 노드: 소리 자리마다 닿아야 하는 입력 (말하는 사람의 대사 = audio → 1, 무음 = audio2 → 2).
+# 노드는 두 소리를 '자리 1 먼저, 자리 2 다음'으로 이어 붙여 대사가 늘 0초에서 시작한다 (11-24 메인 X9~X13). 바뀌어 이어지면 엉뚱한 사람의
+# 입이 움직인다. 화면의 모든 칸이 화자 1·2 로 나뉘므로(model_multitalk 의 argmax) 마스크 2 는 마스크 1(말하는 사람 칸)의 반전이어야 한다
 DUO_NODE = "WanInfiniteTalkToVideo"
 DUO_AUDIO_INPUTS = {"audio": "audio_encoder_output_1", "audio2": "mode.audio_encoder_output_2"}
+DUO_SPAN_SLOTS = ("speaker_x", "speaker_w")      # 말하는 사람 칸 (마스크 1 의 MaskComposite.x · 조각 SolidMask.width): talk_duo 만 쓴다
 # 값이 없으면 그래프에서 빼도 되는(optional) 이미지 자리는 참고 그림뿐이다. 첫 화면·편집 대상·끝 프레임이 빠지면 그래프가 깨진다
 OPTIONAL_OK_SLOTS = {"ref_image", "ref_image2"}
 IMAGE_SLOT_NAMES = ("first_frame", "edit_image", "ref_image", "ref_image2", "end_frame")
@@ -107,14 +115,23 @@ def engine_of(recipe: dict | None) -> str:
 
 
 def pick(recipe_map: dict, disabled, action: str, quality: str = "fast", engine: str = "wan") -> dict | None:
-    """action·화질·엔진에 맞는 켜진 레시피 하나 (id 순서). 엔진을 말하지 않으면 wan. 음악은 엔진·화질을 보지 않는다"""
+    """action·화질·엔진에 맞는 켜진 레시피 하나 (id 순서). 엔진을 말하지 않으면 wan.
+    대사 영상의 부품(PART_ACTIONS: 음악·목소리·입 맞춤·장면 그림 …)은 엔진을 보지 않고 같은 화질의 판을 먼저 고른다: 높음을 찾는데 없으면
+    빠른 판(예전처럼 화질을 따지지 않는다), 빠름을 찾을 때는 높음 판을 고르지 않는다 (장면 그림 정밀 판 qwen_image_2512_scene_quality 는
+    감독이 반실사가 아닌 영화의 장소 그림에만 쓴다, 11-24 2차 C5b. 빠른 판이 꺼졌다고 모든 장면 그림이 40스텝이 되지 않게)"""
+    fallback = None
     for rid in sorted(recipe_map):
         r = recipe_map[rid]
         if rid in disabled or r["action"] != action:
             continue
-        if action in PART_ACTIONS or (quality_of(r) == quality and engine_of(r) == engine):
+        if action in PART_ACTIONS:
+            if quality_of(r) == quality:
+                return r
+            if quality == "high" and fallback is None:
+                fallback = r
+        elif quality_of(r) == quality and engine_of(r) == engine:
             return r
-    return None
+    return fallback
 
 
 def load_all(directory: str = RECIPE_DIR) -> dict[str, dict]:
@@ -150,13 +167,15 @@ def is_link(v) -> bool:
 
 # ── 그래프 추적 (패널의 mgs_nodes.js roleDownstream 을 API 형식으로 옮긴 것) ──
 
-def roles_of(prompt: dict, start: str, depth: int = 0, seen: frozenset = frozenset(), zero: bool = False) -> set:
+def roles_of(prompt: dict, start: str, depth: int = 0, seen: frozenset = frozenset(), zero: bool = False, out: int | None = None) -> set:
     """start 노드의 출력이 닿는 입력 이름으로 positive/negative 를 모은다. 0 조건 노드를 거쳐 닿은 것은
-    positive_zero/negative_zero 로 따로 센다 (Z-Image 처럼 글 노드 하나로 쓰는 구성)."""
+    positive_zero/negative_zero 로 따로 센다 (Z-Image 처럼 글 노드 하나로 쓰는 구성).
+    out 이 있으면 start 의 그 출력 번호에서 나간 링크만 본다: 긍정·부정 조건을 한 노드가 함께 내는 글 노드(실사 변환의
+    TextEncodeQwenImage21: 출력 0 = 긍정, 1 = 부정)는 출력마다 따로 봐야 한다 (자리의 'output' 칸, 11-24 2차)"""
     roles = set()
     for nid, node in prompt.items():
         for name, val in (node.get("inputs") or {}).items():
-            if is_link(val) and str(val[0]) == start:
+            if is_link(val) and str(val[0]) == start and (out is None or val[1] == out):
                 if name.startswith("positive"):
                     roles.add("positive_zero" if zero else "positive")
                 elif name.startswith("negative"):
@@ -229,11 +248,102 @@ def _slot_ok(prompt: dict, slot, where: str, errs: list):
         errs.append(f"{where}: optional 은 input_image 자리에만 쓸 수 있습니다")
 
 
+def _int_value(v) -> int | None:
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def slot_out(slot) -> int | None:
+    """자리의 'output' 칸: 그 글 노드의 몇 번째 출력이 이 조건인가. 없거나 정수가 아니면 None (모든 출력을 본다)"""
+    return _int_value(slot.get("output")) if isinstance(slot, dict) else None
+
+
+def split_outputs(a, b) -> bool:
+    """두 자리(긍정 글·부정 글)가 같은 글 노드의 서로 다른 입력·출력인가 (실사 변환의 TextEncodeQwenImage21: prompt → 출력 0,
+    negative_prompt → 출력 1)"""
+    oa, ob = slot_out(a), slot_out(b)
+    return oa is not None and ob is not None and oa != ob and a.get("input") != b.get("input")
+
+
+def default_negative(recipe: dict) -> str:
+    """레시피 그래프에 적힌 부정 글 (inject.negative 자리, 없으면 fixed.negative 자리의 처음 값). 화풍별 부정 글이 없을 때(custom·빠른 판)
+    감독이 이 글을 그대로 넣는다. 높음 판이면 빠른 판에서 만들 때 더한 말(QUALITY_NEGATIVE_EXTRA)도 들어 있다"""
+    sl = slots_of(recipe, "negative")
+    s0 = sl[0] if sl and isinstance(sl[0], dict) else ((recipe.get("fixed") or {}).get("negative") or {})
+    node = (recipe.get("prompt") or {}).get(str(s0.get("node")), {})
+    return str((node.get("inputs") or {}).get(s0.get("input")) or "")
+
+
+def _photo_problems(recipe: dict, prompt: dict) -> list[str]:
+    """V6 의 실사 변환 레시피(edit_photo) 검사 (11-24 메인 P1 그래프): 글 노드(TextEncodeQwenImage21) 하나에 inject.prompt 가 있고,
+    샘플러 하나의 잠재가 그 노드의 셋째 출력(입력 그림 크기)이어야 한다. 크기 자리가 없어 잠재를 다른 곳에서 만들면 결과 크기가
+    입력 그림과 어긋난다. 편집 대상이 그 노드의 images.image_1 에 닿는지는 V6 의 편집 대상 검사가 본다"""
+    encs = [nid for nid, n in prompt.items() if n.get("class_type") == PHOTO_ENCODER]
+    if len(encs) != 1:
+        return [f"edit_photo 레시피는 {PHOTO_ENCODER} 노드가 하나여야 합니다 (지금 {len(encs)}개)"]
+    enc, e = encs[0], []
+    ps = slots_of(recipe, "prompt")
+    if not (len(ps) == 1 and isinstance(ps[0], dict) and str(ps[0].get("node")) == enc and ps[0].get("input") == "prompt"):
+        e.append(f"edit_photo 레시피의 inject.prompt 는 {PHOTO_ENCODER} {enc} 의 prompt 여야 합니다")
+    sams = [nid for nid, n in prompt.items() if n.get("class_type") == "KSampler"]
+    if len(sams) != 1:
+        e.append(f"edit_photo 레시피는 KSampler 가 하나여야 합니다 (지금 {len(sams)}개)")
+    for sid in sams:
+        lat = (prompt[sid].get("inputs") or {}).get("latent_image")
+        if not (is_link(lat) and str(lat[0]) == enc and lat[1] == 2):
+            e.append(f"edit_photo 레시피의 KSampler {sid} 잠재는 {PHOTO_ENCODER} {enc} 의 셋째 출력(입력 그림 크기)이어야 합니다")
+    return e
+
+
+def _duo_mask_problems(recipe: dict, prompt: dict, nid: str, ins: dict) -> list[str]:
+    """talk_duo 의 마스크 검사 (11-24 X11~X13 방식). 마스크 1 = 말하는 사람 칸: MaskComposite(add, y 0) 의 바탕(destination)이 생성 크기의
+    빈 SolidMask(0), 조각(source)이 생성 높이의 SolidMask(1) 이고, inject.speaker_x 가 그 MaskComposite 의 x, inject.speaker_w 가 조각의 width.
+    마스크 2 = InvertMask(마스크 1): 말하는 사람을 뺀 나머지 전체 (화면의 모든 칸이 화자 1·2 로 나뉘어, 칸 밖의 세 번째 사람이
+    대사에 묶이지 않게). 감독은 fixed.gen_width 로 칸을 계산하므로 그 자리가 이 노드의 width 여야 한다"""
+    e = []
+    width, height = _int_value(ins.get("width")), _int_value(ins.get("height"))
+    if not width or not height or width <= 0 or height <= 0:
+        return [f"talk_duo 레시피의 {DUO_NODE} {nid} 의 width·height 는 숫자(생성 크기)여야 합니다"]
+    gw = (recipe.get("fixed") or {}).get("gen_width")
+    if not (isinstance(gw, dict) and str(gw.get("node")) == nid and gw.get("input") == "width"):
+        e.append(f"talk_duo 레시피는 fixed.gen_width 가 {DUO_NODE} {nid} 의 width 여야 합니다 (감독이 말하는 사람 칸을 이 폭으로 계산합니다)")
+    m1 = ins.get("mode.mask_1")
+    comp_id = str(m1[0]) if is_link(m1) else ""
+    comp = prompt.get(comp_id, {})
+    cin = comp.get("inputs") or {}
+    if comp.get("class_type") != "MaskComposite" or cin.get("operation") != "add" or cin.get("y") != 0:
+        e.append(f"{DUO_NODE} {nid} 의 mode.mask_1 은 말하는 사람 칸을 만드는 MaskComposite(operation add, y 0)여야 합니다")
+    else:
+        dest = prompt.get(str(cin["destination"][0]), {}) if is_link(cin.get("destination")) else {}
+        din = dest.get("inputs") or {}
+        if dest.get("class_type") != "SolidMask" or din.get("value") != 0 or din.get("width") != width or din.get("height") != height:
+            e.append(f"mode.mask_1 의 바탕(MaskComposite {comp_id}.destination)은 생성 크기({width}×{height})의 빈 SolidMask(value 0)여야 합니다")
+        piece_id = str(cin["source"][0]) if is_link(cin.get("source")) else ""
+        piece = prompt.get(piece_id, {})
+        pin = piece.get("inputs") or {}
+        if piece.get("class_type") != "SolidMask" or pin.get("value") != 1 or pin.get("height") != height:
+            e.append(f"mode.mask_1 의 조각(MaskComposite {comp_id}.source)은 생성 높이({height})의 SolidMask(value 1)여야 합니다")
+        for name, node, inp, lo, hi in (("speaker_x", comp_id, "x", 0, width - 1), ("speaker_w", piece_id, "width", 1, width)):
+            sl = slots_of(recipe, name)
+            s0 = sl[0] if len(sl) == 1 and isinstance(sl[0], dict) else {}
+            if not (str(s0.get("node")) == node and s0.get("input") == inp and s0.get("type") == "int"):
+                e.append(f"talk_duo 레시피의 inject.{name} 은 마스크 1 의 {node}.{inp} 에 넣는 int 자리여야 합니다")
+            elif not (_int_value(s0.get("min")) is not None and _int_value(s0.get("max")) is not None
+                      and lo <= s0["min"] <= s0["max"] <= hi):
+                e.append(f"talk_duo 레시피의 inject.{name} 범위(min·max)는 {lo}~{hi} 안이어야 합니다")
+    m2 = ins.get("mode.mask_2")
+    inv = prompt.get(str(m2[0]), {}) if is_link(m2) else {}
+    if not (inv.get("class_type") == "InvertMask" and comp_id and is_link((inv.get("inputs") or {}).get("mask"))
+            and str(inv["inputs"]["mask"][0]) == comp_id):
+        e.append(f"{DUO_NODE} {nid} 의 mode.mask_2 는 마스크 1({comp_id or '?'})의 InvertMask 여야 합니다 (말하는 사람을 뺀 나머지 전체)")
+    return e
+
+
 def _duo_problems(recipe: dict, prompt: dict) -> list[str]:
-    """V6 의 두 사람 대사 레시피(talk_duo) 검사: 영상 노드 하나(두 화자 모드), 첫 화면이 그 노드의 start_image 에,
-    소리 자리 둘이 정해진 화자 입력에 (왼쪽 audio → audio_encoder_output_1, 오른쪽 audio2 → mode.audio_encoder_output_2, 바뀌지 않게).
-    감독은 '왼쪽 사람 = audio = 마스크 1' 과 'defaults.fps 로 계산한 frames·last_index' 를 전제로 하므로(11-24 검토) 마스크 1·2 가
-    생성 화면의 왼쪽 반·오른쪽 반인지, frames 자리가 그 노드의 length(4n+1)인지, CreateVideo fps 가 defaults.fps 인지도 본다"""
+    """V6 의 두세 사람 대사 레시피(talk_duo) 검사: 영상 노드 하나(두 화자 모드), 첫 화면이 그 노드의 start_image 에,
+    소리 자리 둘이 정해진 화자 입력에 (대사 audio → audio_encoder_output_1, 무음 audio2 → mode.audio_encoder_output_2, 바뀌지 않게).
+    감독은 '말하는 사람 = audio = 마스크 1(speaker_x·speaker_w 칸)', '무음 = audio2 = 마스크 2(마스크 1 의 반전)' 와
+    'defaults.fps 로 계산한 frames·last_index' 를 전제로 하므로 마스크 짜임(_duo_mask_problems), frames 자리가 그 노드의 length(4n+1)인지,
+    CreateVideo fps 가 defaults.fps 인지도 본다"""
     e = []
     nodes = [nid for nid, n in prompt.items() if n.get("class_type") == DUO_NODE]
     if len(nodes) != 1:
@@ -242,21 +352,7 @@ def _duo_problems(recipe: dict, prompt: dict) -> list[str]:
     ins = prompt[nid].get("inputs") or {}
     if ins.get("mode") != "two_speakers":
         e.append(f"talk_duo 레시피의 {DUO_NODE} 는 mode 가 two_speakers 여야 합니다")
-    # 마스크: 1 = 왼쪽 반(MaskComposite x 0), 2 = 오른쪽 반(x = 생성 너비의 반). 바뀌면 대사가 듣는 사람의 입을 움직인다
-    width = ins.get("width")
-    half = width // 2 if isinstance(width, int) and not isinstance(width, bool) and width > 0 else None
-    if half is None:
-        e.append(f"talk_duo 레시피의 {DUO_NODE} {nid} 의 width 는 숫자(생성 너비)여야 합니다")
-    for key, side, want_x in (("mode.mask_1", "왼쪽", 0), ("mode.mask_2", "오른쪽", half)):
-        src = ins.get(key)
-        comp = prompt.get(str(src[0]), {}) if is_link(src) else {}
-        cin = comp.get("inputs") or {}
-        if comp.get("class_type") != "MaskComposite" or want_x is None or cin.get("x") != want_x:
-            e.append(f"{DUO_NODE} {nid} 의 {key} 는 생성 화면의 {side} 반(MaskComposite x={want_x})이어야 합니다")
-            continue
-        piece = prompt.get(str(cin["source"][0]), {}) if is_link(cin.get("source")) else {}
-        if piece.get("class_type") == "SolidMask" and half is not None and (piece.get("inputs") or {}).get("width") != half:
-            e.append(f"{DUO_NODE} {nid} 의 {key} 조각(SolidMask)의 너비가 생성 너비의 반({half})이 아닙니다")
+    e += _duo_mask_problems(recipe, prompt, nid, ins)
     # 프레임 수: frames 자리 = 이 노드의 length, 4n+1 (감독이 recipes.frames_for 로 올림한다)
     fr = slots_of(recipe, "frames")
     f0 = fr[0] if len(fr) == 1 and isinstance(fr[0], dict) else {}
@@ -349,7 +445,7 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
     elif recipe.get("negative_source") == "none":
         pass
     else:
-        roles = roles_of(prompt, str(ps[0]["node"]))
+        roles = roles_of(prompt, str(ps[0]["node"]), out=slot_out(ps[0]))
         zero_ok = recipe.get("negative_source") == "zero_out"
         if "positive" not in roles:
             e.append(f"inject.prompt 노드 {ps[0]['node']} 가 positive 입력에 닿지 않습니다 (닿는 곳: {sorted(roles) or '없음'})")
@@ -368,10 +464,11 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
         if not neg:
             e.append("negative_source=node 이면 fixed.negative 가 필요합니다")
         else:
-            nr = roles_of(prompt, str(neg.get("node")))
+            nr = roles_of(prompt, str(neg.get("node")), out=slot_out(neg))
             if "negative" not in nr or nr - {"negative"}:
                 e.append(f"fixed.negative 노드가 negative 에만 닿아야 합니다 (닿는 곳: {sorted(nr)})")
-            if ps and str(neg.get("node")) == str(ps[0].get("node")):
+            # 같은 노드라도 긍정·부정을 다른 입력·출력으로 내는 글 노드면 된다 (실사 변환 TextEncodeQwenImage21, 자리의 output 칸)
+            if ps and str(neg.get("node")) == str(ps[0].get("node")) and not split_outputs(ps[0], neg):
                 e.append("fixed.negative 와 inject.prompt 가 같은 노드입니다")
     elif recipe.get("negative_source") == "none":
         if neg:
@@ -385,14 +482,31 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
                      and any(is_link(v) and str(v[0]) == pn for v in (n.get("inputs") or {}).values())]
             if not zeros:
                 e.append("프롬프트 자리 노드의 출력을 받는 0 조건 노드가 없습니다")
+    # 부정 글 자리(inject.negative, 11-24 2차 C5b): 감독이 화풍별 부정 글을 넣는 자리는 fixed.negative 와 같은 노드·입력이어야
+    # 위의 부정 자리 검사와 접수 직전 확인(negative_problem)이 그대로 지킨다. fixed.negative 에 value 를 두면 값 넣기가 바꾼 글을 거부한다
+    negs = slots_of(recipe, "negative")
+    if negs:
+        n0 = negs[0] if len(negs) == 1 and isinstance(negs[0], dict) else {}
+        if recipe.get("negative_source") != "node" or not neg:
+            e.append("inject.negative 는 negative_source=node 이고 fixed.negative 가 있는 레시피에서만 쓸 수 있습니다")
+        elif not (str(n0.get("node")) == str(neg.get("node")) and n0.get("input") == neg.get("input") and n0.get("type") == "string"):
+            e.append("inject.negative 는 fixed.negative 와 같은 노드·입력의 string 자리 하나여야 합니다")
+        elif "value" in neg:
+            e.append("fixed.negative 에 value 가 있으면 inject.negative 로 부정 글을 바꿀 수 없습니다")
+        elif not default_negative(recipe).strip():
+            e.append("inject.negative 의 기본 부정 글(그래프의 글)이 비어 있습니다 (화풍별 부정 글이 없을 때 감독이 이 글을 넣습니다)")
     add("V5", e)
 
     # V6 첫 화면·편집 대상·참고 그림·끝 프레임 자리
     e = []
     action = recipe.get("action")
     # 새로 그리기(compose_ref)는 출력 크기를 빈 잠재의 width·height(영상 크기)로 정한다. 그림 1이 VAEEncode 로 잠재가 되면 크기가 그림 1을 따른다.
-    # 디노이즈 1 이라 잠재의 내용은 남지 않는다: 그림의 사람·배치가 남는 것은 글 노드에 넣은 그림 때문이다 (11-21 정정)
-    edit_in = [("TextEncodeQwenImageEdit", "image1")] + ([] if action == "compose_ref" else [("VAEEncode", "pixels")])
+    # 디노이즈 1 이라 잠재의 내용은 남지 않는다: 그림의 사람·배치가 남는 것은 글 노드에 넣은 그림 때문이다 (11-21 정정).
+    # 실사 변환(edit_photo)은 그림이 글 노드 TextEncodeQwenImage21 의 images.image_1 로 들어가고 잠재도 그 노드가 만든다 (11-24 P1)
+    if action == "edit_photo":
+        edit_in = [(PHOTO_ENCODER, PHOTO_IMAGE_INPUT)]
+    else:
+        edit_in = [("TextEncodeQwenImageEdit", "image1")] + ([] if action == "compose_ref" else [("VAEEncode", "pixels")])
     for name, cls_in in (("first_frame", [("", "start_image"), ("LTXVImgToVideoInplace", "image")]),
                          ("edit_image", edit_in)):
         for s in slots_of(recipe, name):
@@ -432,8 +546,12 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
         e.append(f"{action} 레시피는 inject.first_frame 이 필요합니다")
     if action == "talk_duo":
         e += _duo_problems(recipe, prompt)
-    elif slots_of(recipe, "audio2"):
-        e.append("inject.audio2 는 talk_duo 레시피에서만 쓸 수 있습니다")
+    else:
+        for name in ("audio2",) + DUO_SPAN_SLOTS:
+            if slots_of(recipe, name):
+                e.append(f"inject.{name} 는 talk_duo 레시피에서만 쓸 수 있습니다")
+    if action == "edit_photo":
+        e += _photo_problems(recipe, prompt)
     # 참고 그림(edit_ref·compose_ref): ref_image → image2, ref_image2 → image3, 글 노드 모두에
     for name, inp in (("ref_image", "image2"), ("ref_image2", "image3")):
         if slots_of(recipe, name) and action not in REF_ACTIONS:
@@ -478,7 +596,7 @@ def check_recipe(recipe: dict, profile_ids=None) -> list[dict]:
                 e.append(f"inject.{name} 노드는 LoadAudio 여야 합니다")
     if action in ("talk", "voice_clone") and not slots_of(recipe, "audio"):
         e.append(f"{action} 레시피는 inject.audio 가 필요합니다")
-    if action in ("edit", "edit_ref", "compose_ref") and not slots_of(recipe, "edit_image"):
+    if action in ("edit", "edit_ref", "compose_ref", "edit_photo") and not slots_of(recipe, "edit_image"):
         e.append(f"{action} 레시피는 inject.edit_image 가 필요합니다")
     add("V6", e)
 
@@ -678,13 +796,17 @@ def sample_values(recipe: dict, frames: int | None = None) -> dict:
     d = recipe.get("defaults") or {}
     f = frames or int(d.get("frames") or 0) or 1
     inj = recipe.get("inject") or {}
+    gen_w = ((recipe.get("fixed") or {}).get("gen_width") or {}).get("value")
+    gen_w = gen_w if isinstance(gen_w, int) and not isinstance(gen_w, bool) and gen_w > 1 else 848
     vals = {"prompt": "a calm test scene", "seed": 0, "width": int(d.get("width") or 640),
             "height": int(d.get("height") or 640), "frames": f, "check_index": max(0, min(f // 2, 80)),
             "first_frame": SAMPLE_IMAGE, "edit_image": SAMPLE_IMAGE, "ref_image": SAMPLE_IMAGE, "ref_image2": SAMPLE_IMAGE,
             "end_frame": SAMPLE_IMAGE, "last_index": max(0, min(f * 3 // 4, 480)),
             "seconds": max(2, min(int(round(max(f - 1, 1) / int(d.get("fps") or 24))), 20)),
             "bpm": 90, "keyscale": "C major", "audio": SAMPLE_AUDIO, "audio2": SAMPLE_AUDIO, "voice_instruct": "A calm adult voice.",
-            "max_tokens": 512, "ref_text": "안녕하세요.", "x_vector": False}
+            "max_tokens": 512, "ref_text": "안녕하세요.", "x_vector": False,
+            "speaker_x": 0, "speaker_w": gen_w // 2,           # 두세 사람 대사 컷: 두 사람의 왼쪽 사람이 말하는 칸
+            "negative": default_negative(recipe) or "low quality, blurry"}    # 부정 글 자리: 레시피에 적힌 기본 부정 글
     vals["save_prefix"] = [f"_check/00000000/{s['suffix']}" for s in slots_of(recipe, "save_prefix")]
     if "duration" in inj:      # 음악 길이는 자리가 둘(빈 잠재·글 인코더)이라 자리마다 같은 값
         vals["duration"] = [float(d.get("duration") or 30)] * len(slots_of(recipe, "duration"))

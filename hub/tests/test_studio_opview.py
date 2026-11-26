@@ -81,6 +81,16 @@ assert pi and pi["57:3"]["inputs"]["seed"] == 5 and pi["9"]["inputs"]["filename_
 ev_ed = [{"kind": "comfy_submitted", "ts": NOW, "detail": {"recipe": "qwen_image_edit", "seed": 9, "size": []}}]
 pe = opview.repro_prompt(turn(action="edit"), ev_ed, att)
 assert pe and pe["41"]["inputs"]["image"].startswith("studio/bob/") and pe["170:169"]["inputs"]["seed"] == 9
+# 부정 글 자리가 있는 장면 그림(11-24 2차 정밀 판): 접수 때 넣은 부정 글로, 기록에 없으면 레시피의 기본 부정 글로 다시 만든다
+SQ = recipes.load_all()["qwen_image_2512_scene_quality"]
+ev_sq = [{"kind": "comfy_submitted", "ts": NOW, "detail": {"recipe": SQ["id"], "version": SQ["version"], "seed": 3, "size": [1280, 720],
+                                                            "negative": "photograph, flat 2D drawing"}}]
+ps_ = opview.repro_prompt(turn(action="image", request={"text": "x", "attachment_ids": []}), ev_sq, {})
+assert ps_ and ps_["238:228"]["inputs"]["text"] == "photograph, flat 2D drawing" and ps_["238:229"]["inputs"]["value"] is False
+del ev_sq[0]["detail"]["negative"]
+ps_ = opview.repro_prompt(turn(action="image", request={"text": "x", "attachment_ids": []}), ev_sq, {})
+assert ps_ and ps_["238:228"]["inputs"]["text"] == recipes.default_negative(SQ)
+assert "quality_still_failed" in opview.LONG_EVENT_KINDS and "cast_style_convert_fallback" in opview.LONG_EVENT_KINDS
 
 ev_old = [{"kind": "comfy_submitted", "ts": NOW, "detail": {"recipe": "wan22_i2v_14b_fast", "version": 99, "seed": 1,
                                                              "size": [848, 480], "frames": 81}}]
@@ -126,14 +136,21 @@ assert d["request"]["attachments"][0]["width"] == 1920 and d["repro"] is not Non
 assert d["notices"][0]["code"] == "inspect" and d["node_timing"] and d["crew"]["events"] == [{"category": "공간"}]
 assert opview.pretty({"a": "한글", "t": NOW}).count("한글") == 1                        # 한글은 그대로, 날짜도 문자열로
 
-# ── 긴 영상 기록: 두 사람 대사 컷(11-24)의 듣는 사람·두 화자 표시, 두 화자에서 LTX 로 내려간 이벤트 ──
-DUO_STORY = {"title_ko": "생일 아침", "logline_ko": "두 사람이 이야기한다.", "seconds": 16,
+# ── 긴 영상 기록: 두세 사람 대사 컷(11-24)의 듣는 사람·InfiniteTalk 표시, 독백·모두에게 하는 말 표시(2차 사용자 확정 규칙),
+#    InfiniteTalk 에서 LTX 로 내려간 이벤트 ──
+DUO_STORY = {"title_ko": "생일 아침", "logline_ko": "두 사람이 이야기한다.", "seconds": 27,
              "bible": {"characters": [{"id": "A", "look": "a woman"}, {"id": "B", "look": "a man"}], "places": [], "time": "", "light": ""},
              "scenes": [{"seconds": 10, "ko": "아침", "kind": "shot", "listener": ""},
-                        {"seconds": 6, "ko": "베스가 말한다", "kind": "talk", "speaker": "A", "listener": "B", "characters": ["A", "B"]}]}
+                        {"seconds": 6, "ko": "베스가 말한다", "kind": "talk", "speaker": "A", "listener": "B", "characters": ["A", "B"],
+                         "monologue": False, "to_all": False},
+                        {"seconds": 5, "ko": "베스의 혼잣말", "kind": "talk", "speaker": "A", "listener": "", "characters": ["A"],
+                         "monologue": True, "to_all": False},
+                        {"seconds": 6, "ko": "제임스가 모두에게", "kind": "talk", "speaker": "B", "listener": "", "characters": ["B", "A"],
+                         "monologue": False, "to_all": True}]}
 lv = opview.long_view({"story": DUO_STORY, "scenes": [{}, {"duo": True, "clip_rel": "x.mp4"}]},
                       [{"kind": "duo_fallback", "detail": {"index": 1, "reason": "failed"}}, {"kind": "llm_job", "detail": {}}])
 assert lv["scenes"][1]["duo"] is True and lv["scenes"][1]["listener"] == "B" and lv["scenes"][0]["duo"] is None
+assert [(s["monologue"], s["to_all"]) for s in lv["scenes"]] == [(None, None), (False, False), (True, False), (False, True)]
 assert "duo_fallback" in opview.LONG_EVENT_KINDS and [e["kind"] for e in lv["events"]] == ["duo_fallback"]
 
 # ── 템플릿: 믿지 않는 글은 이스케이프되고, 화면이 깨지지 않는다 ──
@@ -182,9 +199,10 @@ if jinja2 is not None:
     html = env.get_template("admin_studio_turn.html").render(d=dv, pretty=opview.pretty, short=opview.short, job_prompt=None, **ctx)
     assert "시스템 프롬프트" in html and "FIX RULES" in html and XSS not in html
     assert opview.build_detail(turn(), [], [], [], [], [], None)["systems"] == []
-    # 긴 영상 기록: 두 사람 대사 컷 표시 (11-24)
+    # 긴 영상 기록: 두세 사람 대사 컷·독백·모두에게 하는 말 표시 (11-24)
     dl = opview.build_detail(turn(work={"story": DUO_STORY, "scenes": [{}, {"duo": True, "clip_rel": "x.mp4"}]}),
                              [{"kind": "duo_fallback", "ts": NOW, "detail": {"index": 1, "reason": "failed"}}], [], [], [], [], None)
     html = env.get_template("admin_studio_turn.html").render(d=dl, pretty=opview.pretty, short=opview.short, job_prompt=None, **ctx)
-    assert html.count("두 사람 대사(InfiniteTalk)") == 1 and "duo_fallback" in html
+    assert html.count("두세 사람 대사(InfiniteTalk)") == 1 and "duo_fallback" in html
+    assert html.count("독백(혼자 클로즈업)") == 1 and html.count("모두에게 하는 말") == 1
 print("ok studio_opview")

@@ -5,6 +5,8 @@
 """
 import re
 
+from .. import cast_lib
+
 # 제작진 분야 키워드에 걸리지 않는 문장이다 ('자연스럽게' 는 풍경 키워드 '자연' 에 걸린다, crew_knowledge.json)
 DEFAULT_I2V_TEXT = "이 사진 속 장면이 부드럽게 움직이는 짧은 영상"
 MAX_TEXT = 2000
@@ -245,7 +247,9 @@ def decide(text: str, n_attachments: int, last: dict | None = None, used_default
         return out("R4", "edit", "upload", role="edit_target")
     if not att and is_video_word and last_media == "image" and (POINT_RE.search(t) or REPEAT_RE.search(t)):   # R5
         return out("R5", "i2v", "last_result", role="first_frame")
-    if not att and last and REPEAT_RE.search(t):                              # R6b
+    # 화풍을 바꿔 달라는 말('애니메이션으로 다시 만들어 줘')은 시드만 바꾸는 다시 만들기가 아니라 고치기다 (5차 검토: R6b 가 원래 구성안 그대로
+    # 다시 만들어 바꿔 달라는 화풍이 버려졌다)
+    if not att and last and REPEAT_RE.search(t) and cast_lib.said_level(t) != "sure":     # R6b
         return out("R6b", last.get("action") or "image", "none", "repeat")
     if not att and last_media == "video" and REVISE_RE.search(t) and not is_edit_word and not NEWPIC_RE.search(t):   # R6
         return out("R6", last.get("action") or "i2v", "none", "revise")

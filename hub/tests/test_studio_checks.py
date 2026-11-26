@@ -29,6 +29,11 @@ def t_style_negative_names_what_the_picture_is_not():
     assert "live-action film still" in checks.style_negative("photo")
     assert checks.style_negative("") == "" and checks.style_negative("watercolor") == ""
     assert checks.style_trait("x") == "The whole picture is in this art style: x"
+    # 11-24 2차: 3D 애니는 '사진도 평면 2D 그림도 아님' ('not a 3D render' 는 넣지 않는다), custom 은 무엇이 아닌지 몰라 빈 글
+    # (감독이 화풍 원문 줄 style_trait 만 본다)
+    t3 = checks.style_negative("toon3d")
+    assert t3 == "The picture is a stylized 3D animated film image, not a photograph, not a flat 2D drawing" and "3D render" not in t3
+    assert checks.style_negative("custom") == ""
 
 
 def t_end_rule_is_a_lower_bound_and_exact_zero_only_without_people():
@@ -186,6 +191,20 @@ def t_duo_talk_clip_needs_both_people():
     assert old["want"] == 2 and old["fewer_ok"] and old["skip"] == checks.TALK_SKIP
     assert checks.clip_rule(None, 0, talk=True)["want"] == 1 and checks.clip_rule(2, 0, duo=True)["want"] == 2   # talk 가 아니면 duo 는 뜻이 없다
     assert checks.clip_rule(2, 0, duo=True)["fewer_ok"]
+
+
+def t_group_talk_clip_needs_exactly_that_many_people():
+    """세 사람 대사 컷(11-24 2차, X12·X13): 감독이 장면의 사람 수(2·3)를 주면 정확히 그 수. 한 사람이 빠져도 다시 만든다(fewer_ok 거짓).
+    수를 모르면(None·1) 두 사람 기준"""
+    r3 = checks.clip_rule(3, 0, talk=True, duo=True)
+    assert r3["want"] == 3 and not r3["fewer_ok"] and not r3["more_ok"] and r3["skip"] == checks.DUO_TALK_SKIP
+    assert checks.problems({"people": 2, "issues": [], "traits": []}, r3) == ["people:2/3"]           # 듣는 사람 하나가 빠졌다
+    assert checks.problems({"people": 4, "issues": [], "traits": []}, r3) == ["people:4/3"]
+    assert checks.problems({"people": 3, "issues": [{"type": "face"}], "traits": []}, r3) == []
+    rc = checks.clip_rule(3, 0, talk=True, duo=True, crowd=True)
+    assert rc["want"] == 3 and rc["more_ok"] and not rc["fewer_ok"]
+    assert checks.clip_rule(None, 0, talk=True, duo=True)["want"] == 2 and checks.clip_rule(1, 0, talk=True, duo=True)["want"] == 2
+    assert checks.clip_rule(True, 0, talk=True, duo=True)["want"] == 2                              # 참/거짓은 수가 아니다
 
 
 if __name__ == "__main__":

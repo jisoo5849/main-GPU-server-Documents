@@ -1,0 +1,225 @@
+{
+ "schema": "studio-recipe-1",
+ "id": "qwen_image21_edit_photo",
+ "version": 1,
+ "title": "실사 변환 · Qwen-Image 2.1 편집 (25스텝 cfg 1)",
+ "quality_label": "빠름",
+ "action": "edit_photo",
+ "negative_source": "node",
+ "source": {
+  "exported": "2026-11-24 메인 작업공간 실측 P1 그래프 (프롬프트 보강 LLM 경로를 뺀 것). 노드 번호는 그대로",
+  "why": "실사 영화에서 라이브러리 인물의 반실사 기준 그림을 사진으로 바꾼다. 11-20 S6 의 Qwen-Image-Edit 2511 Lightning 실사 변환은 그림 느낌이 남았고, 11-24 P2 의 Flux-2 Klein 4B 편집은 사진 질감은 강하나 주근깨·나이 듦으로 다른 사람처럼 보였다",
+  "evidence": "11-24 P1: 반실사 베스 → 진짜 사진 질감, 같은 사람으로 보이고 가르마·앞치마·호박 브로치 유지. 25스텝 cfg 1 euler simple 18초",
+  "graph": "LoadImage 470 → TextEncodeQwenImage21 474 의 images.image_1. 474 의 출력 0 = 긍정 조건, 1 = 부정 조건(negative_prompt 빈 글, cfg 1 이라 계산되지 않음), 2 = 입력 그림 크기의 잠재 → KSampler 458 → VAEDecode 457 → SaveImage 461. 출력 크기는 입력 그림이 정한다",
+  "models": "qwen_image_2.1_int8_convrot (UNETLoader 451 → QwenImage21Cache 469), qwen3vl_8b_int8_convrot (CLIPLoader 453), qwen_image_2.1_vae_bf16 (VAELoader 454) — 11-24 메인 공용 저장소에 있음 확인"
+ },
+ "prompt": {
+  "470": {
+   "inputs": {
+    "image": "studio/_check/sample.png"
+   },
+   "class_type": "LoadImage"
+  },
+  "451": {
+   "inputs": {
+    "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+    "weight_dtype": "default"
+   },
+   "class_type": "UNETLoader"
+  },
+  "469": {
+   "inputs": {
+    "model": [
+     "451",
+     0
+    ],
+    "device": "auto",
+    "dtype": "default"
+   },
+   "class_type": "QwenImage21Cache"
+  },
+  "453": {
+   "inputs": {
+    "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+    "type": "qwen_image",
+    "device": "default"
+   },
+   "class_type": "CLIPLoader"
+  },
+  "454": {
+   "inputs": {
+    "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+   },
+   "class_type": "VAELoader"
+  },
+  "474": {
+   "inputs": {
+    "clip": [
+     "453",
+     0
+    ],
+    "vae": [
+     "454",
+     0
+    ],
+    "prompt": "Turn this picture into a real photograph of the same person.",
+    "resolution": 0,
+    "images.image_1": [
+     "470",
+     0
+    ],
+    "negative_prompt": ""
+   },
+   "class_type": "TextEncodeQwenImage21"
+  },
+  "458": {
+   "inputs": {
+    "model": [
+     "469",
+     0
+    ],
+    "positive": [
+     "474",
+     0
+    ],
+    "negative": [
+     "474",
+     1
+    ],
+    "latent_image": [
+     "474",
+     2
+    ],
+    "seed": 4242,
+    "steps": 25,
+    "cfg": 1,
+    "sampler_name": "euler",
+    "scheduler": "simple",
+    "denoise": 1
+   },
+   "class_type": "KSampler"
+  },
+  "457": {
+   "inputs": {
+    "samples": [
+     "458",
+     0
+    ],
+    "vae": [
+     "454",
+     0
+    ]
+   },
+   "class_type": "VAEDecode"
+  },
+  "461": {
+   "inputs": {
+    "images": [
+     "457",
+     0
+    ],
+    "filename_prefix": "studio/_check/photo"
+   },
+   "class_type": "SaveImage"
+  }
+ },
+ "inject": {
+  "prompt": {
+   "node": "474",
+   "input": "prompt",
+   "type": "string",
+   "role": "positive",
+   "output": 0,
+   "max_len": 2000
+  },
+  "edit_image": {
+   "node": "470",
+   "input": "image",
+   "type": "input_image"
+  },
+  "seed": {
+   "node": "458",
+   "input": "seed",
+   "type": "int",
+   "min": 0,
+   "max": 281474976710655
+  },
+  "save_prefix": [
+   {
+    "node": "461",
+    "input": "filename_prefix",
+    "type": "prefix",
+    "suffix": "photo"
+   }
+  ]
+ },
+ "fixed": {
+  "negative": {
+   "node": "474",
+   "input": "negative_prompt",
+   "type": "string",
+   "role": "negative",
+   "output": 1,
+   "value": ""
+  }
+ },
+ "outputs": {
+  "main": {
+   "node": "461",
+   "kind": "image",
+   "ext": [
+    ".png"
+   ]
+  }
+ },
+ "defaults": {
+  "size_rule": "input",
+  "note": "출력 크기는 입력 그림을 TextEncodeQwenImage21(474, resolution 0)이 맞춘 잠재(셋째 출력)를 따른다"
+ },
+ "progress": {
+  "bands": [
+   {
+    "key": "load",
+    "label": "준비",
+    "weight": 15,
+    "nodes": [
+     "470",
+     "451",
+     "469",
+     "453",
+     "454",
+     "474"
+    ]
+   },
+   {
+    "key": "gen",
+    "label": "생성",
+    "weight": 75,
+    "nodes": [
+     "458"
+    ],
+    "sampler": true
+   },
+   {
+    "key": "finish",
+    "label": "저장",
+    "weight": 10,
+    "nodes": [
+     "457",
+     "461"
+    ]
+   }
+  ]
+ },
+ "inspect": {
+  "output": "main",
+  "when": "off"
+ },
+ "estimate": {
+  "gpu_seconds": 30,
+  "basis": "2026-11-24 메인 실측 P1: 25스텝 cfg 1 실행 18초 + 모델 올리기 [추정]"
+ },
+ "limits": {
+  "max_run_seconds": 900
+ }
+}
