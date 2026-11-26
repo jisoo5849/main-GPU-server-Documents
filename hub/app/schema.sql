@@ -231,9 +231,15 @@ DO $$ BEGIN
     ALTER TABLE jobs ADD CONSTRAINT jobs_outcome_check
       CHECK (outcome IS NULL OR outcome IN ('success', 'error', 'cancelled', 'timeout', 'rejected', 'lost')) NOT VALID;
   END IF;
+  -- 11-24 에 auto_rebaselined(scheduler._try_unblock)를 넣으면서 이 목록을 함께 바꾸지 않아 그 INSERT 가 실패했다.
+  -- 이미 옛 목록으로 걸린 서버는 이름이 같아 아래 IF NOT EXISTS 를 건너뛰므로, 새 값이 없으면 지우고 다시 건다
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'incidents_kind_check'
+             AND pg_get_constraintdef(oid) NOT LIKE '%auto_rebaselined%') THEN
+    ALTER TABLE incidents DROP CONSTRAINT incidents_kind_check;
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'incidents_kind_check') THEN
     ALTER TABLE incidents ADD CONSTRAINT incidents_kind_check
-      CHECK (kind IN ('foreign_gpu_process', 'vram_not_released', 'auto_unblocked')) NOT VALID;
+      CHECK (kind IN ('foreign_gpu_process', 'vram_not_released', 'auto_unblocked', 'auto_rebaselined')) NOT VALID;
   END IF;
 END $$;
 
