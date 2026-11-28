@@ -3700,9 +3700,12 @@ async def t_duo_talk_scene_puts_the_line_in_slot_1_on_the_speaker_column_and_sil
             subs = [c for c in deps.calls if c[0] == "submit"]
             by = {tags[k]: subs[k] for k in range(len(subs))}
             assert recipe_of(by["L1w2"]) == recipe_of(by["L2w1"]) == DUO["id"] and recipe_of(by["L3v1"]) == TALK["id"]
-            # 구도 그림: 첫 화자 베스(A)가 오른쪽을 봐서 왼쪽 자리, 서로 마주 보되 두 얼굴 모두 카메라 쪽. 인물 입히기: 말하는 방향과 듣는 사람
+            # 구도 그림: 첫 화자 베스(A)가 오른쪽을 봐서 왼쪽 자리, 서로 마주 보는 투샷(11-28, 얼굴은 카메라에 보인다). 인물 입히기: 말하는 방향과 듣는 사람
             c1, d1 = text_of(by["L1c1"]), text_of(by["L1d1"])
-            assert "turned toward each other, both faces in three-quarter view toward the camera" in c1 and "Exactly 2 figures" in c1
+            assert "facing each other in conversation" in c1 and "the front of both heads still visible to the camera" in c1
+            assert "on the left a adult-sized figure turned toward the right; on the right a adult-sized figure turned toward the left" in c1
+            assert "Exactly 2 figures" in c1 and "toward the camera" not in c1
+            assert "the two face each other in three-quarter view, eyes meeting" in d1
             assert "The person on the left speaks toward the right side of the frame with a warm expression" in d1
             assert "The person on the right listens with lips closed and a gentle closed-mouth smile" in d1 and "talks about Niki" not in d1
             inp = lambda cid: fs.atts[w["casts"][cid]["att"]]["input_rel"]

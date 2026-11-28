@@ -3273,7 +3273,11 @@ def test_duo_talk_off_keeps_the_old_rules_and_prompts():
         items = video.DIALOGUE_SCHEMA["properties"]["scenes"]["items"]
         assert "listener" in items["required"] and items["properties"]["listener"] == {"type": "string"}
         ex = video.DIALOGUE_EXTRA_DUO
-        assert '"listener"' in ex and "medium two-shot" in ex and "three-quarter view toward the camera" in ex
+        assert '"listener"' in ex and "medium two-shot" in ex and "three-quarter view toward the camera" not in ex
+        # 11-28 사용자 결정 "마주 보는 투샷만": 말하는 사람과 듣는 사람이 서로 마주 보고, 얼굴은 카메라에 보인다
+        assert ("the speaker and the person spoken to turned toward each other in three-quarter view with their eyes meeting" in ex
+                and "the others turned toward the speaker, every face still visible to the camera (never a full side profile, never a back view)" in ex)
+        assert "the face in three-quarter view, with a still camera" in ex       # 독백 클로즈업 글은 그대로
         assert "very slowly pushing camera" not in ex and "cut to the listener's face" not in ex
         assert "6 Korean characters per second" in ex and '"sample_ko"' in ex and "never read from a page" in ex
         assert "same people in the same place" in ex and "A monologue never continues" in ex
@@ -3367,18 +3371,22 @@ def test_duo_sides_stay_the_same_and_the_listener_faces_the_speaker():
         o3 = [x["id"] for x in video.layout_slots(t3, 3, video.scene_people(t3, 3))]
         o4 = [x["id"] for x in video.layout_slots(t3, 4, video.scene_people(t3, 4))]
         assert o3 == o4 == ["C", "A"], (o3, o4)
-        # ① 구도 글: 서로 마주 보되 두 얼굴 모두 카메라 쪽 3/4, 미디엄 투샷도 머리 위 여유. 장면 글은 넣지 않는다
+        # ① 구도 글: 서로 마주 보는 투샷(11-28), 옆얼굴·뒷모습은 막는다, 미디엄 투샷도 머리 위 여유. 장면 글은 넣지 않는다
         slots = video.layout_slots(s, 2, video.scene_people(s, 2))
         lp = video.layout_prompt(s, 2, slots)
-        assert ("2 faceless mannequin figures, sitting, turned toward each other, both faces in three-quarter view toward the camera: "
+        assert ("2 faceless mannequin figures, sitting, facing each other in conversation: each head is turned toward the other figure in "
+                "three-quarter view (not a full side profile), the front of both heads still visible to the camera: "
                 "on the left a adult-sized figure turned toward the right; on the right a adult-sized figure turned toward the left.") in lp
+        assert "No head is in full side profile and no figure is seen from behind." in lp and "toward the camera" not in lp
         assert "clear empty space above the hair (about one tenth of the frame height); no head touches the top edge" in lp
         assert "James raises" not in lp and lp.endswith("Exactly 2 figures, no other figure or person.")
         assert video._frame_hint(2, 2) == "The heads and upper bodies are fully in frame, in the middle part of the picture."   # 두 사람 장면(대사 아님)은 그대로
         # ② 인물 입히기: 말하는 방향은 실제 자리에서 상대 쪽, 듣는 사람은 입을 다문 미소로 듣는다 (11-24 X13: 이가 보이는 웃음은 입이 벌어져 보였다)
         ip = video.identity_prompt(s, 2, slots, ["B", "A"], final=True)
         assert "The person on the right speaks toward the left side of the frame with a surprised expression" in ip
-        assert "The person on the left listens with lips closed and a gentle closed-mouth smile, looking at the speaker." in ip
+        assert "The person on the left listens with lips closed and a gentle closed-mouth smile." in ip
+        assert ("The person on the left looks toward the right and the person on the right looks toward the left: the two face each other "
+                "in three-quarter view, eyes meeting; every face stays visible to the camera (no full side profile, no back view).") in ip
         assert "Keep both heads where they are in Picture 1" in ip and "Exactly 2 people" in ip and "James raises" not in ip
         ip1 = video.identity_prompt(s, 1, video.layout_slots(s, 1, ["A", "B"]), ["A", "B"], final=True)
         assert "The person on the left speaks toward the right side of the frame with a warm and excited expression" in ip1
@@ -3387,9 +3395,11 @@ def test_duo_sides_stay_the_same_and_the_listener_faces_the_speaker():
         cp = video.compose_prompt(s, 2, ["B", "A"], place_image=3)
         assert "The person from image 1 is on the right and speaks toward the left side of the frame" in cp
         assert "The person from image 2 is on the left, turned toward the speaker, and listens with lips closed" in cp
-        assert "James raises" not in cp and "Exactly 2 people" in cp
+        assert "The person on the left looks toward the right and the person on the right looks toward the left: the two face each other" in cp
+        assert "toward the camera" not in cp and "James raises" not in cp and "Exactly 2 people" in cp
         ce = video.cut_edit_prompt(s, 3, ["A", "C"], "cut")
         assert "is on the left, turned toward the right side of the frame, speaking" in ce and "listening with lips closed" in ce
+        assert "the two face each other in three-quarter view, eyes meeting" in ce and "toward the camera" not in ce
         # 한 사람 컷도 그 사람이 나오는 투샷과 같은 쪽을 본다 (facing_of, 11-24 검토 D2): 한 번도 말하지 않는 니키(C)는 장면 3 투샷에서
         # 왼쪽을 보므로 바로 다음 장면 4 클로즈업도 왼쪽 (speaker_side 로는 오른쪽이라 시선이 튀었다)
         assert video.speaker_side(s, "C") == "right" and video.facing_of(s, 4, "C") == "left"
@@ -3700,7 +3710,8 @@ def test_g2_group_order_stays_the_same_through_the_conversation():
         assert [video.group_order(s, k, video.scene_people(s, k)) for k in (1, 2, 4)] == [["A", "B", "C"]] * 3
         sl = video.layout_slots(s, 4, ["C", "A", "B"])
         assert [x["id"] for x in sl] == ["A", "B", "C"] and [x["pos"] for x in sl] == ["on the left", "in the middle", "on the right"]
-        assert [x["facing"] for x in sl] == ["turned toward the right", "facing the camera", "turned toward the left"]
+        # 장면 4: 오른쪽 니키(C)가 왼쪽 베스(A)에게 → 가운데 제임스(B)는 말하는 니키 쪽(오른쪽)을 본다 (11-28 마주 보기)
+        assert [x["facing"] for x in sl] == ["turned toward the right", "turned toward the right", "turned toward the left"]
         # 그 사람들이 모두 나온 장면이 같은 구간에 없으면 이야기에 처음 나온 차례
         assert video.group_order(s, 6, ["C", "B", "A"]) == ["A", "B", "C"]
         # 넓은 장면이 다른 차례로 적혀 있으면 대사 컷도 그 차례
@@ -3715,9 +3726,11 @@ def test_g3_three_people_prompts():
         s = video.clean_dialogue_story(FAMILY, 60, exchange=True)
         sl = video.layout_slots(s, 4, video.scene_people(s, 4))            # 왼쪽 베스, 가운데 제임스, 오른쪽 니키(말하는 사람)
         lp = video.layout_prompt(s, 4, sl)
-        assert ("3 faceless mannequin figures, sitting, side by side, every head in three-quarter view toward the camera and the middle figure "
-                "looking at the camera: on the left a adult-sized figure turned toward the right; in the middle a adult-sized figure facing "
-                "the camera; on the right a child-sized figure turned toward the left.") in lp
+        assert ("3 faceless mannequin figures, sitting, side by side in conversation: each head is turned in three-quarter view toward the "
+                "figure it talks with or listens to (not a full side profile), the front of every head still visible to the camera: "
+                "on the left a adult-sized figure turned toward the right; in the middle a adult-sized figure turned toward the right; "
+                "on the right a child-sized figure turned toward the left.") in lp
+        assert "No head is in full side profile and no figure is seen from behind." in lp and "toward the camera" not in lp
         assert "All three heads and upper bodies are fully in frame" in lp and "clear empty space above the hair" in lp
         assert "Niki beams" not in lp and lp.endswith("Exactly 3 figures, no other figure or person.")
         # ② 앞의 두 사람(듣는 사람)만 입힐 때: 그 둘의 입을 다문 미소만 쓰고, 아직 얼굴 없는 오른쪽 형상은 '사람'이라 부르지 않는다
@@ -3728,6 +3741,9 @@ def test_g3_three_people_prompts():
         # ③ 세 번째 사람(말하는 니키)
         fp = video.finish_prompt(s, 4, sl, "C", ["A", "B"], final=True)
         assert "The person on the right speaks toward the left side of the frame with a happy expression" in fp and "Exactly 3 people" in fp
+        assert ("The person on the right and the person on the left face each other in three-quarter view, eyes meeting; the person in "
+                "the middle turns toward the person on the right; every face stays visible to the camera (no full side profile, no back "
+                "view).") in fp
         # 영상 글: 세 사람을 자리·외형으로, 말하는 사람은 하나, 나머지는 입을 다문 미소로 듣는다. 장면 글(action)은 넣지 않는다
         dp = video.duo_talk_prompt(s, 4, sl)
         assert dp.startswith("Medium group shot of three people in a conversation, all fully in frame the whole time.")
@@ -3735,20 +3751,88 @@ def test_g3_three_people_prompts():
         assert "The person on the right speaks to the person on the left, happy: the lips and jaw move clearly with the words." in dp
         assert ("The people on the left and in the middle only listen with lips closed and a gentle closed-mouth smile: their mouths stay "
                 "closed") in dp
+        assert ("The person on the right and the person on the left face each other in three-quarter view, eyes meeting; the person in "
+                "the middle turns toward the person on the right;") in dp and "They keep these eye lines the whole time." in dp
         assert "Niki beams" not in dp and "The camera stays completely still." in dp and len(dp) <= 3000
         # 모두에게 하는 말: 가운데 제임스가 모두에게 (카메라 쪽으로), 양쪽은 입을 다문다
         s2 = video.layout_slots(s, 2, video.scene_people(s, 2))
         assert "The person in the middle speaks to the others, cheerful" in video.duo_talk_prompt(s, 2, s2)
         assert video._act_sentence(s, 2, s2) == (
             "The person in the middle speaks to the others with a cheerful expression, the face turned toward the camera, lips slightly "
-            "parted. The others, on the left and on the right, listen with lips closed and a gentle closed-mouth smile, looking at the speaker.")
+            "parted. The others, on the left and on the right, listen with lips closed and a gentle closed-mouth smile. The people on the "
+            "left and on the right turn toward the person in the middle in three-quarter view; every face stays visible to the camera (no "
+            "full side profile, no back view).")
+        # 모두에게 말하는 가운데 사람은 카메라 쪽 (양쪽이 그 사람을 본다)
+        assert [x["facing"] for x in s2] == ["turned toward the right", "facing the camera", "turned toward the left"]
         # 구도 그림 없이 바로 그릴 때·앞 프레임을 고칠 때도 같은 자리 차례
         cp = video.compose_prompt(s, 4, ["C", "A", "B"])
         assert ("The three people are side by side: the person from image 2 on the left, the person from image 3 in the middle, "
                 "the person from image 1 on the right") in cp
         ce = video.cut_edit_prompt(s, 1, ["A", "B"], "cut")
-        assert "The three people are side by side: the person a calm neat woman around forty" in ce
+        # 자리 문장은 위에서 소개한 사람을 짧은 이름으로 (마주 보는 시선 문장이 늘어 장소 문장이 잘리지 않게, 11-28)
+        assert ("The three people are side by side: the calm neat woman around forty on the left, the tall lean man in the middle, "
+                "the twelve-year-old girl on the right.") in ce
+        assert "The person on the left and the person in the middle face each other in three-quarter view, eyes meeting" in ce
+        assert "The place: a sunny cottage kitchen" in ce and len(ce) <= video.STILL_PROMPT_MAX
         assert "listen with lips closed and a gentle closed-mouth smile" in ce and "Exactly 3 people" in ce
+
+
+def test_g4_conversation_cuts_face_each_other_and_monologues_stay_close_ups():
+    """11-28 사용자 결정 "마주 보는 투샷만": 대화 컷의 사람들은 카메라 쪽이 아니라 서로 마주 본다 (왼쪽 사람은 오른쪽, 오른쪽 사람은 왼쪽,
+    세 사람은 말하는 사람과 듣는 사람이 마주 보고 나머지는 말하는 사람 쪽). 얼굴은 늘 카메라에 보인다. 독백·한 사람 컷은 그대로"""
+    import copy as _copy
+    with duo_setting(True):
+        # 두 사람: 말하는 사람이 왼쪽이든(장면 1) 오른쪽이든(장면 2) 왼쪽 사람은 오른쪽, 오른쪽 사람은 왼쪽을 본다
+        d = video.clean_dialogue_story(_duo_pairs(), 48)
+        both = ("The person on the left looks toward the right and the person on the right looks toward the left: the two face each "
+                "other in three-quarter view, eyes meeting; every face stays visible to the camera (no full side profile, no back view).")
+        for k in (1, 2):
+            sl = video.layout_slots(d, k, video.scene_people(d, k))
+            assert [x["facing"] for x in sl] == ["turned toward the right", "turned toward the left"]
+            assert video.talk_facing(d, k, sl) == both
+            assert both in video.duo_talk_prompt(d, k, sl) and both in video.identity_prompt(d, k, sl, [x["id"] for x in sl], final=True)
+            lp = video.layout_prompt(d, k, sl)
+            assert "facing each other in conversation" in lp and "toward the camera" not in lp
+        sp1 = video.layout_slots(d, 1, video.scene_people(d, 1))
+        assert sp1[0]["id"] == d["scenes"][1]["speaker"]                                     # 장면 1 은 왼쪽 사람이 말한다
+        assert sp1[-1]["id"] == d["scenes"][2]["speaker"]                                    # 장면 2 는 오른쪽 사람이 말한다 (좌우는 같다)
+        # 세 사람: 말하는 사람과 듣는 사람이 마주 보고, 나머지는 말하는 사람 쪽. 가운데 사람의 쪽도 그에 맞춘다
+        f = video.clean_dialogue_story(FAMILY, 60, exchange=True)
+        s1 = video.layout_slots(f, 1, video.scene_people(f, 1))          # 왼쪽 베스(말함) → 가운데 제임스(들음), 오른쪽 니키
+        assert [x["facing"] for x in s1] == ["turned toward the right", "turned toward the left", "turned toward the left"]
+        assert video.talk_facing(f, 1, s1) == (
+            "The person on the left and the person in the middle face each other in three-quarter view, eyes meeting; the person on the "
+            "right turns toward the person on the left; every face stays visible to the camera (no full side profile, no back view).")
+        lp1 = video.layout_prompt(f, 1, s1)
+        assert "in the middle a adult-sized figure turned toward the left" in lp1 and "toward the camera" not in lp1
+        # 말 없는 넓은 장면의 세 사람은 예전 그대로 (가운데는 카메라 쪽, 시선 문장 없음)
+        s0 = video.layout_slots(f, 0, video.scene_people(f, 0))
+        assert [x["facing"] for x in s0] == ["turned toward the right", "facing the camera", "turned toward the left"]
+        assert video.talk_facing(f, 0, s0) == ""
+        assert "Every head is turned toward the camera or in three-quarter view; no figure is seen from behind." in video.layout_prompt(f, 0, s0)
+        # 듣는 쪽이 동물이면 사람들은 말하는 사람 쪽을 본다 (사람끼리 마주 본다고 쓰지 않는다)
+        pet = _copy.deepcopy(f)
+        pet["bible"]["characters"].append({"id": "D", "look": "a small white puppy with floppy ears"})
+        pet["scenes"][4]["listener"] = "D"
+        s4 = video.layout_slots(pet, 4, video.scene_people(pet, 4))
+        assert video.talk_facing(pet, 4, s4) == (
+            "The people on the left and in the middle turn toward the person on the right in three-quarter view; every face stays "
+            "visible to the camera (no full side profile, no back view).")
+        dp = _copy.deepcopy(d)
+        dp["bible"]["characters"].append({"id": "D", "look": "a small white puppy with floppy ears"})
+        dp["scenes"][2]["listener"] = "D"
+        sd = video.layout_slots(dp, 2, video.scene_people(dp, 2))
+        assert "face each other" not in video.talk_facing(dp, 2, sd) and "turns toward the person on the right" in video.talk_facing(dp, 2, sd)
+        # 독백 클로즈업·한 사람 컷은 그대로: 혼자, 화면 가장자리 쪽 3/4, 마주 보는 말 없음
+        assert f["scenes"][3]["monologue"] is True
+        one = video.layout_slots(f, 3, video.scene_people(f, 3))
+        assert len(one) == 1 and one[0]["facing"].startswith("turned slightly toward the ") and video.talk_facing(f, 3, one) == ""
+        for text in (video.talk_prompt(f, 3), video.cast_edit_prompt(f, 3), video.layout_prompt(f, 3, one),
+                     video.identity_prompt(f, 3, one, ["C"], final=True), video.cast_prompt(f, "C")):
+            assert "face each other" not in text and "eyes meeting" not in text, text
+        assert "close-up of one person alone in the frame" in video.talk_prompt(f, 3)
+        assert "The head is turned in three-quarter view toward the" in video.cast_edit_prompt(f, 3)
+        assert "Every head is turned toward the camera or in three-quarter view" in video.layout_prompt(f, 3, one)
 
 
 def _variant_story():

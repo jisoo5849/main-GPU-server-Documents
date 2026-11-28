@@ -1325,13 +1325,15 @@ This film has spoken dialogue in Korean. The voices are recorded first, one fixe
 # 입을 다물고 들었다). 독백(혼잣말·생각·전화·관객에게)은 같은 장소에 다른 사람이 있어도 말하는 사람 혼자 클로즈업(LTX).
 # 카메라는 고정: 대사 영상 글의 삼각대 문장과 부딪히던 'very slowly pushing camera' 는 뺐다. 듣는 얼굴은 같은 화면에 보여 따로 컷하지 않는다.
 # 11-25 사용자 결정 "방식 바꾸기": 장면마다 그 자리에 있는 사람(present)을 모델이 적는다. 대화 컷의 characters 는 present 에서 고르고,
-# 예전에 괄호로 적던 짐작 설명(앞 장면의 사람은 떠나거나 없다고 적히기 전까지 그 자리에 있다)은 present 규칙으로 옮겼다
+# 예전에 괄호로 적던 짐작 설명(앞 장면의 사람은 떠나거나 없다고 적히기 전까지 그 자리에 있다)은 present 규칙으로 옮겼다.
+# 11-28 사용자 결정 "마주 보는 투샷만": 대화 컷의 사람들은 카메라 쪽이 아니라 서로를 본다 (말하는 사람과 듣는 사람이 3/4 로 마주 보고
+# 나머지는 말하는 사람 쪽). 얼굴 입히기·소품 검사·입 맞춤이 얼굴과 입을 봐야 해서 옆얼굴·뒷모습은 막는다
 DIALOGUE_EXTRA_DUO = """
 This film has spoken dialogue in Korean. The voices are recorded first, one fixed voice per character, and each speaking shot is lip-synced to its recorded line. Follow these extra rules:
 - Every character who speaks also has "name_ko" (the Korean name or role word, for example "니키" or "할아버지"), "voice" (an English description for a voice designer: age, gender, pitch, timbre, pace and manner, at most 40 words; never name a real person, actor or famous voice), "voice_ko" (a short Korean description of the voice) and "sample_ko" (two short Korean sentences, 20 to 40 characters in all, that this character would really say, in the character's own manner of speaking and age; it is recorded once to fix the voice).
 - Each scene also has "kind", "speaker", "listener", "line_ko" and "emotion":
   - "talk": one character speaks one line, seen speaking on screen. "speaker" is the speaker's id. "listener" says whom the line is spoken to: the id of the person spoken to, "everyone" when the speaker talks to everyone in the place at once, or "nobody" for a monologue (thinking aloud, talking to oneself, a phone call, speaking to the audience, calling to someone who is not in the place, such as a voice behind a door or someone who has just left: nobody in the place is spoken to). Only someone who is in the place (in "present"), a person or an animal, can be "listener"; a line spoken to an animal names that animal.
-    - A line spoken to someone or to everyone is a conversation, so the people talking together are all seen: "characters" is the speaker first, then the person spoken to, then the others in "present", at most three people. With two people the shot is a "medium two-shot"; with three people it is a "medium group shot": every upper body fully in frame, side by side or seated around a table, every face in three-quarter view toward the camera, and a still camera. The others listen with their mouths closed.
+    - A line spoken to someone or to everyone is a conversation, so the people talking together are all seen: "characters" is the speaker first, then the person spoken to, then the others in "present", at most three people. With two people the shot is a "medium two-shot"; with three people it is a "medium group shot": every upper body fully in frame, side by side or seated around a table, the speaker and the person spoken to turned toward each other in three-quarter view with their eyes meeting, like a two-shot in a film, the others turned toward the speaker, every face still visible to the camera (never a full side profile, never a back view), and a still camera. The others listen with their mouths closed.
     - A monologue is a close-up of the speaker alone, even when other people are in the place: "characters" is exactly [speaker], "listener" is "nobody", and the shot is a close-up or a medium close-up of the speaker (never a medium or wider shot), the face in three-quarter view, with a still camera. Its "action" describes only the speaker and never mentions the other people (no other names, no "glances at her mother", no "looks at him"), because anyone it mentions is drawn into the close-up. Its "shot" frames only the speaker too: nobody else blurred in the background or seen over a shoulder.
     - "action" describes the faces, the eyes and small head movements while speaking. Never more than three people in a talk scene.
   - "shot": every other scene (the place, walking together, an insert, a reveal). It may carry a voice-over line, heard while the speaker is far away, seen from behind or off-screen: then "speaker" is that character and "line_ko" is the line; otherwise both are "". "listener" is "" in a shot scene. A line from someone who is not seen (a voice behind a door, from another room, on the phone) is always such a "shot", never a "talk" scene.
@@ -4057,16 +4059,24 @@ def cut_edit_prompt(story: dict, i: int, ref_ids: list[str], seam: str | None = 
     pair = talk_pair(story, i)
     if pair:
         # 두 사람 대사 컷: 구도 그림·소리 자리와 같은 좌우 (오른쪽을 보는 사람이 왼쪽 자리), 듣는 사람은 입을 다문다
+        # 11-28: 카메라 쪽이 아니라 서로 마주 본다 (talk_facing)
         face_of = _pair_sides(story, i, pair)
         sp_pos = "left" if face_of[pair[0]] == "right" else "right"
         parts.append(f"The person {_who(story, pair[0])} is on the {sp_pos}, turned toward the {face_of[pair[0]]} side of the frame, "
                      f"speaking; the person {_who(story, pair[1])} is on the {_opposite(sp_pos)}, turned toward the speaker, listening "
-                     f"with {LISTEN_FACE}; both faces in three-quarter view toward the camera.")
+                     f"with {LISTEN_FACE}.")
+        parts.append(talk_facing(story, i, layout_slots(story, i, pair)))
     elif talk_group(story, i):
-        # 세 사람 대사 컷: 구도 그림·말하는 사람 칸(InfiniteTalk 마스크 1)과 같은 자리 차례 (group_order)
+        # 세 사람 대사 컷: 구도 그림·말하는 사람 칸(InfiniteTalk 마스크 1)과 같은 자리 차례 (group_order). 누가 누구를 보는지는 _act_sentence.
+        # 자리 문장은 위에서 소개한 사람을 짧은 이름(외형의 머리 구절)으로 부른다: 마주 보는 시선 문장(11-28)이 늘어 상한에서 장소 문장이
+        # 잘렸다. 짧은 이름이 겹치면 예전처럼 긴 이름
         slots = layout_slots(story, i, people)
-        parts.append("The three people are side by side: " + ", ".join(f"the person {_who(story, s['id'])} {s['pos']}" for s in slots)
-                     + "; every face in three-quarter view toward the camera.")
+        short = {s["id"]: _short(story, s["id"]) for s in slots}
+        if len(set(short.values())) == len(short) and all(short.values()):
+            names = {c: f"the {v}" for c, v in short.items()}
+        else:
+            names = {s["id"]: f"the person {_who(story, s['id'])}" for s in slots}
+        parts.append("The three people are side by side: " + ", ".join(f"{names[s['id']]} {s['pos']}" for s in slots) + ".")
         parts.append(_act_sentence(story, i, slots))
     if seam == SEAM_JUMP:
         parts.append(f"The place is now: {place} Time: {sc.get('time') or b['time']} Light: {b['light']}")
@@ -4130,14 +4140,14 @@ def compose_prompt(story: dict, i: int, ref_ids: list[str], place_image: int | N
         parts.append(f"The person from image {ref_ids.index(sp) + 1} is on the {sp_pos} and speaks toward the {face_of[sp]} side of the "
                      f"frame with a {sc.get('emotion') or 'natural'} expression, the face in three-quarter view, lips slightly parted.")
         parts.append(f"{who_lis[:1].upper()}{who_lis[1:]} is on the {_opposite(sp_pos)}, turned toward the speaker, and listens with "
-                     f"{LISTEN_FACE}. Both faces are in three-quarter view toward the camera.")
+                     f"{LISTEN_FACE}.")
+        parts.append(talk_facing(story, i, layout_slots(story, i, pair)))
     elif talk and talk_group(story, i):
         # 세 사람 대사 컷 (구도 그림 없이 바로 그릴 때): 구도 그림·말하는 사람 칸(InfiniteTalk 마스크 1)과 같은 자리 차례 (group_order)
         slots = layout_slots(story, i, people)
         names = {c: (f"the person from image {ref_ids.index(c) + 1}" if c in ref_ids else f"the person {_who(story, c)}")
                  for c in people}
-        parts.append("The three people are side by side: " + ", ".join(f"{names[s['id']]} {s['pos']}" for s in slots)
-                     + "; every face in three-quarter view toward the camera.")
+        parts.append("The three people are side by side: " + ", ".join(f"{names[s['id']]} {s['pos']}" for s in slots) + ".")
         parts.append(_act_sentence(story, i, slots))
     elif talk:
         parts.append(f"The person from image {ref_ids.index(sp) + 1} speaks toward the {facing_of(story, i, sp)} side of the frame "
@@ -4267,7 +4277,7 @@ def layout_slots(story: dict, i: int, ids: list[str]) -> list[dict]:
     elif n == 3:
         order = _seat_order(story, i, ids) if _seated(story) else list(ids)
         pos = ["on the left", "in the middle", "on the right"]
-        face = ["turned toward the right", "facing the camera", "turned toward the left"]
+        face = ["turned toward the right", _middle_facing(story, i, order), "turned toward the left"]
     else:
         # 넷 이상(넓은 장면)도 두세 사람 규칙의 이야기면 같은 장소 구간의 자리 지도를 따른다 (5차 검토: 적힌 차례 그대로 써서 대화 컷의 좌우와
         # 뒤집혔다 — 180도 규칙). 방향은 모두 서로를 향한다
@@ -4276,6 +4286,51 @@ def layout_slots(story: dict, i: int, ids: list[str]) -> list[dict]:
         pos = [f"{nth[k] if k < len(nth) else str(k + 1) + 'th'} from the left" for k in range(n)]
         face = ["turned toward the others"] * n
     return [{"id": c, "pos": pos[k], "size": figure_size(looks[c]), "facing": face[k]} for k, c in enumerate(order)]
+
+
+def _middle_facing(story: dict, i: int, order: list[str]) -> str:
+    """세 사람 자리의 가운데 사람이 보는 쪽. 세 사람 대사 컷이면 서로 마주 보는 연출(11-28 사용자 결정 "마주 보는 투샷만"):
+    가운데가 말하는 사람이면 듣는 사람 쪽, 듣는 사람이거나 대화에 끼지 않은 사람이면 말하는 사람 쪽. 모두에게 하는 가운데 사람·대사 없는
+    넓은 장면은 예전처럼 카메라 쪽 (양쪽 끝 사람은 늘 안쪽을 본다)"""
+    sc = story["scenes"][i] if 0 <= i < len(story.get("scenes") or []) else {}
+    sp, lis = sc.get("speaker"), sc.get("listener")
+    if sc.get("kind") != "talk" or sp not in order or not talk_group(story, i):
+        return "facing the camera"
+    toward = (lis if lis in order and lis != sp else None) if order[1] == sp else sp
+    if toward is None:
+        return "facing the camera"
+    return "turned toward the right" if order.index(toward) > 1 else "turned toward the left"
+
+
+# 두세 사람 대사 컷에서 얼굴을 지키는 말 (11-28): 서로 마주 보되 옆얼굴·뒷모습이 되면 얼굴 입히기·소품 검사·입 맞춤이 얼굴과 입을 못 본다.
+# 편집 지시문 상한(STILL_PROMPT_MAX)이 빠듯해 짧게 쓴다 (세 사람 고쳐 잇기 글이 길면 장소 문장이 잘린다)
+FACES_STAY_VISIBLE = "every face stays visible to the camera (no full side profile, no back view)"
+
+
+def talk_facing(story: dict, i: int, slots: list[dict]) -> str:
+    """두세 사람 대사 컷의 시선 문장 (11-28 사용자 결정 "마주 보는 투샷만": 실제 영화·애니처럼 서로 얼굴을 마주 보며 말한다).
+    slots 는 layout_slots 차례(왼쪽→오른쪽)라 좌우가 180도 규칙(pair_facing·group_order)과 같다: 두 사람은 왼쪽 사람이 오른쪽을, 오른쪽
+    사람이 왼쪽을 본다. 세 사람은 말하는 사람과 듣는 사람이 마주 보고 나머지는 말하는 사람 쪽을 본다. 듣는 쪽이 동물이거나 모두에게 하는
+    말이면 사람들이 말하는 사람 쪽을 본다. 대사 컷이 아니면 빈 글"""
+    sc = story["scenes"][i]
+    sp = next((s for s in slots if s["id"] == sc.get("speaker")), None)
+    if sc.get("kind") != "talk" or sp is None or len(slots) < 2:
+        return ""
+    others = [s for s in slots if s is not sp]
+    lis = next((s for s in others if s["id"] == sc.get("listener")), None)
+    if lis is None and len(others) == 1 and sc.get("listener") in (None, "", "everyone"):
+        lis = others[0]
+    if len(slots) == 2 and lis:
+        left, right = slots
+        return (f"The person {left['pos']} looks toward the right and the person {right['pos']} looks toward the left: the two face "
+                f"each other in three-quarter view, eyes meeting; {FACES_STAY_VISIBLE}.")
+    rest = [s for s in others if s is not lis]
+    out = [f"The person {sp['pos']} and the person {lis['pos']} face each other in three-quarter view, eyes meeting"] if lis else []
+    if rest:
+        out.append(f"{'the person' if len(rest) == 1 else 'the people'} {' and '.join(s['pos'] for s in rest)} "
+                   f"turn{'s' if len(rest) == 1 else ''} toward the person {sp['pos']}" + ("" if lis else " in three-quarter view"))
+    text = "; ".join(out + [FACES_STAY_VISIBLE]) + "."
+    return text[:1].upper() + text[1:]
 
 
 def _frame_hint(rank: int | None, n: int, duo: bool = False) -> str:
@@ -4331,18 +4386,22 @@ def layout_prompt(story: dict, i: int, slots: list[dict]) -> str:
         s = slots[0]
         parts.append(f"One {s['size']} faceless mannequin figure, {pose}, {s['facing']}, {s['pos']} of the frame.")
     elif duo and n == 2:
-        # 두 사람 대사 컷: 서로 마주 보되 두 얼굴 모두 카메라 쪽 3/4 (입 맞춤이 두 입을 다 봐야 하고, 검사가 두 얼굴을 센다)
-        parts.append(f"2 faceless mannequin figures, {pose}, turned toward each other, both faces in three-quarter view toward the camera: "
+        # 두 사람 대사 컷 (11-28 사용자 결정 "마주 보는 투샷만"): 영화·애니의 투샷처럼 서로 마주 본다. 왼쪽 형상은 오른쪽, 오른쪽 형상은
+        # 왼쪽을 본다(layout_slots). 옆얼굴은 막는다: 입 맞춤이 두 입을 다 봐야 하고, 얼굴 입히기·검사가 두 얼굴을 본다
+        parts.append(f"2 faceless mannequin figures, {pose}, facing each other in conversation: each head is turned toward the other "
+                     "figure in three-quarter view (not a full side profile), the front of both heads still visible to the camera: "
                      + "; ".join(f"{s['pos']} a {s['size']} figure {s['facing']}" for s in slots) + ".")
     elif duo:
-        # 세 사람 대사 컷 (11-24 X12·X13): 나란히, 모든 머리가 카메라 쪽 3/4, 가운데는 카메라를 본다 (InfiniteTalk 마스크가 화면을
-        # 세 칸으로 나누므로 자리가 겹치지 않게)
-        parts.append(f"3 faceless mannequin figures, {pose}, side by side, every head in three-quarter view toward the camera and the middle "
-                     "figure looking at the camera: " + "; ".join(f"{s['pos']} a {s['size']} figure {s['facing']}" for s in slots) + ".")
+        # 세 사람 대사 컷 (11-24 X12·X13, 11-28 마주 보기): 나란히 (InfiniteTalk 마스크가 화면을 세 칸으로 나누므로 자리가 겹치지 않게),
+        # 말하는 사람과 듣는 사람이 서로를, 나머지는 말하는 사람을 본다 (가운데 사람의 쪽은 _middle_facing)
+        parts.append(f"3 faceless mannequin figures, {pose}, side by side in conversation: each head is turned in three-quarter view toward "
+                     "the figure it talks with or listens to (not a full side profile), the front of every head still visible to the camera: "
+                     + "; ".join(f"{s['pos']} a {s['size']} figure {s['facing']}" for s in slots) + ".")
     else:
         parts.append(f"{n} faceless mannequin figures, {pose}: " + "; ".join(f"{s['pos']} a {s['size']} figure {s['facing']}" for s in slots) + ".")
     parts.append("Each figure has a smooth blank head with no face and no hair, and plain matte light grey clothes, like an artist's mannequin.")
-    parts.append("Every head is turned toward the camera or in three-quarter view; no figure is seen from behind.")
+    parts.append("No head is in full side profile and no figure is seen from behind." if duo else
+                 "Every head is turned toward the camera or in three-quarter view; no figure is seen from behind.")
     parts.append(_frame_hint(shot_rank(sc.get("shot") or ""), n, duo=duo))
     for cid in dict.fromkeys(sc.get("characters") or []):
         if cid in looks and is_animal_look(looks[cid]):
@@ -4403,11 +4462,12 @@ def _act_sentence(story: dict, i: int, slots: list[dict], only: list[str] | None
                             f"The person {s['pos']} listens with {LISTEN_FACE}, looking toward the "
                             f"{'right' if k > slots.index(s) else 'left'} side of the frame."
                             for s in slots if s["id"] in only)
+        # 다 입힌 그림(또는 바로 그리기·고쳐 잇기)은 서로 마주 보는 시선 문장까지 (11-28 talk_facing, 예전 'looking at the speaker' 를 대신한다)
         speak = _speak_sentence(story, i, slots, slot)
         if len(others) == 1:
-            return f"{speak} The person {others[0]['pos']} listens with {LISTEN_FACE}, looking at the speaker."
-        return (f"{speak} The others, {others[0]['pos']} and {others[1]['pos']}, listen with {LISTEN_FACE}, "
-                "looking at the speaker.")
+            return f"{speak} The person {others[0]['pos']} listens with {LISTEN_FACE}. {talk_facing(story, i, slots)}".rstrip()
+        return (f"{speak} The others, {others[0]['pos']} and {others[1]['pos']}, listen with {LISTEN_FACE}. "
+                f"{talk_facing(story, i, slots)}").rstrip()
     if sc.get("kind") == "talk" and slot:
         mood = sc.get("emotion") or "natural"
         return (f"The person {slot['pos']} speaks toward the {facing_of(story, i, sp)} side of the frame with a {mood} expression, "
@@ -4464,6 +4524,9 @@ def finish_prompt(story: dict, i: int, slots: list[dict], cid: str, done: list[s
     if heads:
         # 세 사람 대사 컷의 세 번째 사람: 말하는 사람이면 말하는 표정, 듣는 사람이면 입을 다문 미소 (11-24 X13: 첫 화면의 표정을 영상이 이어 간다)
         parts.append(_act_sentence(story, i, slots, only=[cid]))
+        if final:
+            # 마지막 사람까지 입히면 모두가 사람이라 서로 마주 보는 시선 문장을 쓴다 (11-28)
+            parts.append(talk_facing(story, i, slots))
     parts.append("Every face is visible, front or three-quarter.")
     if heads:
         parts.append(heads)
@@ -4677,6 +4740,10 @@ def duo_talk_prompt(story: dict, i: int, slots: list[dict]) -> str:
     else:
         parts.append(f"The people {' and '.join(s['pos'] for s in others)} only listen with {LISTEN_FACE}: their mouths stay closed and "
                      "their heads nod softly.")
+    # 11-28 사용자 결정 "마주 보는 투샷만": 영상 내내 서로 마주 본다 (첫 화면과 같은 시선)
+    facing = talk_facing(story, i, slots)
+    if facing:
+        parts += [facing, "They keep these eye lines the whole time."]
     parts += ["Natural blinking and small head movements.",
               "The camera stays completely still.",
               f"The place: {place}{'' if place.endswith(('.', '!', '?')) else '.'} Time: {sc.get('time') or b['time']} Light: {b['light']}"]
