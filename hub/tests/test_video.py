@@ -20,6 +20,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app import crew, crew_lib, promptx, video  # noqa: E402
 from app.config import settings  # noqa: E402
 
+# 11-26: 기존 구성안·렌더 시험의 가짜 모델은 구성안 답만 준다. 정본 인물 영화의 제작진 초안(CREW_CAST_MODE=safe)은
+# test_storyboard_film_crew_same_ctx 등 cast 시험이 설정을 켜고 따로 본다
+settings.crew_cast_mode = "off"
+
 I2V = video.profile_of("wan22_i2v")[1]
 T2V = video.profile_of("wan22_t2v")[1]
 FRAME = {"subject": "a glass perfume bottle", "where": "center", "setting": "a marble table", "people": 0,
@@ -7293,6 +7297,123 @@ def test_fe_01_dislike_words_refuse_a_look_in_the_said_phrase():
     assert cast_lib.said_text("원래 그림체 그대로") == ""
     # 요청 글 예비 길은 넓히지 않았다
     assert not cast_lib._negated("반실사는 싫어, 애니로", 0, 3)
+
+
+# ── 정본 인물 장면 제작진 (11-26, CREW_CAST_MODE) ─────────────────────────
+@contextlib.contextmanager
+def cast_mode(mode):
+    saved = settings.crew_cast_mode
+    settings.crew_cast_mode = mode
+    try:
+        yield
+    finally:
+        settings.crew_cast_mode = saved
+
+
+CAST_LOOK = {"fit_menu": True, "ko": {"plan": "숲길의 아침입니다.", "direction": "인물을 화면 왼쪽에 둡니다.",
+                                      "camera_lighting": "부드러운 아침 햇빛입니다.", "details": "옅은 안개가 낍니다."},
+             "notes_en": ["Niki in the left third of the frame on the forest path", "Soft low morning sun through the trees",
+                          "Pale mist between the far trunks", "A calm and gentle mood over the whole path"]}
+
+
+def test_render_keeps_cast_clips_out_of_crew():
+    with cast_mode("safe"):
+        result, calls, turns = run_render([{"ko": KO, "prompt": MOTION}], username="alice", slug="alice-main",
+                                          text="니키가 카페 창가에서 책장을 넘기는 영상", profile_id="wan22_i2v", crew=True)
+    assert len(calls) == 1 and result["crew"] is None                     # 영상 메뉴에는 정본 장면 분야가 없다 (KeyError 없이)
+    assert "choices" not in calls[0]["format"]["properties"]
+    assert any("영상 제작진 단계를" in a and "캐릭터 정본" in a for a in result["advice"])
+
+
+def test_storyboard_film_crew_same_ctx():
+    from app import cast_lib
+    payloads, turns = [], []
+    fake = types.ModuleType("app.llm")
+
+    class HelperBusy(Exception):
+        pass
+
+    story = {"title_ko": "숲길", "logline_ko": "니키가 숲길을 걷는다.",
+             "bible": {"characters": [{"id": "niki", "look": "a girl"}], "places": [{"id": "P1", "look": "a winding forest path"}],
+                       "time": "morning", "light": "soft daylight", "style": "", "style_said": ""},
+             "music": {"tags": "calm piano", "bpm": 70, "key": "D major", "ko": "잔잔한 피아노"},
+             "scenes": [{"seconds": 14, "place": "P1", "characters": ["niki"], "continues": False, "shot": "wide shot",
+                         "action": "She walks along the path.", "sound": "footsteps", "ko": "걷는다"},
+                        {"seconds": 14, "place": "P1", "characters": [], "continues": False, "shot": "wide shot",
+                         "action": "The empty path in the morning.", "sound": "birds", "ko": "빈 숲길"}]}
+
+    @contextlib.asynccontextmanager
+    async def llm_turn(user, ip, model, purpose, wait_seconds=None):
+        turns.append(purpose)
+
+        async def call(payload):
+            payloads.append(payload)
+            if "choices" in (payload.get("format") or {}).get("properties", {}):
+                return {"message": {"content": json.dumps(fit(CAST_LOOK, payload))}}
+            return {"message": {"content": json.dumps(story)}}
+        yield call
+
+    fake.HelperBusy, fake.llm_turn = HelperBusy, llm_turn
+    saved = sys.modules.get("app.llm")
+    sys.modules["app.llm"] = fake
+    try:
+        with cast_mode("safe"):
+            r = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", "니키가 숲길을 걷는 영상", seconds=28))
+        with cast_mode("off"):
+            n = len(payloads)
+            off = asyncio.run(video.storyboard({"id": 1}, "127.0.0.1", "studio", "studio-chat", "니키가 숲길을 걷는 영상", seconds=28))
+    finally:
+        if saved is None:
+            sys.modules.pop("app.llm", None)
+        else:
+            sys.modules["app.llm"] = saved
+    assert turns[0] == "video_story" and turns.count("video_story") == 2           # 영화 초안은 같은 차례 안에서 (새 GPU 차례 0회)
+    assert payloads[0]["messages"][0]["content"].startswith("You are a small production crew of experts preparing the shared look")
+    ctxs = {p["options"].get("num_ctx") for p in payloads[:n]}
+    assert len(ctxs) == 1 and None not in ctxs                                    # 초안과 구성안의 num_ctx 가 같다
+    assert payloads[0]["options"]["temperature"] == 0.6
+    user = payloads[1]["messages"][1]["content"]
+    assert "Look plan from the crew (not the user's words; never copy it into style_said" in user
+    assert "Must-keep details from the user" not in user
+    st = r["story"]
+    assert st["bible"]["style_said"] == "" and st["bible"]["style"] == cast_lib.library()[0]["style"]
+    look = st["crew"]
+    assert look["light"] and look["light"] in st["bible"]["light"] and len(st["bible"]["light"]) <= video.FILM_LIGHT_MAX
+    assert r["film_crew"]["used"] and r["film_crew"]["cast"] == ["niki"] and r["film_crew"]["picked"]
+    # off: 예전과 같다 (초안 없음, 빛 계획 없음)
+    assert off["film_crew"] is None and "crew" not in off["story"] and off["story"]["bible"]["light"] == "soft daylight"
+    assert not any("crew of experts" in p["messages"][0]["content"] for p in payloads[n:])
+    assert all("num_ctx" not in p["options"] or p["options"]["num_ctx"] == video.story_num_ctx(
+        video.story_base("니키가 숲길을 걷는 영상", "", 28, cast_lib.known_in("니키가 숲길을 걷는 영상"))[0],
+        video.story_counts(28)[2], dialogue=False) for p in payloads[n:])
+
+
+def test_place_card_prompt_adds_air():
+    st = video.clean_story(STORY_OK, 30)
+    plain = video.place_card_prompt(st, "P1")
+    assert "Air:" not in plain
+    st["crew"] = {"air": "pale morning mist drifting between the trunks"}
+    p = video.place_card_prompt(st, "P1")
+    assert "Air: pale morning mist drifting between the trunks." in p and "nobody in it" in p and p.endswith("No text.")
+    assert "There is no person, no animal and no figure in the picture." in p
+
+
+def test_still_prompt_keeps_hands_sentence_with_crew_light():
+    import copy as _copy
+    st = video.clean_dialogue_story(_copy.deepcopy(DLG_OK), 48)
+    st["bible"]["light"] = "warm golden window light " * 12
+    look = {"light": "soft warm practical lamp light pooling on the table, " * 3, "air": "fine dust in the light",
+            "light_terms": ["lamp"]}
+    look["light"] = crew._clip(look["light"], crew.LOOK_LIGHT_MAX)
+    video.add_crew_look(st, look)
+    assert len(st["bible"]["light"]) <= video.FILM_LIGHT_MAX and st["bible"]["light"].endswith(look["light"])
+    for i in range(len(st["scenes"])):
+        people = video.scene_people(st, i)
+        if not people:
+            continue
+        cp = video.compose_prompt(st, i, [c for c in people][:2])
+        assert len(cp) <= video.STILL_PROMPT_MAX
+        assert "The hands are not visible or relaxed." in cp and cp.endswith(video.people_sentence(len(people)))
 
 
 if __name__ == "__main__":

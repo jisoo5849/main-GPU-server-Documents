@@ -229,3 +229,12 @@ LTX 라이선스는 그룹 매출 US$10M 미만 무료(`models/README_KO.md`, �
 (요청에 쓴 화풍 문장이 bible 의 look·light 에 안 들어갔다). 설정집에 `style` 한 줄(요청이 정한 화풍, 없으면 "photorealistic cinematic live action")을 더했다.
 사실이 아닌 화풍이면 모든 장면 글(`scene_notes` 의 Style 줄)과 장면 이미지 글(`scene_image_text`, 감독의 `scene_hint` 가 '사진' 대신 그 화풍의 한 컷으로 그리게 함)에 들어간다.
 실사면 기존 글 그대로다. 아직 모르는 것: Z-Image 가 '셀 셰이딩 3D + 손그림' 화풍을 그리는지, LTX 가 그 화풍을 움직이면서 유지하는지, 영상 글 확장 모델의 실사 안내가 화풍과 부딪치는지.
+
+### 7.9 정본 인물 영화의 제작진 초안 (11-26, `CREW_CAST_MODE=safe`)
+
+- 요청에 인물 라이브러리의 정본 인물이 나오면 구성안 차례(`video_story`) 안에서 구성안보다 먼저 영화 전체의 시간·빛·색·대기·분위기 초안 하나를
+  받는다(`crew.draft_film`, 분야 `cast_film`). 새 GPU 차례는 없고 호출이 1~2회 는다. 문맥 길이는 구성안과 같은 값이다(`story_num_ctx(…, extra=300)`).
+- 구성안 요청 글에 'Look plan from the crew …' 로 붙여 bible.time·bible.light 를 그 계획으로 쓰게 하고, 'Must-keep details from the user' 에는 넣지 않는다.
+- 고른 라이브러리 항목의 영문 원문을 `story.crew` 로 남긴다. bible.light 에 고른 조명이 없으면 덧붙여 320자로 묶고, 장소 그림에 `Air:` 를 더하며,
+  사람 없는 컷의 장면 그림 글은 장면마다 제작진을 돌리지 않고 이 계획을 쓴다(같은 장소 인물 컷과 빛을 맞춘다).
+- 자세한 규칙은 `docs/crew-mode.md` 의 '2026-11-26 캐릭터 정본 장면'.

@@ -1,5 +1,5 @@
 {
-  "version": "crew-knowledge-4",
+  "version": "crew-knowledge-5",
   "note": "제작진 모드(B2)의 분야 정의와 규칙. 단계마다 고를 선택지는 crew_library/*.jsonl(수천~수만 개)에서 요청마다 검색해 채운다. 문장은 직접 작성했고 외부 사전을 복사하지 않았다(GPL 원본 DENO 와 분리).",
   "global_rules": [
     "The user's words come first: keep every subject, object, action, count, color, name, genre, style, era, mood, weather, season and place the user gave, and let them decide the look. A menu choice never overrides the user's words.",
@@ -369,6 +369,203 @@
       ]
     }
   },
+  "cast_categories_note": "11-26 캐릭터 정본 장면(CREW_CAST_MODE): route 키워드 점수가 고르지 않게 categories 와 따로 둔다. 단계마다 only 묶음만 쓰고, 장르·소품·장소·제품·재질 단계는 없다. 라이브러리 화풍(rich warm colours)일 때 색 단계는 cast_palette_warm 묶음만 쓴다(사용자가 말한 색은 must 로 들어오되 화풍을 바꾸는 must_skip 묶음은 뺀다).",
+  "cast_categories": {
+    "cast_scene": {
+      "title": "캐릭터 정본 장면 (빛·카메라·색·분위기만)",
+      "rule": "The named characters are drawn by the system from fixed reference pictures. You decide only light, time and weather, camera distance and angle, the layout of the space, the colour of the light and surroundings, air and mood. Keep every character fully readable (medium shot or wider, face toward the camera, signature items visible). Name a character only with a place in the frame.",
+      "steps": [
+        {
+          "key": "lighting",
+          "title": "조명",
+          "facet": "lighting",
+          "only": [
+            "natural_daylight",
+            "practical_light",
+            "night_light",
+            "colored_light",
+            "light_effect",
+            "portrait_pattern"
+          ]
+        },
+        {
+          "key": "time_weather",
+          "title": "시간·날씨",
+          "facet": "time_weather"
+        },
+        {
+          "key": "camera",
+          "title": "카메라",
+          "facet": "camera",
+          "only": [
+            "shot_size",
+            "angle",
+            "lens_optics",
+            "focus_depth",
+            "camera_height",
+            "viewpoint"
+          ]
+        },
+        {
+          "key": "composition",
+          "title": "구도",
+          "facet": "composition",
+          "only": [
+            "balance",
+            "space_layout",
+            "layering",
+            "depth_scale",
+            "lines_shapes",
+            "symmetry_reflection",
+            "light_shadow_layout",
+            "interior_layout",
+            "landscape_layout"
+          ]
+        },
+        {
+          "key": "color",
+          "title": "색 팔레트",
+          "facet": "color_palette",
+          "only": [
+            "hue_family_warm",
+            "hue_family_neutral",
+            "time_of_day",
+            "season",
+            "weather",
+            "light_source",
+            "landscape_nature",
+            "forest",
+            "ocean",
+            "value_temperature",
+            "mood_palette"
+          ],
+          "must_skip": [
+            "duotone",
+            "tritone",
+            "harmony_monochrome",
+            "film_grade",
+            "fashion_beauty",
+            "textile_dye",
+            "art_medium",
+            "era_palette"
+          ]
+        },
+        {
+          "key": "atmosphere",
+          "title": "대기 효과",
+          "facet": "atmosphere",
+          "only": [
+            "particles",
+            "mist_fog",
+            "smoke_steam",
+            "water_effect",
+            "fire_light",
+            "festive_effect"
+          ]
+        },
+        {
+          "key": "mood",
+          "title": "분위기",
+          "facet": "mood_emotion",
+          "only": [
+            "mood_bright",
+            "mood_calm",
+            "mood_dark",
+            "mood_energetic",
+            "mood_nostalgic",
+            "mood_seasonal",
+            "mood_sensory",
+            "mood_surreal",
+            "seed_landscape_mood",
+            "seed_space_mood"
+          ]
+        }
+      ]
+    },
+    "cast_film": {
+      "title": "캐릭터 정본 영화 (빛·시간·색·분위기만)",
+      "rule": "The named characters are drawn by the system from fixed reference pictures. You decide only the time and weather, the light, the colour of the light and surroundings, the air and the mood shared by every scene of the film. Keep every character fully readable (soft light on the faces, signature items visible). Never describe a character.",
+      "steps": [
+        {
+          "key": "time_weather",
+          "title": "시간·날씨",
+          "facet": "time_weather"
+        },
+        {
+          "key": "lighting",
+          "title": "조명",
+          "facet": "lighting",
+          "only": [
+            "natural_daylight",
+            "practical_light",
+            "night_light",
+            "colored_light",
+            "light_effect",
+            "portrait_pattern"
+          ]
+        },
+        {
+          "key": "color",
+          "title": "색 팔레트",
+          "facet": "color_palette",
+          "only": [
+            "hue_family_warm",
+            "hue_family_neutral",
+            "time_of_day",
+            "season",
+            "weather",
+            "light_source",
+            "landscape_nature",
+            "forest",
+            "ocean",
+            "value_temperature",
+            "mood_palette"
+          ],
+          "must_skip": [
+            "duotone",
+            "tritone",
+            "harmony_monochrome",
+            "film_grade",
+            "fashion_beauty",
+            "textile_dye",
+            "art_medium",
+            "era_palette"
+          ]
+        },
+        {
+          "key": "atmosphere",
+          "title": "대기 효과",
+          "facet": "atmosphere",
+          "only": [
+            "particles",
+            "mist_fog",
+            "smoke_steam",
+            "water_effect",
+            "fire_light",
+            "festive_effect"
+          ]
+        },
+        {
+          "key": "mood",
+          "title": "분위기",
+          "facet": "mood_emotion",
+          "only": [
+            "mood_bright",
+            "mood_calm",
+            "mood_dark",
+            "mood_energetic",
+            "mood_nostalgic",
+            "mood_seasonal",
+            "mood_sensory",
+            "mood_surreal",
+            "seed_landscape_mood",
+            "seed_space_mood"
+          ]
+        }
+      ]
+    }
+  },
+  "cast_palette_warm": ["hue_family_warm", "hue_family_neutral"],
   "idea_prefer": {
     "lighting": [
       "natural_daylight",

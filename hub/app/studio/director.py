@@ -265,13 +265,14 @@ class RealDeps:
         except llm.HelperBusy as e:
             raise promptx.PromptxError(str(e), 503) from None
 
-    async def expand_image(self, user, ip, text, crew=None):
-        """이미지 프롬프트: 감독이 연 LLM 차례 안에서 제작진 초안 + 확장 (5.5). 차례를 못 얻으면 PromptxError(503)"""
+    async def expand_image(self, user, ip, text, crew=None, look_plan=""):
+        """이미지 프롬프트: 감독이 연 LLM 차례 안에서 제작진 초안 + 확장 (5.5). 차례를 못 얻으면 PromptxError(503).
+        look_plan 은 영화 전체 빛 계획 (긴 영상의 사람 없는 컷, 11-26)"""
         from .. import llm, promptx
         text = promptx.clean_input(text)
         try:
             async with llm.llm_turn(user, ip, settings.expand_model, "prompt_expand") as call:
-                return await promptx.expand_in_turn(call, text, "", "", crew)
+                return await promptx.expand_in_turn(call, text, "", "", crew, look_plan=look_plan)
         except llm.HelperBusy as e:
             raise promptx.PromptxError(str(e), 503) from None
 
@@ -417,6 +418,12 @@ def video_scene_image_text(story: dict, i: int, plan) -> str:
 def video_scene_has_person(story: dict, i: int) -> bool:
     from .. import video
     return video.scene_has_person(story, i)
+
+
+def film_look_plan(story: dict) -> str:
+    """구성안에 남은 영화 빛 계획(story.crew, 정본 장면 제작진)을 한 줄로 (crew.look_plan_text)"""
+    from .. import crew
+    return crew.look_plan_text(story.get("crew"))
 
 
 def needs_fix(violations: list[str]) -> bool:
@@ -1066,6 +1073,9 @@ class Director:
         story = r.get("story") if isinstance(r, dict) else None
         if not story or not story.get("scenes"):
             raise StepError("llm_error", "구성안을 만들지 못했습니다")
+        if r.get("film_crew"):
+            # 정본 인물 영화의 제작진 초안 (11-26): 메인에서 실제로 돌았는지는 이 기록과 llm_job.systems 로 본다
+            await store.event(turn["id"], "film_crew", r["film_crew"])
         await store.event(turn["id"], "story", {"scenes": len(story["scenes"]), "seconds": story.get("seconds"),
                                                 "violations": r.get("violations"), "rounds": r.get("rounds"),
                                                 "lines": sum(1 for sc in story["scenes"] if sc.get("line_ko")) if story.get("dialogue") else None})
@@ -1266,8 +1276,11 @@ class Director:
                         st["plan"] = None
                 if not chain and not st.get("scene_prompt"):
                     ctx.text = "장면 그림 글 쓰는 중"
+                    # 영화 빛 계획이 있으면 장면마다 제작진을 따로 돌리지 않고 그 계획을 쓴다: 같은 장소의 인물 컷(장소 그림 기반)과
+                    # 빛·색이 어긋나지 않게 (11-26)
+                    look = {"crew": False, "look_plan": film_look_plan(story)} if story.get("crew") else {}
                     r = await self._guard_llm(ctx, self.deps.expand_image(
-                        ctx.user, ip, video_scene_image_text(story, i, st.get("plan")) + "\n" + self.scene_hint(story)))
+                        ctx.user, ip, video_scene_image_text(story, i, st.get("plan")) + "\n" + self.scene_hint(story), **look))
                     if not (r.get("prompt") or "").strip():
                         raise StepError("llm_error", f"장면 {i + 1} 의 그림 글을 만들지 못했습니다")
                     st["scene_prompt"] = r["prompt"]

@@ -96,8 +96,9 @@ def idea_lines(text: str, rng=None, per_facet: int = 2) -> list[str]:
 
 
 def build_expand_messages(text: str, style: str = "", notes: str = "", ideas: bool = True, rng=None,
-                          said: str | None = None) -> list[dict]:
-    """said 는 사용자가 쓴 말 전부(요청 + 특징 칸)다. notes 에는 제작진 영문 메모가 더해질 수 있어 따로 받는다."""
+                          said: str | None = None, crew_plan: str = "", cast_block: str = "") -> list[dict]:
+    """said 는 사용자가 쓴 말 전부(요청 + 특징 칸)다. notes 에는 제작진 영문 메모가 더해질 수 있어 따로 받는다.
+    crew_plan(정본 장면 제작진 메모·영화 빛 계획)과 cast_block(정본 인물 외형)은 사용자 말 칸에 섞지 않고 따로 싣는다 (11-26)."""
     said = said if said is not None else f"{text} {notes}".strip()
     parts = [f"Request: {text}"]
     parts.append(f"Style (appended after your prompt by the system, do not repeat it): {style}" if style
@@ -107,6 +108,10 @@ def build_expand_messages(text: str, style: str = "", notes: str = "", ideas: bo
         parts.append("USER WORDS (top priority, they decide the look):\n" + "\n".join(dl))
     if notes:
         parts.append(f"Must-keep details (treat them like the request itself): {notes}")
+    if crew_plan:
+        parts.append(f"Crew look plan (light, camera and air only; it never changes the characters): {crew_plan}")
+    if cast_block:
+        parts.append(f"Fixed characters (copy each look word for word; the user's details win where they differ): {cast_block}")
     if hides_hands(said):      # 11-17: 규칙에 든 소매 예시가 손 숨김과 무관한 요청(우산 든 남자)의 프롬프트에 새어 나왔다
         parts.append(HIDDEN_HANDS_BLOCK.rstrip())
     if ideas:
@@ -429,11 +434,14 @@ CREW_SKIP_ADVICE = {
     "character": "캐릭터 정본이 있는 요청이라 정본 특징을 지키려고 제작진 모드를 쓰지 않았습니다.",
     "hidden_hands": "손 숨김 요청이라 제작진 모드를 쓰지 않았습니다.",
     "person": "사람이 나오는 요청이라 제작진 모드를 쓰지 않았습니다.",
+    "cast": "캐릭터 정본 장면이라 제작진 모드를 빛·시간·색·구도·분위기에만 썼습니다 (모습·옷·손·소품은 정본 그대로).",
 }
 
 
-def crew_route(text: str, notes: str = "", crew=None) -> tuple[dict | None, list[str]]:
-    """제작진 분야와 건너뛴 이유 안내. crew 는 None(설정을 따름) / True / False."""
+def crew_route(text: str, notes: str = "", crew=None, cast: bool = True) -> tuple[dict | None, list[str]]:
+    """제작진 분야와 건너뛴 이유 안내. crew 는 None(설정을 따름) / True / False.
+    cast 가 참이면 라이브러리 정본 인물 장면을 정본 장면 분야(cast_scene)로 보낸다 (CREW_CAST_MODE 가 off 가 아닐 때, 11-26).
+    영상 렌더러의 클립 움직임은 cast=False 로 부른다 (영상 메뉴는 제품·공간·풍경 움직임용이라 정본 장면은 계속 건너뛴다)."""
     from . import crew as crew_mod
 
     want_crew = settings.crew_mode != "off" and crew is not False
@@ -441,38 +449,57 @@ def crew_route(text: str, notes: str = "", crew=None) -> tuple[dict | None, list
     advice = []
     if want_crew and rt is None:
         reason = crew_mod.skip_reason(text, notes)
+        if reason == "character" and cast and settings.crew_cast_mode != "off":
+            rt = crew_mod.cast_route(text, notes)
+            reason = None if rt is not None else (crew_mod.cast_block_reason(text, notes) or reason)
         if reason:   # 분야가 없는 요청은 조용히 도우미로 가고, 건너뛴 이유가 분명할 때만 알린다
             advice.append(CREW_SKIP_ADVICE[reason])
     return rt, advice
 
 
-async def expand_in_turn(call, text: str, style: str = "", notes: str = "", crew=None) -> dict:
-    """이미 받은 GPU 차례(call) 안에서 확장한다. 영상 렌더러의 T2V 도 같은 차례 안에서 장면을 만들 때 쓴다."""
+async def expand_in_turn(call, text: str, style: str = "", notes: str = "", crew=None, look_plan: str = "") -> dict:
+    """이미 받은 GPU 차례(call) 안에서 확장한다. 영상 렌더러의 T2V 도 같은 차례 안에서 장면을 만들 때 쓴다.
+    look_plan 은 영화 전체 빛 계획 (스튜디오 긴 영상의 사람 없는 컷, 11-26): 'Crew look plan' 칸에 싣는다."""
+    from . import cast_lib
     from . import crew as crew_mod
 
     rt, crew_advice = crew_route(text, notes, crew)
     crew_info = None
     rounds, result, problems = 0, {}, []
     used_notes = notes
+    crew_plan, cast_block = look_plan, ""
+    cast = crew_mod.cast_by_id(rt.get("cast")) if rt is not None and rt.get("cast") else None
+    if cast is not None:
+        # 정본 인물 외형은 제작진 초안의 성패와 상관없이 따로 싣는다 (11-10 보강 과제 '정본 특징이 메뉴 선택보다 우선')
+        cast_block = "; ".join(f"{e['names'][-1]}: {e['look']}" for e in cast)
+        if style and style.strip() != cast_lib.library_style(cast):
+            rt = {**rt, "palette": None}      # 다른 그림체를 고른 그림은 따뜻한 색 묶음으로 묶지 않는다
     if rt is not None:
         # 같은 차례 안에서 제작진 초안을 먼저 받는다 (모델을 다시 올리지 않는다)
         try:
-            draft, crew_rounds, left = await crew_mod.draft(call, text, rt, style, notes)
+            draft, crew_rounds, left = await crew_mod.draft(call, text, rt, style, notes, cast=cast)
         except Exception:  # noqa: BLE001 - 초안이 어떻게 깨져도 기존 도우미로 돌아간다
             draft, crew_rounds, left = {}, 0, ["crew draft failed"]
         crew_info = {"category": rt["category"], "title": rt["title"], "rounds": crew_rounds,
                      "used": not left, "violations": left}
         if not left:
-            used_notes = crew_mod.merge_notes(notes, draft)
+            if cast is not None:
+                # 정본 장면 메모는 사용자 말(꼭 지킬 특징) 칸에 넣지 않는다
+                crew_plan = ". ".join(str(n).strip().rstrip(".") for n in draft.get("notes_en") or [] if str(n).strip())
+                crew_info["cast"] = rt["cast"]
+                crew_advice.append(CREW_SKIP_ADVICE["cast"])
+            else:
+                used_notes = crew_mod.merge_notes(notes, draft)
             crew_info.update(crew_mod.describe(draft, rt["category"]))
             crew_info["notes_en"] = [str(n) for n in draft.get("notes_en") or []]
         else:
             crew_advice.append("제작진 초안이 규칙을 통과하지 못해 기존 도우미로 처리했습니다.")
-    # 제작진 초안을 쓴 경우에는 이미 메뉴에서 골랐으므로 추가 아이디어를 주지 않는다.
+    # 제작진 초안을 쓴 경우에는 이미 메뉴에서 골랐으므로 추가 아이디어를 주지 않는다 (영화 빛 계획을 받은 컷도).
     # 아이디어 검색은 CPU 를 쓰므로 스레드에서 (허브는 포털·중계·ComfyUI 화면을 한 프로세스로 처리한다)
     said = f"{text} {notes}".strip()
     messages = await asyncio.to_thread(build_expand_messages, text, style, used_notes,
-                                       not (crew_info and crew_info.get("used")), None, said)
+                                       not (crew_info and crew_info.get("used")) and not look_plan, None, said,
+                                       crew_plan, cast_block)
     for rounds in range(1, settings.expand_repair_rounds + 2):
         # 생각 단계를 끄면 같은 결과를 훨씬 빨리 낸다 (메인 측정: 27b 확장 한 번 약 100초)
         data = await call({"messages": messages, "format": "json", "think": False,
@@ -491,7 +518,8 @@ async def expand_in_turn(call, text: str, style: str = "", notes: str = "", crew
 
 async def expand(user, ip: str, text: str, style: str = "", notes: str = "", crew=None) -> dict:
     """짧은 요청을 생성용 프롬프트로 늘린다. crew 는 제작진 모드(B2): None 이면 설정(CREW_MODE)을 따르고,
-    True/False 면 그 요청에 한해 켜거나 끈다 (분야 메뉴가 없는 요청과 캐릭터 정본 요청은 켜도 건너뛴다)."""
+    True/False 면 그 요청에 한해 켜거나 끈다 (분야 메뉴가 없는 요청과 라이브러리에 없는 캐릭터 정본 요청은 켜도 건너뛰고,
+    라이브러리 정본 인물 장면은 CREW_CAST_MODE 에 따라 빛·카메라·색·분위기만 고르는 정본 장면 분야로 간다)."""
     from . import llm   # llm → scheduler 를 불러오므로 순환을 피해 여기서
 
     text = clean_input(text)

@@ -152,6 +152,16 @@ lv = opview.long_view({"story": DUO_STORY, "scenes": [{}, {"duo": True, "clip_re
 assert lv["scenes"][1]["duo"] is True and lv["scenes"][1]["listener"] == "B" and lv["scenes"][0]["duo"] is None
 assert [(s["monologue"], s["to_all"]) for s in lv["scenes"]] == [(None, None), (False, False), (True, False), (False, True)]
 assert "duo_fallback" in opview.LONG_EVENT_KINDS and [e["kind"] for e in lv["events"]] == ["duo_fallback"]
+assert "crew" not in lv and "film" not in d["crew"]                                    # 영화 제작진이 안 돈 요청은 예전과 같다
+
+# ── 정본 인물 영화의 제작진 초안 (11-26): 긴 영상 보기에 빛 계획, 제작진 칸에 film_crew 기록 ──
+FILM_LOOK = {"time": "early morning", "light": "soft low sun through the trees", "air": "pale mist", "mood": "calm", "picked": []}
+FILM_EV = {"kind": "film_crew", "ts": NOW, "detail": {"category": "cast_film", "cast": ["niki"], "used": True, "rounds": 1,
+                                                       "picked": [], "violations": []}}
+lv = opview.long_view({"story": dict(DUO_STORY, crew=FILM_LOOK)}, [FILM_EV])
+assert lv["crew"] == FILM_LOOK and [e["kind"] for e in lv["events"]] == ["film_crew"]
+dfc = opview.build_detail(turn(work={"story": dict(DUO_STORY, crew=FILM_LOOK)}), [FILM_EV], [], [], [], [], None)
+assert dfc["crew"]["film"][0]["cast"] == ["niki"] and dfc["crew"]["film_look"] == FILM_LOOK and dfc["long"]["crew"] == FILM_LOOK
 
 # ── 템플릿: 믿지 않는 글은 이스케이프되고, 화면이 깨지지 않는다 ──
 lib = os.environ.get("JINJA_LIB")
@@ -205,4 +215,6 @@ if jinja2 is not None:
     html = env.get_template("admin_studio_turn.html").render(d=dl, pretty=opview.pretty, short=opview.short, job_prompt=None, **ctx)
     assert html.count("두세 사람 대사(InfiniteTalk)") == 1 and "duo_fallback" in html
     assert html.count("독백(혼자 클로즈업)") == 1 and html.count("모두에게 하는 말") == 1
+    html = env.get_template("admin_studio_turn.html").render(d=dfc, pretty=opview.pretty, short=opview.short, job_prompt=None, **ctx)
+    assert "제작진 빛 계획" in html and "soft low sun through the trees" in html and "film_crew" in html
 print("ok studio_opview")

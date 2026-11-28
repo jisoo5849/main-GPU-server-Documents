@@ -66,9 +66,16 @@ class Settings:
     # off 는 서버에서 끈다(패널 값은 무시). 그 밖의 값은 auto: 패널이 crew 로 true/false 를 보내면 그 요청만 따르고, 안 보내면 켠다.
     crew_mode = "off" if _env("CREW_MODE", "auto").strip().lower() in ("off", "0", "false", "no") else "auto"
     crew_repair_rounds = _int("CREW_REPAIR_ROUNDS", 1)
-    # 캐릭터 정본 이름이 요청에 있으면 제작진 모드를 건너뛴다 (정본 특징이 메뉴 선택보다 우선). 쉼표로 구분.
+    # 캐릭터 정본 이름. 인물 라이브러리(cast_library.json)에 있는 이름은 정본 장면 분야(cast)로 보내고, 없는 이름은 제작진 모드를
+    # 건너뛴다 (정본 특징이 메뉴 선택보다 우선). 쉼표로 구분.
     crew_guard_names = _env("CREW_GUARD_NAMES", "니키,niki,푸토르,putor,퀼린스,quillins,제임스,james,베스,beth,타오바,taoba,"
                                                 "일리아,ilia,일로케,iloke,일루키,iluki")
+    # 정본 장면 제작진(11-26, docs/crew-mode.md): 라이브러리 인물 장면에서 빛·시간·카메라·구도·색·대기·분위기만 고른다(모습·옷·손·소품은 정본).
+    # safe = 한 장 그림(패널·스튜디오) + 긴 영상·대사 영상의 영화 전체 초안 하나(설정집 빛·시간·장소 그림), image = 한 장 그림만,
+    # off = 예전처럼 건너뜀. 모르는 값은 safe
+    crew_cast_mode = _env("CREW_CAST_MODE", "safe").strip().lower()
+    if crew_cast_mode not in ("safe", "image", "off"):
+        crew_cast_mode = "safe"
 
     # 영상 렌더러(docs/video-renderer.md): 첫 화면 이미지를 읽는 시각 모델과 움직임 초안을 고쳐 쓰게 하는 최대 횟수.
     # 시각 모델이 확장 모델과 같으면 한 GPU 차례 안에서 처리하고, 다르면 차례를 한 번 더 쓴다.
