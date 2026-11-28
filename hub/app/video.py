@@ -22,6 +22,7 @@ import re
 from functools import lru_cache
 
 from . import cast_lib, crew_lib, promptx
+from . import crew as crew_mod
 from .config import settings
 from .crew import PERSON_NOTE_RE, PERSON_REQ_RE, TEXT_NOTE_RE, skip_reason
 from .promptx import (HAND_WORDS_RE, NEGATION_RE, PromptxError, clean_input, hides_hands, image_in,
@@ -1153,23 +1154,37 @@ def approx_tokens(text) -> int:
     return math.ceil(a / 3) + (len(t) - a)
 
 
-def story_num_ctx(base: list, n_max: int, dialogue: bool = True) -> int | None:
+def story_num_ctx(base: list, n_max: int, dialogue: bool = True, extra: int = 0) -> int | None:
     """구성안 차례(write_story·write_dialogue_story)의 num_ctx: 처음 messages(base) + 앞 답(빈칸 없음) + 문구 + 이번 답(들여씀), 장면 n_max 개 기준,
     1024 단위로 올린다 (fixD). dialogue 가 거짓이면 대사 없는 영상의 장면 어림. HELPER_NUM_CTX 보다 작지 않다. HELPER_NUM_CTX 가 0 이면
-    (Ollama 기본값을 쓰라는 설정) None — 주지 않는다"""
+    (Ollama 기본값을 쓰라는 설정) None — 주지 않는다. extra 는 base 에 아직 없는 글의 예약분 (영화 빛 계획, LOOK_PLAN_RESERVE)"""
     if settings.helper_num_ctx <= 0:
         return None
     n = max(1, int(n_max))
     s_in, s_out = (STORY_CTX_SCENE_IN, STORY_CTX_SCENE_OUT) if dialogue else (STORY_CTX_PLAIN_IN, STORY_CTX_PLAIN_OUT)
-    need = (sum(approx_tokens(m.get("content")) + 4 for m in base) + 2 * 4
+    need = (sum(approx_tokens(m.get("content")) + 4 for m in base) + 2 * 4 + max(0, int(extra))
             + STORY_CTX_FRAME_IN + n * s_in + STORY_CTX_PROBLEMS + STORY_CTX_FRAME_OUT + n * s_out)
     return max(settings.helper_num_ctx, -(-need // STORY_CTX_STEP) * STORY_CTX_STEP)
 
 
-def story_options(base: list, n_max: int, dialogue: bool = True) -> dict:
-    """구성안 차례의 모든 호출에 같은 값으로 주는 options (온도 0.7 + story_num_ctx)"""
-    ctx = story_num_ctx(base, n_max, dialogue)
+def story_options(base: list, n_max: int, dialogue: bool = True, num_ctx: int | None = None) -> dict:
+    """구성안 차례의 모든 호출에 같은 값으로 주는 options (온도 0.7 + story_num_ctx). num_ctx 를 주면 그 값 (영화 제작진 초안과
+    같은 차례에서 같은 값을 쓰려고 storyboard 가 미리 정한 값, 11-26)"""
+    ctx = num_ctx or story_num_ctx(base, n_max, dialogue)
     return {"temperature": 0.7, **({"num_ctx": ctx} if ctx else {})}
+
+
+# 영화 빛 계획(정본 장면 제작진, 11-26)을 구성안 요청 글에 붙일 때의 예약 토큰. 계획은 crew.LOOK_PLAN_MAX(600자) 안이라 넘지 않는다
+LOOK_PLAN_RESERVE = 300
+
+
+def look_plan_note(look_plan: str) -> str:
+    """구성안 요청 글에 붙이는 영화 빛 계획. 'Must-keep details from the user' 에는 넣지 않는다: 모델이 style_said 로 옮기면
+    apply_to_story 가 라이브러리 화풍을 바꾼다"""
+    if not look_plan:
+        return ""
+    return ("Look plan from the crew (not the user's words; never copy it into style_said; the user's words and the known "
+            f"characters come first): {look_plan}. Write bible.time and bible.light from it.\n")
 
 
 def repair_turn(base: list, content: str, problems: list[str], data=None) -> list:
@@ -1181,21 +1196,31 @@ def repair_turn(base: list, content: str, problems: list[str], data=None) -> lis
     return list(base) + [{"role": "assistant", "content": text}, repair_message(problems)]
 
 
-async def write_story(call, text: str, notes: str, seconds: float, rounds: int = 3,
-                      known: list | None = None, now_style: str | None = None) -> tuple[dict | None, list[str], int]:
-    """구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). 위반이 남아도 다듬어 쓸 수 있으면 돌려준다.
-    known 은 요청에 이름이 나온 라이브러리 인물: 대사가 없는 영상도 같은 모습·그림체로 쓰게 한다 (11-20, 말투는 뺀다).
-    now_style 은 고치기 차례의 앞 영상 화풍 (None 이면 한 메시지 요청, fixD): 요청 글에 알려 주고 화풍 구절 검사가 '지금 그림체' 로 쓴다"""
+def story_base(text: str, notes: str, seconds: float, known: list | None = None, now_style: str | None = None,
+               look_plan: str = "") -> tuple[list, int]:
+    """대사 없는 영상 구성안의 처음 messages 와 장면 수 상한 (write_story 와 storyboard 의 문맥 길이 어림이 같은 글을 본다)"""
     count, n_min, n_max = story_counts(seconds)
     said = f"{text or ''} {notes or ''}"
     system = STORY_SYSTEM.format(seconds=int(seconds), keys=", ".join(MUSIC_KEYS), count=count, n_min=n_min, n_max=n_max,
                                  tolerance=story_tolerance(seconds)) + cast_lib.prompt_block(known, speech=False, by_id=True, text=said)
-    user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "") + now_look_note(now_style)
+    user = (f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "") + now_look_note(now_style)
+            + look_plan_note(look_plan))
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}], n_max
+
+
+async def write_story(call, text: str, notes: str, seconds: float, rounds: int = 3,
+                      known: list | None = None, now_style: str | None = None, look_plan: str = "",
+                      num_ctx: int | None = None) -> tuple[dict | None, list[str], int]:
+    """구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). 위반이 남아도 다듬어 쓸 수 있으면 돌려준다.
+    known 은 요청에 이름이 나온 라이브러리 인물: 대사가 없는 영상도 같은 모습·그림체로 쓰게 한다 (11-20, 말투는 뺀다).
+    now_style 은 고치기 차례의 앞 영상 화풍 (None 이면 한 메시지 요청, fixD): 요청 글에 알려 주고 화풍 구절 검사가 '지금 그림체' 로 쓴다.
+    look_plan 은 영화 빛 계획(정본 장면 제작진), num_ctx 는 storyboard 가 같은 차례의 제작진 초안과 맞춘 문맥 길이 (11-26)"""
+    said = f"{text or ''} {notes or ''}"
     person_ok = bool(PERSON_REQ_RE.search(said)) or bool(STORY_PERSON_KO_RE.search(said)) or _known_person(known)
     lib_style = cast_lib.library_style(known)
-    base = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    base, n_max = story_base(text, notes, seconds, known, now_style, look_plan)
     messages = base
-    options = story_options(base, n_max, dialogue=False)          # 한 차례 안의 호출은 같은 num_ctx (fixD)
+    options = story_options(base, n_max, dialogue=False, num_ctx=num_ctx)          # 한 차례 안의 호출은 같은 num_ctx (fixD)
     best, problems, rnd = None, ["no answer"], 0
     for rnd in range(1, rounds + 1):
         reply = await call({"messages": messages, "format": STORY_SCHEMA, "think": False, "options": dict(options)})
@@ -1230,12 +1255,26 @@ async def storyboard(user, ip: str, username: str, slug: str, text: str, notes: 
     sec = max(STORY_MIN_SECONDS, min(STORY_MAX_SECONDS, float(seconds or 60)))
     # 요청에 이름이 나온 정해진 인물 (니키·푸토르 등). 11-20: 대사가 있든 없든 같은 모습·그림체여야 해서 대사 없는 긴 영상에도 쓴다
     known = cast_lib.known_in(f"{text} {notes}")
+    # 정본 인물 영화의 빛·시간·색·대기·분위기 초안 (11-26, CREW_CAST_MODE=safe). 같은 차례 안에서 구성안보다 먼저 받고, 문맥 길이는
+    # 구성안과 같은 값을 쓴다 (Ollama 는 num_ctx 가 바뀌면 모델을 다시 올린다)
+    film_on = crew_mod.film_crew_on(text, notes)
+    ctx = None
+    if film_on:
+        base, n_max = (dialogue_base(text, notes, sec, known, duo, now_style) if dialogue
+                       else story_base(text, notes, sec, known, now_style))
+        ctx = story_num_ctx(base, n_max, dialogue, extra=LOOK_PLAN_RESERVE)
+    film = None
     try:
         async with llm.llm_turn(user, ip, settings.expand_model, "video_story") as call:
+            if film_on:
+                film = await crew_mod.draft_film(call, text, notes, num_ctx=ctx)
+            plan = crew_mod.look_plan_text((film or {}).get("look"))
             if dialogue:
-                story, left, rounds = await write_dialogue_story(call, text, notes, sec, known=known, duo=duo, now_style=now_style)
+                story, left, rounds = await write_dialogue_story(call, text, notes, sec, known=known, duo=duo, now_style=now_style,
+                                                                 look_plan=plan, num_ctx=ctx)
             else:
-                story, left, rounds = await write_story(call, text, notes, sec, known=known, now_style=now_style)
+                story, left, rounds = await write_story(call, text, notes, sec, known=known, now_style=now_style,
+                                                        look_plan=plan, num_ctx=ctx)
     except llm.HelperBusy as e:
         raise PromptxError(str(e), 503) from None
     except RuntimeError as e:
@@ -1243,7 +1282,26 @@ async def storyboard(user, ip: str, username: str, slug: str, text: str, notes: 
     if story is None:
         raise PromptxError("구성안을 만들지 못했습니다: " + "; ".join(left[:3]), 502)
     cast = cast_lib.apply_to_story(story, known, f"{text} {notes}", keep_style=bool(story_style(story)), now_style=now_style)
-    return {"story": story, "violations": left, "rounds": rounds, "model": settings.expand_model, "cast": cast}
+    if film and film.get("look"):
+        add_crew_look(story, film["look"])
+    return {"story": story, "violations": left, "rounds": rounds, "model": settings.expand_model, "cast": cast,
+            "film_crew": {k: film.get(k) for k in ("category", "cast", "used", "rounds", "picked", "violations")} if film else None}
+
+
+FILM_LIGHT_MAX = 320     # 영화 빛 계획을 더한 bible.light 상한: 정지 그림 지시문이 넘치면 compose 끝 문장(손·얼굴)부터 잘린다
+
+
+def add_crew_look(story: dict, look: dict) -> None:
+    """영화 빛 계획을 구성안에 남긴다 (story.crew: 장소 그림의 Air·사람 없는 컷의 빛 계획). 모델이 bible.light 에 고른 조명을
+    옮기지 않았으면 조명 문장을 덧붙인다 (FILM_LIGHT_MAX 안에서, 덧붙인 문장이 잘리지 않게 앞 글을 줄인다)"""
+    story["crew"] = look
+    b = story.get("bible") or {}
+    light = _s(b.get("light"))
+    add = _s(look.get("light"))
+    if add and not crew_lib.has_term(light, look.get("light_terms") or []):
+        room = FILM_LIGHT_MAX - len(add) - 2
+        light = (light[:max(0, room)].rstrip(" ,;.") + ", " + add) if light and room > 20 else add
+    b["light"] = light[:FILM_LIGHT_MAX]
 
 
 # ── 대사 영상 구성안 (11-19, docs/short-film-dialogue-design.md 12절) ──
@@ -3424,12 +3482,9 @@ def dialogue_count_rules(seconds: float, exchange: bool, duo: bool = False) -> s
     return out
 
 
-async def write_dialogue_story(call, text: str, notes: str, seconds: float, rounds: int = 3,
-                               known: list | None = None, duo: bool | None = None,
-                               now_style: str | None = None) -> tuple[dict | None, list[str], int]:
-    """대사 영상 구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). known 은 요청에 이름이 나온 라이브러리 인물.
-    duo 는 감독이 정한 '두세 사람 대사 컷을 만들 수 있는가' (None 이면 설정): 지시문·칸·검사·다듬기가 모두 같은 규칙을 쓴다.
-    now_style 은 고치기 차례의 앞 영상 화풍 (None 이면 한 메시지 요청, fixD, write_story 와 같다)"""
+def dialogue_base(text: str, notes: str, seconds: float, known: list | None = None, duo: bool | None = None,
+                  now_style: str | None = None, look_plan: str = "") -> tuple[list, int]:
+    """대사 영상 구성안의 처음 messages 와 장면 수 상한 (write_dialogue_story 와 storyboard 의 문맥 길이 어림이 같은 글을 본다)"""
     count, n_min, n_max = story_counts(seconds)
     n_max = max(n_max, math.ceil(float(seconds) / 5))      # 말하는 장면은 짧다: 장면이 더 많아도 된다
     said = f"{text or ''} {notes or ''}"
@@ -3438,11 +3493,26 @@ async def write_dialogue_story(call, text: str, notes: str, seconds: float, roun
     system = STORY_SYSTEM.format(seconds=int(seconds), keys=", ".join(MUSIC_KEYS), count=count, n_min=n_min, n_max=n_max,
                                  tolerance=story_tolerance(seconds)) + dialogue_extra(duo) + dialogue_count_rules(seconds, exchange, duo) \
         + cast_lib.prompt_block(known, text=said)
-    user = f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "") + now_look_note(now_style)
+    user = (f"Request (Korean): {text}\n" + (f"Must-keep details from the user: {notes}\n" if notes else "") + now_look_note(now_style)
+            + look_plan_note(look_plan))
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}], n_max
+
+
+async def write_dialogue_story(call, text: str, notes: str, seconds: float, rounds: int = 3,
+                               known: list | None = None, duo: bool | None = None,
+                               now_style: str | None = None, look_plan: str = "",
+                               num_ctx: int | None = None) -> tuple[dict | None, list[str], int]:
+    """대사 영상 구성안을 같은 LLM 차례 안에서 쓴다. (구성안, 남은 위반, 쓴 횟수). known 은 요청에 이름이 나온 라이브러리 인물.
+    duo 는 감독이 정한 '두세 사람 대사 컷을 만들 수 있는가' (None 이면 설정): 지시문·칸·검사·다듬기가 모두 같은 규칙을 쓴다.
+    now_style 은 고치기 차례의 앞 영상 화풍 (None 이면 한 메시지 요청, fixD, write_story 와 같다).
+    look_plan·num_ctx 는 영화 빛 계획과 storyboard 가 맞춘 문맥 길이 (11-26, write_story 와 같다)"""
+    said = f"{text or ''} {notes or ''}"
+    exchange = wants_exchange(said)
+    duo = duo_rules(duo)
     person_ok = True if PERSON_REQ_RE.search(said) or STORY_PERSON_KO_RE.search(said) or _known_person(known) else bool(re.search(r"대화|대사|말하", said))
-    base = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    base, n_max = dialogue_base(text, notes, seconds, known, duo, now_style, look_plan)
     messages = base
-    options = story_options(base, n_max)          # 한 차례 안의 호출은 같은 num_ctx: 3분 대사 구성안은 12288 을 넘는다 (fixD)
+    options = story_options(base, n_max, num_ctx=num_ctx)    # 한 차례 안의 호출은 같은 num_ctx: 3분 대사 구성안은 12288 을 넘는다 (fixD)
     best, problems, rnd = None, ["no answer"], 0
     for rnd in range(1, rounds + 1):
         reply = await call({"messages": messages, "format": dialogue_schema(duo), "think": False, "options": dict(options)})
@@ -4086,8 +4156,12 @@ def place_card_prompt(story: dict, pid: str) -> str:
     (11-20 승인 시험 N1·N2 는 부엌 그림을 함께 넣었다)"""
     b = story["bible"]
     place = next((p["look"] for p in b["places"] if p["id"] == pid), "")
+    # 정본 장면 제작진의 영화 빛 계획이 있으면 대기(안개·먼지·김 …)도 싣는다: 사람 없는 그림이라 제작진 본래 설계와 맞고,
+    # 그 장소의 모든 컷 그림 1 이 된다 (11-26)
+    air = _s((story.get("crew") or {}).get("air"))
     return (f"An empty establishing view of this place with nobody in it: {place} Time: {b['time']} Light: {b['light']} "
-            "Eye-level camera, the whole space visible, calm and still. There is no person, no animal and no figure in the picture. No text.")
+            + (f"Air: {air}. " if air else "")
+            + "Eye-level camera, the whole space visible, calm and still. There is no person, no animal and no figure in the picture. No text.")
 
 
 # ── 구도 그림에서 그리기 (11-21 메인 실험, docs/reference-system-design.md 11절) ──
@@ -5812,7 +5886,8 @@ async def render(user, ip: str, username: str, slug: str, text: str, notes: str 
             advice.append(f"첫 화면을 읽지 못해 요청 글만 보고 움직임을 썼습니다 ({e}).")
     elif mode == "i2v" and not (isinstance(image, dict) and image.get("filename")):
         advice.append("첫 화면 이미지를 찾지 못해 요청 글만 보고 움직임을 썼습니다. LoadImage 노드가 있으면 첫 화면을 읽습니다.")
-    rt, crew_advice = promptx.crew_route(text, notes, crew)
+    # 영상 메뉴(video_knowledge)에는 정본 장면 분야가 없다: 라이브러리 인물 클립도 영상 제작진 단계는 지금처럼 건너뛴다 (11-26)
+    rt, crew_advice = promptx.crew_route(text, notes, crew, cast=False)
     advice += [a.replace("제작진 모드를", "영상 제작진 단계를") for a in crew_advice]
     cat = rt["category"] if rt else None
     model, frame_model = settings.expand_model, settings.video_frame_model

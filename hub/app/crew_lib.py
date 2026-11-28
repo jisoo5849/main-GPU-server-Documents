@@ -30,22 +30,25 @@ NONE_GENRE = "genre_style.none"
 # 한글 낱말은 앞뒤가 한글이면 다른 낱말의 일부다 ("아이스크림" 속 "아이", "우산" 속 "산"). 조사만 허용한다.
 PARTICLES = ("이랑|이나|이란|이라는|에서|에도|으로|처럼|같은|같이|하고|까지|부터|스러운|스럽게|적인|적으로|풍의|풍|"
              "들|이|가|은|는|을|를|의|에|와|과|도|로|만|나|랑|한|하게")
+# 정본 이름 가드에만 더 붙이는 조사 (11-26: '니키에게·니키한테·니키야·니키네·니키와의' 가 가드를 빠져나가 사람 없는 제작진으로 갔다).
+# 사람 낱말·분야 키워드·의도 말에는 넣지 않는다 (그쪽 판정까지 함께 넓어지지 않게)
+GUARD_PARTICLES = "에게|한테|와의|과의|께|야|네|" + PARTICLES
 
 
-def _ko_word(word: str) -> str:
-    return rf"(?<![가-힣A-Za-z0-9]){re.escape(word)}(?:{PARTICLES})?(?![가-힣A-Za-z0-9])"
+def _ko_word(word: str, particles: str = PARTICLES) -> str:
+    return rf"(?<![가-힣A-Za-z0-9]){re.escape(word)}(?:{particles})?(?![가-힣A-Za-z0-9])"
 
 
-def word_pattern(word: str) -> str:
+def word_pattern(word: str, particles: str = PARTICLES) -> str:
     """키워드 하나를 낱말 단위 정규식으로 (영문은 \\b 와 복수 s, 한글은 조사만 허용)."""
     word = re.sub(r"\s+", " ", word.strip())
     if word.isascii():
         return rf"(?<![A-Za-z0-9]){re.escape(word)}s?(?![A-Za-z0-9])"
-    return _ko_word(word)
+    return _ko_word(word, particles)
 
 
-def any_word(words) -> re.Pattern:
-    return re.compile("|".join(word_pattern(w) for w in words), re.I)
+def any_word(words, particles: str = PARTICLES) -> re.Pattern:
+    return re.compile("|".join(word_pattern(w, particles) for w in words), re.I)
 
 
 def _norm(text: str) -> str:
@@ -271,6 +274,18 @@ PEOPLE_EN_RE = re.compile(
     r"skaters?|surfers?|swimmers?|tourists?|workers?|chefs?|baristas?|customers?|shoppers?|couples?|family|families|"
     r"someone|figures?|faces?|heads?|hair|portrait|dancers?|models?|athletes?|players?|riders?|drivers?|passengers?|pedestrians?|crowds?|"
     r"students?|audience|performers?|bride|groom|soldiers?|knights?|wizards?|monks?|vendors?|fishermen|farmers?)\b", re.I)
+# 정본 인물 장면(11-26, cast 분야)의 메뉴에서 뺄 말: 손·몸 동작(11-10 V05 'one arm slightly raised' 로 손이 소매 밖에 나왔다),
+# 옷·머리·얼굴(정본 외형), 지어낸 사람·형상, 얼굴이 가려지는 화면. 바다 물결(waves)·종려나무(palm trees)·초점(focal point)은 남긴다
+CAST_BAN_EN_RE = re.compile(
+    r"\b(?:hands?|fingers?|fingertips?|palms?(?![\s-]+(?:trees?|fronds?|leaves|groves?))|arms?|outstretched|rais(?:e|es|ed|ing)|"
+    r"reach(?:es|ed|ing)?|gestur\w*|waving|waves? (?:at|to|hello|goodbye)|pointing|points? (?:at|to|toward)|hold(?:s|ing)?|"
+    r"carr(?:y|ies|ying|ied)|grip\w*|clutch\w*|sleeves?|pos(?:e|es|ed|ing)|"
+    r"hats?|capes?|cloaks?|robes?|dress(?:es|ed)?|blouses?|coats?|cardigans?|aprons?|skirts?|glasses|beards?|hair\w*|braid\w*|"
+    r"make-?up|costumes?|outfits?|wearing|wears|skin|"
+    # 글자 자리 구도('negative space for the title'): 메모가 글자를 부르면 초안을 버리게 된다 (G0 V07 지어낸 글자)
+    r"text|titles?|captions?|logos?|typography|"
+    r"silhouet\w*|crowds?|groups?|couples?|figures?|travell?ers?|villagers?|passers?-by|"
+    r"extreme close|macro|detail shot|insert(?: shot)?|from behind|back view|low[- ]key|chiaroscuro|pitch[- ]dark)\b", re.I)
 
 
 KNOWLEDGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crew_knowledge.json")
@@ -345,13 +360,15 @@ def query(text: str) -> Query:
     return Query(text)
 
 
-def allowed(eid: str, facet: str, cat: str | None, q: Query) -> bool:
-    """메뉴·아이디어에 넣어도 되는 항목인지. 사용자 요구 항목(must)에도 같은 거름을 쓴다."""
+def allowed(eid: str, facet: str, cat: str | None, q: Query, ban: re.Pattern | None = None) -> bool:
+    """메뉴·아이디어에 넣어도 되는 항목인지. 사용자 요구 항목(must)에도 같은 거름을 쓴다. ban 은 더 뺄 말(정본 장면의 CAST_BAN_EN_RE)."""
     e = load_library()["entries"].get(eid)
     if not e or e["facet"] != facet or not fits(e, cat):
         return False
     if not q.people_ok and PEOPLE_EN_RE.search(e["en"]):
         return False                  # 요청에 없는 사람
+    if ban is not None and ban.search(e["en"]):
+        return False
     if e.get("dark") and not q.dark_ok:
         return False
     if q.subjects:
@@ -363,20 +380,24 @@ def allowed(eid: str, facet: str, cat: str | None, q: Query) -> bool:
     return True
 
 
-def usable(ids, text: str, cat: str | None) -> list[str]:
+def usable(ids, text: str, cat: str | None, ban: re.Pattern | None = None) -> list[str]:
     """사용자 요구 항목 중 이 요청의 메뉴에 넣을 수 있는 것."""
     q = query(text)
     ents = load_library()["entries"]
-    return [i for i in ids if i in ents and allowed(i, ents[i]["facet"], cat, q)]
+    return [i for i in ids if i in ents and allowed(i, ents[i]["facet"], cat, q, ban)]
 
 
 def retrieve(text: str, facet: str, k: int = 8, cat: str | None = None, rng: random.Random | None = None,
              must: list[str] | None = None, prefer: list[str] | None = None, wild: float = 0.25,
-             focus: list[str] | None = None, only: list[str] | None = None) -> list[dict]:
+             focus: list[str] | None = None, only: list[str] | None = None, ban: re.Pattern | None = None,
+             must_skip: list[str] | None = None) -> list[dict]:
     """한 단계의 메뉴. ① 사용자 요구 항목 ② 요청 말과 맞는 항목 ③ 핵심 그룹(prefer)에서 고르게 ④ 나머지 그룹에서 일부(wild)
     순으로 채우고 순서를 섞는다. 요청에 없는 사람·다른 제품·어두운 항목은 뺀다(allowed).
 
     only 를 주면 그 묶음(앞부분 일치)의 항목만 쓴다. 영상 단계들은 같은 칸(video_motion)을 묶음으로 나눠 쓰기 때문이다.
+    ban 을 주면 영문 문장에 그 말이 든 항목도 뺀다 (정본 인물 장면: 손·옷·머리·지어낸 사람).
+    must_skip 을 주면 사용자 요구 항목은 only 묶음 밖이어도 그 묶음들(화풍을 바꾸는 색 묶음)만 아니면 넣는다
+    (정본 장면의 색: 따뜻한·중립 묶음만 쓰지만 사용자가 말한 색은 지킨다).
     """
     rng = rng or random.Random()
     lib = load_library()
@@ -386,14 +407,15 @@ def retrieve(text: str, facet: str, k: int = 8, cat: str | None = None, rng: ran
     only_t = tuple(only) if only else None
 
     def ok(i):
-        return allowed(i, facet, cat, q) and (only_t is None or ents[i]["group"].startswith(only_t))
+        return allowed(i, facet, cat, q, ban) and (only_t is None or ents[i]["group"].startswith(only_t))
 
     def add(i):
         if i not in picked and i in ents and ents[i]["facet"] == facet:
             picked.append(i)
 
     for i in must or []:
-        if ok(i):
+        if ok(i) or (must_skip is not None and i in ents and not ents[i]["group"].startswith(tuple(must_skip))
+                     and allowed(i, facet, cat, q, ban)):
             add(i)
     score = {}
     subj = set(subject_words())

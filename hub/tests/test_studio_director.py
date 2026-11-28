@@ -136,6 +136,7 @@ class FakeDeps:
         self.violation_seq = []      # render 호출마다 차례로 돌려줄 위반 목록 (없으면 violations)
         self.fix_violation_seq = []  # fix 호출마다 차례로 돌려줄 남은 위반 목록 (없으면 비어 있음)
         self.calls = []
+        self.expand_kw = []          # expand_image 의 crew·그 밖의 인자
         self.receivers = {}
         self.queue_rows = []
         self.settings = {}
@@ -185,8 +186,9 @@ class FakeDeps:
             raise RuntimeError("plan down")
         return dict(self.PLAN)
 
-    async def expand_image(self, user, ip, text, crew=None):
+    async def expand_image(self, user, ip, text, crew=None, **kw):
         self.calls.append(("expand_image", text))
+        self.expand_kw.append({"crew": crew, **kw})          # 영화 빛 계획(look_plan)·crew=False 를 보려고 (11-26)
         await asyncio.sleep(0.02)
         return {"prompt": "IMG " + text, "body": text, "keep": [], "categories": {}, "people": 1, "violations": [],
                 "rounds": 1, "crew": {"category": "공간", "used": True}, "advice": []}
@@ -1735,6 +1737,48 @@ async def t_long_video_story_plan_scenes_music_and_assembly():
             prog = fs.progress[t["id"]]
             assert prog["title"] == "긴 영상 만드는 중" and [c["key"] for c in prog["chips"]] == ["story", "scenes", "music", "assemble"]
             assert "long_assembled" in kinds(fs) and kinds(fs).count("long_scene_done") == 3
+        finally:
+            settings.results_dir = old
+
+
+FILM_LOOK = {"time": "early evening, light rain", "light": "soft warm lamp light from shop windows, amber and brown tones",
+             "air": "fine drizzle haze in the lamp light", "mood": "a calm wistful mood", "light_terms": ["lamp light"],
+             "picked": [{"step": "조명", "id": "lighting.x", "ko": "가로등"}]}
+
+
+class FilmCrewDeps(LongDeps):
+    """정본 인물 영화: 구성안에 영화 빛 계획(story.crew)과 영화 제작진 기록(film_crew)이 붙어 온다 (11-26)"""
+
+    async def storyboard(self, user, ip, env, **kw):
+        self.calls.append(("storyboard", kw))
+        await asyncio.sleep(0.01)
+        story = copy.deepcopy(LONG_STORY)
+        story["crew"] = copy.deepcopy(FILM_LOOK)
+        return {"story": story, "violations": [], "rounds": 1,
+                "film_crew": {"category": "cast_film", "cast": ["niki"], "used": True, "rounds": 1,
+                              "picked": FILM_LOOK["picked"], "violations": []}}
+
+
+async def t_long_film_crew():
+    old = settings.results_dir
+    with tempfile.TemporaryDirectory() as root:
+        settings.results_dir = root
+        try:
+            fs = FakeStore(); fs.patch()
+            deps = FilmCrewDeps(fs, root)
+            d = D.Director(deps, dict(deps.recs))
+            t = long_turn(fs)
+            await d.pump(); await settle(d, 10)
+            assert t["state"] == "awaiting_approval", (t["state"], t.get("error"))
+            fc = [v for k, v in fs.events if k == "film_crew"]
+            assert len(fc) == 1 and fc[0]["used"] and fc[0]["cast"] == ["niki"] and fc[0]["picked"]
+            assert await d.approve(t) == "ok"
+            await d.pump(); await settle(d, 15)
+            assert t["state"] == "done", (t["state"], t.get("error"))
+            # 장면 그림 글(사람 없는 컷·예전 경로)은 장면마다 제작진을 돌리지 않고 영화 빛 계획을 쓴다
+            assert deps.expand_kw and all(kw["crew"] is False for kw in deps.expand_kw)
+            assert all("light and palette: soft warm lamp light from shop windows" in kw["look_plan"] for kw in deps.expand_kw)
+            assert all("air: fine drizzle haze" in kw["look_plan"] for kw in deps.expand_kw)
         finally:
             settings.results_dir = old
 

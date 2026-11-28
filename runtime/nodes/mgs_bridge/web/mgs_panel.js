@@ -329,7 +329,7 @@ function helperCard() {
       (v) => { hp.style = v; save("style", v); }),
     h("label", { class: "mgs-row" },
       h("input", { type: "checkbox", checked: hp.crew, onchange: (ev) => { hp.crew = ev.target.checked; save("crew", hp.crew ? "1" : "0"); } }),
-      h("span", { class: "mgs-sub", text: "제작진 모드: 제품·공간·풍경 요청이면 전문가 지식으로 기획·연출·촬영·디테일을 먼저 정합니다 (캐릭터 요청은 건너뜀)" })),
+      h("span", { class: "mgs-sub", text: "제작진 모드: 제품·공간·풍경 요청이면 전문가 지식으로 기획·연출·촬영·디테일을 먼저 정합니다 (라이브러리 인물 장면은 빛·카메라·색·분위기만)" })),
     h("div", { class: "mgs-row" },
       h("button", { class: "mgs-btn primary", disabled: hp.busy, onclick: runExpand }, hp.busy ? "메인 GPU에서 작성 중…" : "프롬프트 확장"),
       h("span", { class: "mgs-sub", text: "GPU 대기열을 거칩니다" })));

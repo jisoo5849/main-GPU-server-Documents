@@ -97,7 +97,8 @@ PURPOSE_KO = {"prompt_expand": "이미지 프롬프트 확장", "video_frame": "
 LONG_EVENT_KINDS = ("story", "long_inherited", "long_scene_start", "long_scene_retry", "long_scene_done", "long_resumed",
                     "long_music", "long_assembled", "end_check", "end_keyframe_failed", "end_keyframe_dropped", "cast_style_convert",
                     "long_chain_empty", "long_scene_redo", "place_card", "place_card_dropped", "layout_done", "duo_fallback",
-                    "quality_still_failed", "cast_style_convert_fallback")     # 정밀 판·실사 변환이 실패해 빠른 길로 내려감 (11-24 2차)
+                    "quality_still_failed", "cast_style_convert_fallback",     # 정밀 판·실사 변환이 실패해 빠른 길로 내려감 (11-24 2차)
+                    "film_crew")       # 정본 인물 영화의 제작진 초안 (11-26)
 
 
 def long_view(work: dict, events: list[dict]) -> dict | None:
@@ -120,6 +121,8 @@ def long_view(work: dict, events: list[dict]) -> dict | None:
                        "monologue": sc.get("monologue"), "to_all": sc.get("to_all"), "duo": s.get("duo")})
     return {"title": story.get("title_ko"), "logline": story.get("logline_ko"), "seconds": story.get("seconds"),
             "bible": story.get("bible"), "music": story.get("music"), "scenes": scenes,
+            # 영화 빛 계획 (정본 장면 제작진, 11-26): 장소 그림 Air·사람 없는 컷에 쓴 값
+            **({"crew": story["crew"]} if story.get("crew") else {}),
             "music_rel": work.get("music_rel"), "final_rel": work.get("final_rel"),
             "events": [{"kind": e.get("kind"), "detail": e.get("detail")} for e in events if e.get("kind") in LONG_EVENT_KINDS]}
 
@@ -179,7 +182,10 @@ def build_detail(turn: dict, events: list[dict], jobs: list[dict], llm_calls: li
         "prompt": {"text": work.get("prompt"), "parts": work.get("parts"), "ko": work.get("ko"), "profile": work.get("profile")},
         "length": {"tier": lc.get("tier"), "reason": lc.get("reason"), "by": LENGTH_BY_KO.get(lc.get("by"), lc.get("by"))},
         "crew": {"work": work.get("crew"), "events": [d.get("crew") for d in by_kind.get("render", []) + by_kind.get("expand", [])
-                                                      if d and d.get("crew")]},
+                                                      if d and d.get("crew")],
+                 # 긴 영상·대사 영상의 영화 전체 초안 (11-26): 고른 항목·남은 위반과 구성안에 남은 빛 계획 (돌았을 때만 칸이 생긴다)
+                 **({"film": [d for d in by_kind.get("film_crew", []) if d], "film_look": (work.get("story") or {}).get("crew")}
+                    if by_kind.get("film_crew") else {})},
         "violations": {"render": [d for d in by_kind.get("render", []) if d], "fix": [d for d in by_kind.get("fix", []) if d]},
         "submitted": by_kind.get("comfy_submitted", []),
         "recipe_check": recipe_check,

@@ -333,7 +333,8 @@ def test_expand_uses_crew_in_the_same_turn():
 
 
 def test_expand_skips_crew_and_gives_ideas():
-    result, calls = run_expand([EXPANDED], "니키가 나오는 장면의 향수 광고")
+    # 라이브러리에 없는 정본 이름은 지금도 건너뛴다 (니키는 11-26 부터 정본 장면 분야로 간다)
+    result, calls = run_expand([EXPANDED], "퀼린스가 나오는 장면의 향수 광고")
     assert len(calls) == 1 and result["crew"] is None and any("캐릭터 정본" in a for a in result["advice"])
     result, calls = run_expand([EXPANDED], "향수 광고 만들어 줘", crew_flag=False)
     assert len(calls) == 1 and result["crew"] is None
@@ -496,6 +497,182 @@ def test_dark_items_when_user_asks():
     rt = crew.route("유령의 집 같은 거실")
     menus = crew.build_menus("유령의 집 같은 거실", rt, random.Random(0))
     assert any(e.get("dark") for ents in menus.values() for e in ents)  # 사용자가 말하면 어두운 항목도 나온다
+
+
+# ── 정본 인물 장면 (11-26, CREW_CAST_MODE) ─────────────────────────────
+CAFE = "니키가 카페 창가에서 책을 읽는 장면"
+CAST_NOTES = ["Niki in the left third of the frame by the cafe window", "Soft warm window light from the left",
+              "Medium shot at eye level with a 35mm lens", "Fine dust drifting in the window light"]
+CAST_FIT = {"choices": {}, "fit_menu": True, "ko": GOOD["ko"], "notes_en": CAST_NOTES}
+
+
+class cast_mode:
+    """설정 CREW_CAST_MODE 를 잠시 바꾼다"""
+    def __init__(self, mode):
+        self.mode = mode
+
+    def __enter__(self):
+        self.saved = crew.settings.crew_cast_mode
+        crew.settings.crew_cast_mode = self.mode
+
+    def __exit__(self, *a):
+        crew.settings.crew_cast_mode = self.saved
+
+
+def cast_result(text=CAFE, seed=0):
+    rt = crew.cast_route(text)
+    menus = crew.build_menus(text, rt, random.Random(seed))
+    choices = {st["key"]: menus[st["key"]][0]["id"] for st in crew.steps_of(rt["category"])}
+    return rt, menus, {"choices": choices, "ko": GOOD["ko"], "notes_en": list(CAST_NOTES)}
+
+
+def test_cast_categories_integrity():
+    kn = crew.load_knowledge()
+    allowed = {"lighting", "time_weather", "camera", "composition", "color_palette", "atmosphere", "mood_emotion"}
+    assert set(kn["cast_categories"]) == {"cast_scene", "cast_film"}
+    groups = {}
+    for e in crew_lib.load_library()["entries"].values():
+        groups.setdefault(e["facet"], set()).add(e["group"])
+    for cat, spec in kn["cast_categories"].items():
+        assert spec["rule"] and spec["title"] and "keywords" not in spec, cat
+        facets = [st["facet"] for st in spec["steps"]]
+        assert set(facets) <= allowed, (cat, facets)
+        for bad in ("genre_style", "props", "location_set", "product_presentation", "material_texture", "video_motion"):
+            assert bad not in facets
+        for st in spec["steps"]:
+            for g in st.get("only") or []:
+                assert any(x.startswith(g) for x in groups[st["facet"]]), (cat, st["key"], g)
+    assert {st["facet"] for st in kn["cast_categories"]["cast_film"]["steps"]} == {
+        "time_weather", "lighting", "color_palette", "atmosphere", "mood_emotion"}      # 카메라·구도는 G0 대사 컷 규칙과 부딪힌다
+    assert kn["cast_palette_warm"] == ["hue_family_warm", "hue_family_neutral"]
+
+
+def test_cast_route_library_names_only():
+    from app import promptx
+    with cast_mode("safe"):
+        rt, advice = promptx.crew_route(CAFE)
+        assert rt["category"] == "cast_scene" and rt["cast"] == ["niki"] and not advice
+        rt, advice = promptx.crew_route("퀼린스가 숲에")
+        assert rt is None and any("캐릭터 정본" in a for a in advice)       # 대조할 외형이 없는 정본 이름
+        rt, advice = promptx.crew_route("니키와 소년이 숲에서")
+        assert rt is None and any("사람이 나오는" in a for a in advice)
+        rt, advice = promptx.crew_route("니키, 손은 소매 속에 숨기고 숲에 서 있다")
+        assert rt is None and any("손 숨김" in a for a in advice)             # 11-10 V05 실패 조건은 계속 건너뜀
+        assert promptx.crew_route("니키와 퀼린스가 숲에서")[0] is None
+        assert promptx.crew_route(CAFE, crew=False) == (None, [])
+        assert promptx.crew_route(CAFE, cast=False)[0] is None                 # 영상 렌더러의 클립 움직임
+        assert crew.cast_route("제임스와 베스가 부엌에서")["cast"] == ["james", "james_glasses", "beth"]
+        assert crew.route("niki in a cafe interior") is None                  # route 와 skip_reason 은 그대로
+    with cast_mode("off"):
+        rt, advice = promptx.crew_route(CAFE)
+        assert rt is None and advice == [promptx.CREW_SKIP_ADVICE["character"]]
+        assert crew.cast_route(CAFE) is None and not crew.film_crew_on(CAFE)
+    with cast_mode("image"):
+        assert promptx.crew_route(CAFE)[0]["category"] == "cast_scene" and not crew.film_crew_on(CAFE)
+
+
+def test_guard_particles():
+    for text in ("니키에게 편지를 주는 카페", "니키한테 어울리는 방", "니키야 카페 가자", "니키네 집 거실", "니키와의 산책 숲 풍경"):
+        assert crew.skip_reason(text) == "character", text
+    assert crew.skip_reason("니키타 영화 포스터 카페") is None
+    assert crew.skip_reason("소녀에게 주는 선물 광고") is None      # 조사 추가는 정본 이름에만: 사람 낱말 판정은 그대로
+
+
+def test_cast_menus_exclude_body_wardrobe_people():
+    texts = [CAFE, "니키가 마법을 쓰는 신비로운 숲속 장면", "푸토르가 약초방에서 약초를 고르는 장면",
+             "제임스와 베스가 비 오는 밤 부엌에서", "니키가 파란 조명 아래 숲에 있는 장면"]
+    cam = tuple(next(st for st in crew.steps_of("cast_scene") if st["key"] == "camera")["only"])
+    for text in texts:
+        for cat in ("cast_scene", "cast_film"):
+            rt = crew.cast_route(text, category=cat)
+            assert rt, text
+            for seed in range(21 if text == CAFE else 3):          # 시드 0~20 은 한 요청만 (메뉴 뽑기가 느리다)
+                menus = crew.build_menus(text, rt, random.Random(seed))
+                for key, ents in menus.items():
+                    assert ents, (text, key)
+                    for e in ents:
+                        assert not crew_lib.CAST_BAN_EN_RE.search(e["en"]), (text, e["id"], e["en"])
+                        assert not crew_lib.PEOPLE_EN_RE.search(e["en"]), (text, e["id"], e["en"])
+                        assert e["id"] != crew_lib.NONE_GENRE and e["facet"] != "genre_style"
+                        if key == "camera":
+                            assert e["group"].startswith(cam), e["id"]
+    # 색은 따뜻한·중립 묶음만, 사용자가 말한 색(파란)은 must 로 들어오되 화풍을 바꾸는 묶음(색연필 등)은 빠진다
+    rt = crew.cast_route("니키가 파란 조명 아래 숲에 있는 장면")
+    for seed in range(4):
+        color = crew.build_menus("니키가 파란 조명 아래 숲에 있는 장면", rt, random.Random(seed))["color"]
+        assert any("blue" in e["en"] for e in color)
+        assert not any(e["group"] in ("art_medium", "film_grade", "duotone") for e in color)
+    color = crew.build_menus(CAFE, crew.cast_route(CAFE), random.Random(3))["color"]
+    assert all(e["group"].startswith(("hue_family_warm", "hue_family_neutral")) for e in color)
+
+
+def test_check_crew_cast_rules():
+    rt, menus, good = cast_result()
+    ents = crew.cast_by_id(rt["cast"])
+    assert crew.check_crew(good, "cast_scene", CAFE, CAFE, menus, cast=ents) == []
+    for line in ("Niki with one arm slightly raised to channel magical energy",       # 11-10 V05 원문
+                 "Niki's cape glows deep teal", "she raises one hand toward the window", "a bustling crowd outside the window",
+                 "cinematic anime look with soft colours", "Niki's braids catch the window light",
+                 "Niki's bangs and bow glow in the warm light"):                         # bangs·bow 는 외형 글에서 뽑은 금지어로만 잡힌다
+        bad = dict(good, notes_en=CAST_NOTES[:3] + [line])
+        probs = crew.check_crew(bad, "cast_scene", CAFE, CAFE, menus, cast=ents)
+        assert probs and all(p.startswith(crew.CAST_PROBLEM) for p in probs), (line, probs)
+    sf = "SF 느낌으로 니키가 카페 창가에 있는 장면"
+    rt2, menus2, good2 = cast_result(sf)
+    probs = crew.check_crew(good2, "cast_scene", sf, sf, menus2, cast=crew.cast_by_id(rt2["cast"]))
+    assert not any("sci" in p.lower() or "'sf'" in p.lower() for p in probs), probs   # 장르 요구는 화풍 칸이 맡는다
+    text_note = dict(good, notes_en=CAST_NOTES[:3] + ["A clock face with the word OPEN on the wall"])
+    probs = crew.check_crew(text_note, "cast_scene", CAFE, CAFE, menus, cast=ents)
+    assert any(p.startswith("Do not mention text") for p in probs)                     # 글자 검사는 그대로 (G0 V07)
+
+
+def test_sanitize_cast_notes():
+    ents = crew.cast_by_id(["niki"])
+    r = {"notes_en": CAST_NOTES + ["Niki's cape glows deep teal"]}
+    assert crew.sanitize_cast_notes(r, ents)["notes_en"] == CAST_NOTES
+    r = {"notes_en": CAST_NOTES[:2] + ["she raises one hand", "a bustling crowd"]}
+    assert crew.sanitize_cast_notes(r, ents) is None                                   # 3줄 미만이면 버린다
+    assert crew.sanitize_cast_notes({"notes_en": 3}, ents) is None
+    # draft: 고쳐 써도 금지 줄 하나만 남으면 그 줄만 지우고 쓴다
+    rt = crew.cast_route(CAFE)
+    stubborn = dict(CAST_FIT, notes_en=CAST_NOTES + ["Niki's cape glows deep teal"])
+    result, rounds, left = asyncio.run(crew.draft(Call([stubborn, stubborn]), CAFE, rt, repair_rounds=1, rng=random.Random(0)))
+    assert left == [] and result["notes_en"] == CAST_NOTES and rounds == 2
+
+
+def test_expand_uses_cast_crew_in_same_turn():
+    with cast_mode("safe"):
+        result, calls = run_expand([CAST_FIT, EXPANDED], CAFE)
+    assert len(calls) == 2 and isinstance(calls[0]["format"], dict)
+    assert calls[0]["messages"][0]["content"].startswith("You are a small production crew of experts preparing one still image")
+    assert "keep visible: wine-red round-brimmed hat" in calls[0]["messages"][0]["content"]
+    helper = calls[1]["messages"][-1]["content"]
+    assert "Crew look plan (light, camera and air only" in helper and "Soft warm window light from the left" in helper
+    assert "Fixed characters" in helper and "two long black braids" in helper
+    assert "Must-keep details" not in helper                                           # 사용자 말 칸에 섞지 않는다
+    assert "Optional ideas" not in helper
+    c = result["crew"]
+    assert c["used"] and c["category"] == "cast_scene" and c["cast"] == ["niki"]
+    assert any("캐릭터 정본 장면이라" in a for a in result["advice"])
+    with cast_mode("off"):
+        result, calls = run_expand([EXPANDED], CAFE)
+    assert len(calls) == 1 and result["crew"] is None and "Fixed characters" not in calls[0]["messages"][-1]["content"]
+
+
+def test_draft_passes_num_ctx():
+    rt = crew.cast_route(CAFE, category="cast_film")
+    call = Call([CAST_FIT])
+    _, rounds, left = asyncio.run(crew.draft(call, CAFE, rt, options={"num_ctx": 16384}, rng=random.Random(0)))
+    assert left == [] and rounds == 1
+    assert call.calls[0]["options"] == {"num_ctx": 16384, "temperature": 0.6}
+    assert "Output: the shared look of every scene of one short film." in call.calls[0]["messages"][-1]["content"]
+    call = Call([CAST_FIT])
+    with cast_mode("safe"):
+        info = asyncio.run(crew.draft_film(call, CAFE, num_ctx=12288, rng=random.Random(0)))
+    look = info["look"]
+    assert info["used"] and info["cast"] == ["niki"] and call.calls[0]["options"]["num_ctx"] == 12288
+    assert look["light"] and len(look["light"]) <= crew.LOOK_LIGHT_MAX and len(look["air"]) <= crew.LOOK_AIR_MAX
+    assert len(crew.look_plan_text(look)) <= crew.LOOK_PLAN_MAX and "light and palette:" in crew.look_plan_text(look)
 
 
 if __name__ == "__main__":
